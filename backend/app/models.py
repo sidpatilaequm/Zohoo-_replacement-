@@ -131,30 +131,34 @@ class CustomerGstin(Base):
 class Vendor(Base):
     __tablename__="vendors"
     __table_args__=(UniqueConstraint("tenant_id","code",name="uq_v"),)
+
     id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
     tenant_id: Mapped[int]=mapped_column(ForeignKey("tenants.id",ondelete="CASCADE"))
     code: Mapped[str]=mapped_column(String(20))
     name: Mapped[str]=mapped_column(String(160))
-    party_type: Mapped[str]=mapped_column(Enum("B2B","B2C",name="vpt"),default="B2B")
+    party_type: Mapped[str]=mapped_column(
+        Enum("B2B","B2C",name="vpt"),default="B2B")
     addr: Mapped[str]=mapped_column(String(255))
     city: Mapped[str]=mapped_column(String(80))
-    state_code: Mapped[str]=mapped_column(String(2),ForeignKey("states.code"))
+    state_code: Mapped[str]=mapped_column(
+        String(2),ForeignKey("states.code"))
     pin: Mapped[str|None]=mapped_column(String(6),nullable=True)
+
     pan: Mapped[str|None]=mapped_column(String(10),nullable=True)
     msme_registered: Mapped[bool]=mapped_column(Boolean,default=False)
     msme_number: Mapped[str|None]=mapped_column(String(30),nullable=True)
     bank_name: Mapped[str|None]=mapped_column(String(120),nullable=True)
     bank_ifsc: Mapped[str|None]=mapped_column(String(11),nullable=True)
-    bank_account: Mapped[str|None]=mapped_column(String(30),nullable=True)
-    email: Mapped[str|None]=mapped_column(String(160),nullable=True)
-    pan: Mapped[str|None]=mapped_column(String(10),nullable=True)
-    bank_ifsc: Mapped[str|None]=mapped_column(String(11),nullable=True)
     bank_account: Mapped[str|None]=mapped_column(String(24),nullable=True)
+    email: Mapped[str|None]=mapped_column(String(160),nullable=True)
     tds_section: Mapped[str|None]=mapped_column(String(10),nullable=True)
     tds_rate: Mapped[Decimal]=mapped_column(Numeric(5,2),default=0)
-    gstins: Mapped[list["VendorGstin"]]=relationship(back_populates="vendor",
-        cascade="all, delete-orphan",lazy="selectin")
 
+    gstins: Mapped[list["VendorGstin"]]=relationship(
+        back_populates="vendor",
+        cascade="all, delete-orphan",
+        lazy="selectin")
+    
 class VendorGstin(Base):
     __tablename__="vendor_gstins"
     id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
