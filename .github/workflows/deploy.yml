@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
 
 jobs:
   backend:
@@ -59,3 +56,60 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  deploy:
+    name: Deploy to EC2
+    needs:
+      - backend
+      - frontend
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ubuntu/aqqum-billing
+
+            git fetch origin
+            git reset --hard origin/main
+
+            # Backend
+            cd backend
+            source venv/bin/activate
+            pip install -r requirements.txt
+
+            # Database schema
+            cd ..
+            sudo mysql aequm_billing < db/01_schema.sql
+
+            # Seed data
+            sudo mysql aequm_billing < db/02_seed.sql
+
+            # Restart backend
+            sudo systemctl restart billing.service
+
+            # Frontend
+            cd frontend
+            npm ci
+            npm run build
+
+            # Deploy frontend files
+            sudo rm -rf /home/ubuntu/aqqum-billing/frontend/current
+            sudo mkdir -p /home/ubuntu/aqqum-billing/frontend/current
+            sudo cp -r dist/* /home/ubuntu/aqqum-billing/frontend/current/
+
+            # Fix permissions
+            sudo chown -R www-data:www-data /home/ubuntu/aqqum-billing/frontend/current
+            sudo chmod -R 755 /home/ubuntu/aqqum-billing/frontend/current
+
+            # Reload services
+            sudo systemctl reload nginx
+
+            # Verify backend
+            curl -f http://127.0.0.1:8000/docs
+
+            # Verify frontend
+            curl -f http://127.0.0.1/
