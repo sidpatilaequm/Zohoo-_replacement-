@@ -391,3 +391,73 @@ SELECT tenant_id, material_id, COALESCE(batch,'') AS batch, stock_type,
 FROM stock_ledger
 GROUP BY tenant_id, material_id, COALESCE(batch,''), stock_type
 HAVING SUM(qty) <> 0;
+
+-- ============================================================
+-- Shared masters / GST / party contacts
+-- ============================================================
+
+CREATE TABLE designations (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(80) NOT NULL UNIQUE
+) ENGINE=InnoDB;
+
+CREATE TABLE banks (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(120) NOT NULL UNIQUE,
+    short_code VARCHAR(12) NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE hsn_codes (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    tenant_id INT NOT NULL,
+    code VARCHAR(8) NOT NULL,
+    descr VARCHAR(200) NOT NULL,
+    kind ENUM('HSN','SAC') NOT NULL DEFAULT 'HSN',
+    sgst_pct DECIMAL(5,2) NOT NULL,
+    cgst_pct DECIMAL(5,2) NOT NULL,
+    igst_pct DECIMAL(5,2) NOT NULL,
+    cess_pct DECIMAL(5,2) NOT NULL DEFAULT 0,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    CONSTRAINT uq_h UNIQUE (tenant_id, code),
+    CONSTRAINT fk_hsn_tenant
+        FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE party_contacts (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    tenant_id INT NOT NULL,
+    party_kind ENUM('CUSTOMER','VENDOR') NOT NULL,
+    party_id INT NOT NULL,
+    first_name VARCHAR(60) NOT NULL,
+    middle_name VARCHAR(60) NULL,
+    last_name VARCHAR(60) NULL,
+    designation_id INT NULL,
+    phone VARCHAR(20) NULL,
+    email VARCHAR(160) NULL,
+    is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+    CONSTRAINT fk_party_contact_tenant
+        FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_party_contact_designation
+        FOREIGN KEY (designation_id) REFERENCES designations(id)
+) ENGINE=InnoDB;
+
+CREATE TABLE gstr3b_uploads (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    tenant_id INT NOT NULL,
+    period VARCHAR(7) NOT NULL,
+    uploaded_by VARCHAR(120) NULL,
+    out_taxable DECIMAL(16,2) NOT NULL DEFAULT 0,
+    out_igst DECIMAL(16,2) NOT NULL DEFAULT 0,
+    out_cgst DECIMAL(16,2) NOT NULL DEFAULT 0,
+    out_sgst DECIMAL(16,2) NOT NULL DEFAULT 0,
+    itc_igst DECIMAL(16,2) NOT NULL DEFAULT 0,
+    itc_cgst DECIMAL(16,2) NOT NULL DEFAULT 0,
+    itc_sgst DECIMAL(16,2) NOT NULL DEFAULT 0,
+    CONSTRAINT uq_g3 UNIQUE (tenant_id, period),
+    CONSTRAINT fk_gstr3b_tenant
+        FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB;
+
