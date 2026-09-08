@@ -1,0 +1,34 @@
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root-change-me
+      MYSQL_DATABASE: aequm_billing
+      MYSQL_USER: aequm
+      MYSQL_PASSWORD: change-me
+    ports: ["3306:3306"]
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d:ro
+      - dbdata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD","mysqladmin","ping","-h","localhost","-uroot","-proot-change-me"]
+      interval: 5s
+      retries: 20
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: mysql+pymysql://aequm:change-me@db:3306/aequm_billing?charset=utf8mb4
+      SECRET_KEY: change-me-to-a-long-random-value
+      CORS_ORIGINS: http://localhost:8080
+    ports: ["8000:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+
+  ui:
+    build: ./frontend
+    ports: ["8080:80"]
+    depends_on: [api]
+
+volumes:
+  dbdata:
