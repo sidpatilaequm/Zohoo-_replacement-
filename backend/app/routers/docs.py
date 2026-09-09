@@ -33,13 +33,16 @@ def list_invoices(ctx: Ctx = Depends(need("saved"))):
         t = invoice_tax(ctx, inv)
         rec = settled(ctx, invoice_id=inv.id)
         out.append({"id": inv.id, "doc_no": inv.doc_no, "doc_type": inv.doc_type,
+                    "status": inv.status, "cancelled_on": inv.cancelled_on,
+                    "cancel_reason": inv.cancel_reason,
                     "doc_date": inv.doc_date, "due_date": inv.due_date,
                     "customer": inv.customer.name, "customer_id": inv.customer_id,
                     "customer_email": inv.customer.email,
                     "gstin": inv.gstin, "pos_state": inv.pos_state, "po_no": inv.po_no,
                     "po_date": inv.po_date, "taxable": float(t.taxable), "tax": float(t.tax),
                     "total": float(t.rounded), "received": float(rec),
-                    "outstanding": float(t.rounded - rec) if inv.doc_type == "TAX" else None,
+                    "outstanding": (float(t.rounded - rec)
+                                    if inv.doc_type == "TAX" and inv.status == "ACTIVE" else None),
                     "intra": t.intra})
     return out
 
@@ -124,6 +127,52 @@ def convert(iid: int, doc_no: str | None = None, ctx: Ctx = Depends(need("invoic
         bump(ctx, "invoice")
     ctx.db.commit()
     return {"id": inv.id, "doc_no": inv.doc_no, "converted_from": inv.converted_from}
+
+
+@router.post("/invoices/{iid}/cancel")
+def cancel_invoice(iid: int, body: S.CancelIn, ctx: Ctx = Depends(need("invoice"))):
+    """Cancel a tax invoice. The document stays on file (a GST document number must
+    not be reused and GSTR-1 table 13 reports it as cancelled), but:
+
+    - it drops out of every GST register, GSTR-1 and GSTR-3B, which reverses the
+      output tax it carried;
+    - stock issued on it comes back;
+    - every receipt against it, including any TDS the customer had deducted, is
+      reversed by a contra entry dated today that references the original, so
+      the TDS receivable and the settlement position both return to nil.
+    """
+    inv = ctx.get(M.Invoice, iid)
+    if not inv:
+        raise HTTPException(404, "No such invoice")
+    if inv.status == "CANCELLED":
+        raise HTTPException(409, f"{inv.doc_no} is already cancelled")
+    if inv.doc_type != "TAX":
+        raise HTTPException(409, "A proforma is not a tax document; delete it instead")
+    today = date.today()
+    reversed_entries = []
+    for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
+                            .where(M.Payment.invoice_id == inv.id)).scalars():
+        if p.reverses_id or Decimal(str(p.amount)) + Decimal(str(p.tds)) == 0:
+            continue
+        r = M.Payment(tenant_id=ctx.tenant.id, pay_type="REC", pay_date=today,
+                      invoice_id=inv.id, amount=-p.amount, tds=-p.tds, mode="Adjustment",
+                      bank_ref=p.bank_ref, bank_acct=p.bank_acct, reverses_id=p.id,
+                      narration=f"Reversal of RCPT/{p.id:05d} — {inv.doc_no} cancelled")
+        ctx.db.add(r)
+        reversed_entries.append({"receipt": f"RCPT/{p.id:05d}", "amount": float(p.amount),
+                                 "tds": float(p.tds)})
+    for l in inv.lines:
+        l.material.stock_qty = l.material.stock_qty + l.qty
+    t = invoice_tax(ctx, inv)
+    inv.status, inv.cancelled_on = "CANCELLED", today
+    inv.cancelled_by, inv.cancel_reason = ctx.user.name, body.reason
+    ctx.db.commit()
+    return {"id": inv.id, "doc_no": inv.doc_no, "status": inv.status,
+            "gst_reversed": {"taxable": float(t.taxable), "cgst": float(t.cgst),
+                             "sgst": float(t.sgst), "igst": float(t.igst)},
+            "receipts_reversed": reversed_entries,
+            "tds_reversed": float(sum(Decimal(str(r["tds"])) for r in reversed_entries)),
+            "stock_restored": [{"code": l.material.code, "qty": float(l.qty)} for l in inv.lines]}
 
 
 @router.delete("/invoices/{iid}", status_code=204)
@@ -260,6 +309,7 @@ def _pay_rows(ctx, kind):
             d = ctx.db.get(M.VendorInvoice, p.vinv_id)
             party, doc = d.vendor.name, d.doc_no
         out.append({"id": p.id, "pay_date": p.pay_date, "party": party, "doc": doc,
+                    "reverses_id": p.reverses_id,
                     "amount": float(p.amount), "tds": float(p.tds), "mode": p.mode,
                     "bank_ref": p.bank_ref, "bank_acct": p.bank_acct,
                     "narration": p.narration})

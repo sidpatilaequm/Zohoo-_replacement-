@@ -285,6 +285,10 @@ class VendorInvoiceIn(BaseModel):
         return self
 
 
+class CancelIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=200)
+
+
 class PaymentIn(BaseModel):
     pay_type: str
     pay_date: date

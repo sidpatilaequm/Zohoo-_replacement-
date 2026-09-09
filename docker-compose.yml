@@ -21,6 +21,9 @@ services:
       DATABASE_URL: mysql+pymysql://aequm:change-me@db:3306/aequm_billing?charset=utf8mb4
       SECRET_KEY: change-me-to-a-long-random-value
       CORS_ORIGINS: http://localhost:8080
+      # optional: lets the invoice reader ask Claude for a second reading
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      EXTRACT_MODEL: ${EXTRACT_MODEL:-claude-sonnet-4-5}
     ports: ["8000:8000"]
     depends_on:
       db: {condition: service_healthy}

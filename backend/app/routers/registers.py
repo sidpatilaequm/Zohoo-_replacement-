@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from .. import models as M, schemas as S
 from ..deps import Ctx, need
-from ..service import invoice_tax, vinv_tax, settled
+from ..service import invoice_tax, vinv_tax, settled, live_invoices
 from ..tax import q2
 
 router = APIRouter(prefix="/registers", tags=["registers"])
@@ -35,7 +35,8 @@ def invoice_register(period: str | None = None, ctx: Ctx = Depends(need("registe
         t = invoice_tax(ctx, inv)
         rec = settled(ctx, invoice_id=inv.id)
         c = inv.customer
-        out.append({"doc_type": "Tax invoice" if inv.doc_type == "TAX" else "Proforma",
+        out.append({"id": inv.id, "status": inv.status, "cancel_reason": inv.cancel_reason,
+                    "doc_type": "Tax invoice" if inv.doc_type == "TAX" else "Proforma",
                     "doc_no": inv.doc_no, "doc_date": inv.doc_date,
                     "customer": c.name, "customer_code": c.code, "gstin": inv.gstin,
                     "pan": c.pan, "msme": c.msme_registered,
@@ -54,9 +55,7 @@ def invoice_register(period: str | None = None, ctx: Ctx = Depends(need("registe
 def gst_register(period: str | None = None, ctx: Ctx = Depends(need("registers"))):
     """Outward and inward side by side — what is payable and what is claimable."""
     outward, inward = [], []
-    for inv in ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
-                              .where(M.Invoice.doc_type == "TAX")
-                              .order_by(M.Invoice.doc_date)).scalars():
+    for inv in ctx.db.execute(live_invoices(ctx).order_by(M.Invoice.doc_date)).scalars():
         if not _in_period(inv.doc_date, period):
             continue
         t = invoice_tax(ctx, inv)
@@ -138,10 +137,10 @@ def register_csv(which: str, period: str | None = None,
                  ctx: Ctx = Depends(need("registers"))):
     if which == "invoices":
         data = invoice_register(period, ctx)
-        head = ["Type","Invoice","Date","Customer code","Customer","GSTIN","PAN","MSME",
+        head = ["Type","Status","Invoice","Date","Customer code","Customer","GSTIN","PAN","MSME",
                 "Place of supply","PO number","Taxable","CGST","SGST","IGST","Total",
                 "Received","Outstanding","Supply"]
-        rows = [head] + [[r["doc_type"], r["doc_no"], gd(r["doc_date"]), r["customer_code"],
+        rows = [head] + [[r["doc_type"], r["status"].title(), r["doc_no"], gd(r["doc_date"]), r["customer_code"],
             r["customer"], r["gstin"] or "", r["pan"] or "", "Yes" if r["msme"] else "No",
             r["place_of_supply"], r["po_no"] or "", r["taxable"], r["cgst"], r["sgst"],
             r["igst"], r["total"], r["received"] or "", r["outstanding"] or "",
@@ -175,8 +174,7 @@ def register_csv(which: str, period: str | None = None,
 # ============================================ GSTR-3B upload and compare
 def _computed_3b(ctx, period):
     o = {"taxable": D0, "igst": D0, "cgst": D0, "sgst": D0}
-    for inv in ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
-                              .where(M.Invoice.doc_type == "TAX")).scalars():
+    for inv in ctx.db.execute(live_invoices(ctx)).scalars():
         if not _in_period(inv.doc_date, period):
             continue
         t = invoice_tax(ctx, inv)
@@ -239,6 +237,41 @@ async def upload_3b_csv(period: str = Query(...), file: UploadFile = File(...),
     body = S.Gstr3bIn(period=period, **vals)
     res = upload_3b(body, ctx)
     res["ignored_rows"] = unknown
+    return res
+
+
+@router.post("/gstr3b/upload-json")
+async def upload_3b_json(period: str = Query(...), file: UploadFile = File(...),
+                         ctx: Ctx = Depends(need("gstr"))):
+    """Accept the GSTR-3B JSON downloaded from the GST portal (or prepared for it).
+    Reads sup_details.osup_det for outward and itc_elg.itc_net (or the itc_avl
+    rows) for input credit."""
+    import json
+    try:
+        d = json.loads((await file.read()).decode("utf-8-sig"))
+    except Exception:
+        raise HTTPException(422, "That file is not valid JSON")
+    if isinstance(d, dict) and "data" in d and isinstance(d["data"], dict):
+        d = d["data"]
+    sup = (d.get("sup_details") or {}).get("osup_det") or {}
+    itc = d.get("itc_elg") or {}
+    net = itc.get("itc_net")
+    if not net:
+        net = {"iamt": 0, "camt": 0, "samt": 0}
+        for row in itc.get("itc_avl") or []:
+            for k in net:
+                net[k] += float(row.get(k) or 0)
+    if not sup and not itc:
+        raise HTTPException(422, "No sup_details or itc_elg found — is this a GSTR-3B JSON?")
+    def dec(x):
+        return Decimal(str(x or 0))
+    body = S.Gstr3bIn(period=period, out_taxable=dec(sup.get("txval")), out_igst=dec(sup.get("iamt")),
+                      out_cgst=dec(sup.get("camt")), out_sgst=dec(sup.get("samt")),
+                      itc_igst=dec(net.get("iamt")), itc_cgst=dec(net.get("camt")),
+                      itc_sgst=dec(net.get("samt")))
+    res = upload_3b(body, ctx)
+    res["read_from"] = {"outward": bool(sup), "itc": bool(itc),
+                        "portal_period": d.get("ret_period"), "portal_gstin": d.get("gstin")}
     return res
 
 

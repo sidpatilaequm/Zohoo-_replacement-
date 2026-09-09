@@ -42,6 +42,15 @@ def build_lines(ctx, lines_in, use_cost=False):
     return out
 
 
+def live_invoices(ctx, doc_type="TAX"):
+    """Invoices that count: not cancelled, optionally of one type. Cancelling an
+    invoice reverses its GST by dropping it from every register and return."""
+    q = ctx.scope(select(M.Invoice), M.Invoice).where(M.Invoice.status != "CANCELLED")
+    if doc_type:
+        q = q.where(M.Invoice.doc_type == doc_type)
+    return q
+
+
 def invoice_tax(ctx, inv) -> TaxResult:
     lines = [(l.line_no, l.material, l.qty, l.price) for l in sorted(inv.lines, key=lambda x: x.line_no)]
     return compute(lines, ctx.tenant.state_code, inv.pos_state)
