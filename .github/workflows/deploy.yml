@@ -105,15 +105,7 @@ jobs:
             # --------------------------------------------------
             # 3. Backend dependencies
             # --------------------------------------------------
-            echo "Installing system dependencies for Python packages..."
-
-            sudo apt-get update
-            sudo apt-get install -y \
-              python3.14-dev \
-              build-essential \
-              zlib1g-dev \
-              libjpeg-dev \
-              libfreetype6-dev
+            
 
             echo "Installing backend dependencies..."
 
