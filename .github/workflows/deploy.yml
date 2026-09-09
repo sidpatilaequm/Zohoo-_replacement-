@@ -70,46 +70,170 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd /home/ubuntu/aqqum-billing
 
+          script: |
+            set -e
+
+            APP_DIR="/home/ubuntu/aqqum-billing"
+            BACKUP_DIR="$APP_DIR/backups"
+
+            echo "======================================"
+            echo "Starting Aequm v2.2 deployment"
+            echo "======================================"
+
+            cd "$APP_DIR"
+
+            # --------------------------------------------------
+            # 1. Get latest code
+            # --------------------------------------------------
             git fetch origin
             git reset --hard origin/main
 
-            # Backend
-            cd backend
+            # --------------------------------------------------
+            # 2. BACKUP PRODUCTION DATABASE
+            # --------------------------------------------------
+            echo "Creating production database backup..."
+
+            sudo mkdir -p "$BACKUP_DIR"
+
+            sudo mysqldump aequm_billing \
+              | gzip \
+              | sudo tee "$BACKUP_DIR/aequm_billing_$(date +%Y%m%d_%H%M%S).sql.gz" > /dev/null
+
+            echo "Database backup completed."
+
+            # --------------------------------------------------
+            # 3. Backend dependencies
+            # --------------------------------------------------
+            echo "Installing backend dependencies..."
+
+            cd "$APP_DIR/backend"
+
             source venv/bin/activate
             pip install -r requirements.txt
 
-            # Database schema
-            cd ..
-            sudo mysql aequm_billing < db/01_schema.sql
+            # --------------------------------------------------
+            # 4. Check whether v2.2 migration is required
+            # --------------------------------------------------
+            echo "Checking production database schema..."
 
-            # Seed data
-            sudo mysql aequm_billing < db/02_seed.sql
+            STATUS_COLUMN=$(sudo mysql -N -s aequm_billing -e "
+              SELECT COUNT(*)
+              FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = 'aequm_billing'
+                AND TABLE_NAME = 'invoices'
+                AND COLUMN_NAME = 'status';
+            ")
 
-            # Restart backend
+            REVERSAL_COLUMN=$(sudo mysql -N -s aequm_billing -e "
+              SELECT COUNT(*)
+              FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = 'aequm_billing'
+                AND TABLE_NAME = 'payments'
+                AND COLUMN_NAME = 'reverses_id';
+            ")
+
+            echo "invoices.status = $STATUS_COLUMN"
+            echo "payments.reverses_id = $REVERSAL_COLUMN"
+
+            # --------------------------------------------------
+            # 5. Apply ONLY v2.2 migration when needed
+            # --------------------------------------------------
+            cd "$APP_DIR"
+
+            if [ "$STATUS_COLUMN" = "0" ] && [ "$REVERSAL_COLUMN" = "0" ]; then
+
+              echo "Applying v2.2 database migration..."
+
+              sudo mysql aequm_billing < db/03_cancel_and_gstr.sql
+
+              echo "v2.2 migration completed."
+
+            elif [ "$STATUS_COLUMN" = "1" ] && [ "$REVERSAL_COLUMN" = "1" ]; then
+
+              echo "v2.2 database migration already applied."
+              echo "Skipping migration."
+
+            else
+
+              echo "ERROR: Database is in a partially migrated state."
+              echo "Migration was NOT executed."
+              exit 1
+
+            fi
+
+            # --------------------------------------------------
+            # IMPORTANT:
+            # DO NOT RUN:
+            #
+            # db/01_schema.sql
+            # db/02_seed.sql
+            #
+            # Existing production data must remain untouched.
+            # --------------------------------------------------
+
+            # --------------------------------------------------
+            # 6. Restart backend
+            # --------------------------------------------------
+            echo "Restarting backend..."
+
             sudo systemctl restart billing.service
 
-            # Frontend
-            cd frontend
+            sleep 3
+
+            # --------------------------------------------------
+            # 7. Backend health check
+            # --------------------------------------------------
+            echo "Checking backend..."
+
+            curl -f http://127.0.0.1:8000/docs
+
+            echo "Backend is healthy."
+
+            # --------------------------------------------------
+            # 8. Build frontend
+            # --------------------------------------------------
+            echo "Building frontend..."
+
+            cd "$APP_DIR/frontend"
+
             npm ci
             npm run build
 
-            # Deploy frontend files
-            sudo rm -rf /home/ubuntu/aqqum-billing/frontend/current
-            sudo mkdir -p /home/ubuntu/aqqum-billing/frontend/current
-            sudo cp -r dist/* /home/ubuntu/aqqum-billing/frontend/current/
+            # --------------------------------------------------
+            # 9. Deploy frontend
+            # --------------------------------------------------
+            echo "Deploying frontend..."
 
-            # Fix permissions
-            sudo chown -R www-data:www-data /home/ubuntu/aqqum-billing/frontend/current
-            sudo chmod -R 755 /home/ubuntu/aqqum-billing/frontend/current
+            sudo rm -rf "$APP_DIR/frontend/current"
 
-            # Reload services
+            sudo mkdir -p "$APP_DIR/frontend/current"
+
+            sudo cp -r dist/* "$APP_DIR/frontend/current/"
+
+            # --------------------------------------------------
+            # 10. Fix permissions
+            # --------------------------------------------------
+            sudo chown -R www-data:www-data "$APP_DIR/frontend/current"
+
+            sudo chmod -R 755 "$APP_DIR/frontend/current"
+
+            # --------------------------------------------------
+            # 11. Reload nginx
+            # --------------------------------------------------
+            echo "Reloading nginx..."
+
             sudo systemctl reload nginx
 
-            # Verify backend
-            curl -f http://127.0.0.1:8000/docs
+            # --------------------------------------------------
+            # 12. Frontend health check
+            # --------------------------------------------------
+            echo "Checking frontend..."
 
-            # Verify frontend
             curl -f http://127.0.0.1/
+
+            echo "Frontend is healthy."
+
+            echo "======================================"
+            echo "Aequm v2.2 deployment successful"
+            echo "======================================"
