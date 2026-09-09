@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useAuth } from '../lib/auth'
 
 export const Panel = ({ title, right, children, bodyless }) => (
   <div className="panel">
@@ -64,4 +65,53 @@ export function useFlash() {
   }
   const node = msg ? <Alert kind={msg.kind}>{msg.text}</Alert> : null
   return [node, show]
+}
+
+
+/* ------------------------------------------------------------ printing
+ * The PDF layout can be Trading (goods: HSN, quantity, delivery address)
+ * or Non-trading (services: SAC, units, service period). It defaults to
+ * the organisation's company type and can be switched per page.
+ */
+export const PRINT_VARIANTS = [
+  { key: 'TRADING', label: 'Trading — goods (HSN, qty, delivery)' },
+  { key: 'NONTRADING', label: 'Non-trading — services (SAC, units, period)' },
+]
+
+export function usePrintVariant() {
+  const { me } = useAuth()
+  const [variant, setVariant] = useState(me?.tenant?.company_type || 'NONTRADING')
+  useEffect(() => { if (me?.tenant?.company_type) setVariant(me.tenant.company_type) },
+    [me?.tenant?.company_type])
+  return [variant, setVariant]
+}
+
+export const VariantPicker = ({ value, onChange }) => (
+  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+    <span className="fine">Print layout</span>
+    <select value={value} onChange={e => onChange(e.target.value)}
+      style={{ padding: '6px 9px', border: '1px solid var(--line2)', borderRadius: 7 }}>
+      {PRINT_VARIANTS.map(v => <option key={v.key} value={v.key}>{v.label}</option>)}
+    </select>
+  </label>
+)
+
+/** "View" opens the PDF in a new tab, "PDF" downloads it. kind is the print
+ *  route: invoices | purchase-orders | receipts. */
+export function PrintButtons({ kind, id, variant, onError, small = true, extra = '' }) {
+  const { api } = useAuth()
+  const [busy, setBusy] = useState(false)
+  const go = async (inline) => {
+    setBusy(true)
+    try { await api.printPdf(kind, id, variant, inline, extra) }
+    catch (x) { onError && onError(x.message) }
+    finally { setBusy(false) }
+  }
+  const cls = small ? 'btn btn-sm' : 'btn'
+  return (<span style={{ whiteSpace: 'nowrap' }}>
+    <button type="button" className={cls} disabled={busy} onClick={() => go(true)}
+      title="Open the PDF in a new tab">View</button>
+    <button type="button" className={cls} disabled={busy} style={{ marginLeft: 5 }}
+      onClick={() => go(false)} title="Download the PDF">{busy ? '…' : 'PDF'}</button>
+  </span>)
 }

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
-import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
+import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
+  usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
 import { inr, money, gd, today } from '../lib/fmt'
 
 const MODES = ['NEFT', 'RTGS', 'IMPS', 'UPI', 'Cheque', 'Cash', 'Adjustment']
@@ -14,6 +15,7 @@ export default function Receipts() {
     mode: 'NEFT', bank_ref: '', bank_acct: '', narration: '' })
   const [err, setErr] = useState(null)
   const [flash, showFlash] = useFlash()
+  const [variant, setVariant] = usePrintVariant()
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
 
   const open = (invoices.data || []).filter(v => v.doc_type === 'TAX' && v.outstanding > 0.5)
@@ -75,16 +77,22 @@ export default function Receipts() {
       </Panel>
     </form>
 
-    <Panel title={`Receipts — ${list.data.length}`} bodyless>
+    <Panel title={`Receipts — ${list.data.length}`}
+      right={<VariantPicker value={variant} onChange={setVariant} />} bodyless>
       <Table head={['Date', 'Customer', 'Against', { label: 'Mode', align: 'c' },
-        'Reference', 'Bank', { label: 'Amount', align: 'r' }, '']} empty="No receipts recorded.">
+        'Reference', 'Bank', { label: 'Amount', align: 'r' },
+        { label: 'Receipt voucher', align: 'c' }, '']} empty="No receipts recorded.">
         {list.data.map(p => (
-          <tr key={p.id}>
-            <td className="mono">{gd(p.pay_date)}</td><td>{p.party}</td>
-            <td className="mono">{p.doc}</td><td className="c">{p.mode}</td>
+          <tr key={p.id} style={p.reverses_id ? { background: 'var(--red-soft)' } : undefined}>
+            <td className="mono">{gd(p.pay_date)}</td><td>{p.party}
+              {p.reverses_id && <div className="fine">{p.narration}</div>}</td>
+            <td className="mono">{p.doc}</td><td className="c">{p.reverses_id
+              ? <Tag kind="bad">Reversal</Tag> : p.mode}</td>
             <td className="mono fine">{p.bank_ref || '—'}</td>
             <td className="fine">{p.bank_acct || '—'}</td>
             <td className="r mono"><b>{inr(p.amount)}</b></td>
+            <td className="c">{!p.reverses_id && <PrintButtons kind="receipts" id={p.id} variant={variant}
+              onError={m => showFlash(m, 'bad')} />}</td>
             <td className="r"><button className="rm" onClick={async () => {
               try { await api.delPayment(p.id); list.reload(); invoices.reload(); outstanding.reload() }
               catch (x) { showFlash(x.message, 'bad') } }}>×</button></td>

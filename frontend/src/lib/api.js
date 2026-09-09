@@ -53,6 +53,7 @@ export function makeApi(token, tenantId) {
     invoice:       (id) => call(`/invoices/${id}`),
     addInvoice:    (b)  => call('/invoices', { method: 'POST', body: b }),
     convert:       (id) => call(`/invoices/${id}/convert`, { method: 'POST' }),
+    cancelInvoice: (id, reason) => call(`/invoices/${id}/cancel`, { method: 'POST', body: { reason } }),
     delInvoice:    (id) => call(`/invoices/${id}`, { method: 'DELETE' }),
 
     pos:           ()   => call('/purchase-orders'),
@@ -60,6 +61,14 @@ export function makeApi(token, tenantId) {
 
     vinvs:         ()   => call('/vendor-invoices'),
     addVinv:       (b)  => call('/vendor-invoices', { method: 'POST', body: b }),
+    extractCaps:   ()   => call('/vendor-invoices/extract/capabilities'),
+    extractVinv:   (f)  => upload('/vendor-invoices/extract', f, { token, tenantId }),
+
+    // ---- PDF print-outs (variant: TRADING | NONTRADING, defaults to the org's type) ----
+    printVariants: ()   => call('/print/variants'),
+    printPdf:      (kind, id, variant, inline, extra = '') => download(
+                        `/print/${kind}/${id}.pdf?variant=${variant || ''}`
+                        + (inline ? '&disposition=inline' : '') + extra, { token, tenantId }, inline),
 
     receipts:      ()   => call('/receipts'),
     addReceipt:    (b)  => call('/receipts', { method: 'POST', body: b }),
@@ -87,6 +96,11 @@ export function makeApi(token, tenantId) {
     gstr1:         (p)  => call(`/returns/gstr1?period=${p}`),
     gstr3b:        (p)  => call(`/returns/gstr3b?period=${p}`),
     recon:         (p)  => call(`/returns/reconciliation?period=${p}`),
+    reconAB:       (p)  => call(`/returns/reconciliation/ab?period=${p}`),
+    gstr1Portal:   (p, fmt) => download(`/returns/gstr1/portal.${fmt}?period=${p}`, { token, tenantId }),
+    gstr1SectionCsv: (s, p) => download(`/returns/gstr1/${s}.csv?period=${p}`, { token, tenantId }),
+    upload3bJson:  (p, f) => upload(`/registers/gstr3b/upload-json?period=${p}`, f, { token, tenantId }),
+    upload3bCsv:   (p, f) => upload(`/registers/gstr3b/upload-csv?period=${p}`, f, { token, tenantId }),
     receivables:   ()   => call('/returns/reports/receivables'),
     payables:      ()   => call('/returns/reports/payables'),
     margin:        ()   => call('/returns/reports/margin'),
@@ -152,6 +166,34 @@ export const signIn = (email, password) =>
   req('/auth/signin', { method: 'POST', body: { email, password } })
 export const signUp = (body) => req('/auth/signup', { method: 'POST', body })
 export const openTenants = () => req('/auth/tenants')
+
+/** Fetch a binary (PDF) with the auth headers and hand it to the browser:
+ *  inline=true opens it in a new tab, otherwise it is downloaded with the
+ *  server's filename. Plain <a href> cannot carry the bearer token. */
+export async function download(path, { token, tenantId } = {}, inline = false) {
+  const headers = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  if (tenantId) headers['X-Tenant-Id'] = String(tenantId)
+  const res = await fetch(BASE + path, { headers })
+  if (!res.ok) {
+    let msg = res.statusText
+    try { msg = readDetail(JSON.parse(await res.text()), msg) } catch { /* not json */ }
+    throw new ApiError(msg, res.status)
+  }
+  const blob = await res.blob()
+  const cd = res.headers.get('content-disposition') || ''
+  const m = /filename="?([^";]+)"?/.exec(cd)
+  const name = m ? m[1] : 'document.pdf'
+  const url = URL.createObjectURL(blob)
+  if (inline) {
+    window.open(url, '_blank', 'noopener')
+  } else {
+    const a = document.createElement('a')
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove()
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60000)
+  return name
+}
 
 /** Multipart upload; the JSON helper cannot carry a file. */
 export async function upload(path, file, { token, tenantId } = {}) {

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useAuth } from '../lib/auth'
-import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
+import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
+  usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
 import { inr, money, gd, today } from '../lib/fmt'
 
 export default function PurchaseOrders() {
@@ -16,6 +17,7 @@ export default function PurchaseOrders() {
   const [pick, setPick] = useState('')
   const [err, setErr] = useState(null)
   const [flash, showFlash] = useFlash()
+  const [variant, setVariant] = usePrintVariant()
   const set = (k, v) => setH(s => ({ ...s, [k]: v }))
 
   const vend = vendors.data?.find(v => v.id === Number(h.vendor_id))
@@ -160,10 +162,12 @@ export default function PurchaseOrders() {
       </div>
     </form>
 
-    <Panel title={`Saved purchase orders — ${list.data.length}`} bodyless>
+    <Panel title={`Saved purchase orders — ${list.data.length}`}
+      right={<VariantPicker value={variant} onChange={setVariant} />} bodyless>
       <Table head={['PO', 'Date', 'Vendor', 'Delivery', { label: 'Status', align: 'c' },
         { label: 'Supply', align: 'c' }, { label: 'Taxable', align: 'r' },
-        { label: 'Input tax', align: 'r' }, { label: 'Total', align: 'r' }]}
+        { label: 'Input tax', align: 'r' }, { label: 'Total', align: 'r' },
+        { label: 'Print', align: 'c' }]}
         empty="No purchase orders yet.">
         {list.data.map(o => (
           <tr key={o.id}>
@@ -179,6 +183,8 @@ export default function PurchaseOrders() {
             <td className="r mono">{inr(o.taxable)}</td>
             <td className="r mono">{inr(o.tax)}</td>
             <td className="r mono"><b>{inr(o.total)}</b></td>
+            <td className="c"><PrintButtons kind="purchase-orders" id={o.id} variant={variant}
+              onError={m => showFlash(m, 'bad')} /></td>
           </tr>))}
       </Table>
     </Panel>

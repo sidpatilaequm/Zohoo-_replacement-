@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
-import { Panel, Table, Tag, Alert, useLoad, Loading, ErrorBox } from '../components/ui'
+import { Panel, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
+  usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
 import { inr, money, gd } from '../lib/fmt'
 
 const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -11,6 +12,9 @@ export default function Registers() {
   const periods = useLoad(() => api.periods())
   const [period, setPeriod] = useState('')
   const [which, setWhich] = useState('invoices')
+  const [variant, setVariant] = usePrintVariant()
+  const [printAs, setPrintAs] = useState('')
+  const [flash, showFlash] = useFlash()
   const p = period || null
   const inv = useLoad(() => api.invoiceRegister(p), [p])
   const gst = useLoad(() => api.gstRegister(p), [p])
@@ -38,22 +42,35 @@ export default function Registers() {
   if (busy) return <><Panel title="Registers" right={controls} /><Loading /></>
 
   return (<>
+    {flash}
     <Panel title="Registers" right={controls}>
       <Alert kind="ok">These are the books as recorded here. They are the starting point for a
         return, not the return itself.</Alert>
     </Panel>
 
     {which === 'invoices' && (
-      <Panel title={`Invoice register — ${inv.data.length} documents`} bodyless>
+      <Panel title={`Invoice register — ${inv.data.length} documents`} right={<>
+        <VariantPicker value={variant} onChange={setVariant} />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+          <span className="fine">Print as</span>
+          <select value={printAs} onChange={e => setPrintAs(e.target.value)}
+            style={{ padding: '6px 9px', border: '1px solid var(--line2)', borderRadius: 7 }}>
+            <option value="">As recorded</option>
+            <option value="PRO">Proforma invoice</option>
+            <option value="TAX">Tax invoice</option>
+          </select></label></>} bodyless>
         <Table head={[{ label: 'Type', align: 'c' }, 'Invoice', 'Date', 'Customer', 'GSTIN',
           'PAN', { label: 'MSME', align: 'c' }, { label: 'Supply', align: 'c' },
           { label: 'Taxable', align: 'r' }, { label: 'CGST', align: 'r' },
           { label: 'SGST', align: 'r' }, { label: 'IGST', align: 'r' },
-          { label: 'Total', align: 'r' }, { label: 'Outstanding', align: 'r' }]}
+          { label: 'Total', align: 'r' }, { label: 'Outstanding', align: 'r' },
+          { label: 'Print', align: 'c' }]}
           empty="Nothing in this period.">
           {inv.data.map((r, i) => (
-            <tr key={i}>
-              <td className="c">{r.doc_type === 'Proforma'
+            <tr key={i} style={r.status === 'CANCELLED' ? { opacity: .6 } : undefined}>
+              <td className="c">{r.status === 'CANCELLED'
+                ? <Tag kind="bad" title={r.cancel_reason}>CANCELLED</Tag>
+                : r.doc_type === 'Proforma'
                 ? <Tag kind="warn">PRO</Tag> : <Tag kind="ok">TAX</Tag>}</td>
               <td className="mono"><b>{r.doc_no}</b></td>
               <td className="mono">{gd(r.doc_date)}</td>
@@ -67,7 +84,9 @@ export default function Registers() {
               <td className="r mono">{inr(r.cgst)}</td><td className="r mono">{inr(r.sgst)}</td>
               <td className="r mono">{inr(r.igst)}</td>
               <td className="r mono"><b>{inr(r.total)}</b></td>
-              <td className="r mono">{r.outstanding === null ? '—' : inr(r.outstanding)}</td>
+              <td className="r mono">{r.outstanding === null || r.status === 'CANCELLED' ? '—' : inr(r.outstanding)}</td>
+              <td className="c"><PrintButtons kind="invoices" id={r.id} variant={variant}
+                extra={printAs ? `&as=${printAs}` : ''} onError={m => showFlash(m, 'bad')} /></td>
             </tr>))}
         </Table>
       </Panel>)}

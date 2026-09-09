@@ -2,11 +2,13 @@ import { useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, useLoad, Loading, ErrorBox } from '../components/ui'
 import { inr, gd } from '../lib/fmt'
+import GstFiling from '../components/GstFiling'
 
 const REPORTS = [
   { key: 'crec', label: 'Customer outstanding — receivables' },
   { key: 'vpay', label: 'Vendor outstanding — payables' },
   { key: 'marg', label: 'Margin by material' },
+  { key: 'gst',  label: 'GST filing — GSTR-1 (A), GSTR-3B (B), A − B' },
 ]
 
 export default function Reports() {
@@ -40,12 +42,24 @@ export default function Reports() {
        'Purchase value', 'Margin', 'Margin %'], 'margin.csv')
   }
 
+  const picker = (
+    <select value={kind} onChange={e => setKind(e.target.value)}
+      style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
+      {REPORTS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+    </select>)
+
+  if (kind === 'gst') return (<>
+    <Panel title="Reports" right={picker}>
+      <span className="fine">GSTR-1 is built from the tax invoices on file (cancelled ones excluded and
+        reported in table 13) and downloads in the portal's upload formats. Upload the GSTR-3B you filed
+        and the third panel shows A − B head by head.</span>
+    </Panel>
+    <GstFiling />
+  </>)
+
   return (
     <Panel title="Reports" right={<>
-      <select value={kind} onChange={e => setKind(e.target.value)}
-        style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
-        {REPORTS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
-      </select>
+      {picker}
       <button className="btn btn-sm" onClick={download}>Export CSV</button></>} bodyless>
 
       {kind === 'crec' && (
