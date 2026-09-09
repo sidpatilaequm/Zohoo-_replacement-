@@ -204,6 +204,12 @@ class Invoice(Base):
     po_date: Mapped[date|None]=mapped_column(Date,nullable=True)
     reverse_chg: Mapped[str]=mapped_column(Enum("Y","N",name="rchg"),default="N")
     converted_from: Mapped[str|None]=mapped_column(String(40),nullable=True)
+    status: Mapped[str]=mapped_column(
+        Enum("ACTIVE","CANCELLED",name="istat"),default="ACTIVE"
+    )
+    cancelled_on: Mapped[date|None]=mapped_column(Date,nullable=True)
+    cancelled_by: Mapped[str|None]=mapped_column(String(120),nullable=True)
+    cancel_reason: Mapped[str|None]=mapped_column(String(200),nullable=True)
     lines: Mapped[list["InvoiceLine"]]=relationship(back_populates="invoice",
         cascade="all, delete-orphan",lazy="selectin")
     customer: Mapped[Customer]=relationship(lazy="selectin")
@@ -291,6 +297,9 @@ class Payment(Base):
     bank_ref: Mapped[str|None]=mapped_column(String(60),nullable=True)
     bank_acct: Mapped[str|None]=mapped_column(String(80),nullable=True)
     narration: Mapped[str|None]=mapped_column(String(200),nullable=True)
+    reverses_id: Mapped[int|None]=mapped_column(
+        Integer,nullable=True
+    )  # set on a reversal entry
 
 # ---------------------------------------------------------- attributes
 class Attribute(Base):
