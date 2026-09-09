@@ -71,9 +71,16 @@ def signup(body: S.SignUp, db: Session = Depends(get_db)):
                 M.Tenant.gstin == body.org_gstin)).scalar_one_or_none():
             raise HTTPException(409, "That GSTIN is already registered here")
         seed_reference(db)
-        t = M.Tenant(name=body.org_name.strip(), gstin=body.org_gstin or None,
-                     pan=(body.org_gstin[2:12] if body.org_gstin else None),
-                     state_code=body.org_state, inv_prefix="INV/", po_prefix="PO/")
+        state_code = body.org_gstin[:2] if body.org_gstin else body.org_state
+
+        t = M.Tenant(
+            name=body.org_name.strip(),
+            gstin=body.org_gstin or None,
+            pan=(body.org_gstin[2:12] if body.org_gstin else None),
+            state_code=state_code,
+            inv_prefix="INV/",
+            po_prefix="PO/"
+        )
         db.add(t)
         db.flush()
         groups = seed_groups(db, t.id)

@@ -3,6 +3,47 @@ import { useAuth } from '../lib/auth'
 import { signUp, openTenants } from '../lib/api'
 import { Field, Alert } from '../components/ui'
 
+const INDIAN_STATES = [
+  ['01', 'Jammu and Kashmir'],
+  ['02', 'Himachal Pradesh'],
+  ['03', 'Punjab'],
+  ['04', 'Chandigarh'],
+  ['05', 'Uttarakhand'],
+  ['06', 'Haryana'],
+  ['07', 'Delhi'],
+  ['08', 'Rajasthan'],
+  ['09', 'Uttar Pradesh'],
+  ['10', 'Bihar'],
+  ['11', 'Sikkim'],
+  ['12', 'Arunachal Pradesh'],
+  ['13', 'Nagaland'],
+  ['14', 'Manipur'],
+  ['15', 'Mizoram'],
+  ['16', 'Tripura'],
+  ['17', 'Meghalaya'],
+  ['18', 'Assam'],
+  ['19', 'West Bengal'],
+  ['20', 'Jharkhand'],
+  ['21', 'Odisha'],
+  ['22', 'Chhattisgarh'],
+  ['23', 'Madhya Pradesh'],
+  ['24', 'Gujarat'],
+  ['25', 'Daman and Diu'],
+  ['26', 'Dadra and Nagar Haveli and Daman and Diu'],
+  ['27', 'Maharashtra'],
+  ['28', 'Andhra Pradesh'],
+  ['29', 'Karnataka'],
+  ['30', 'Goa'],
+  ['31', 'Lakshadweep'],
+  ['32', 'Kerala'],
+  ['33', 'Tamil Nadu'],
+  ['34', 'Puducherry'],
+  ['35', 'Andaman and Nicobar Islands'],
+  ['36', 'Telangana'],
+  ['37', 'Andhra Pradesh'],
+  ['38', 'Ladakh'],
+]
+
 export default function Auth() {
   const { login, adopt } = useAuth()
   const [tab, setTab] = useState('in')
@@ -11,12 +52,12 @@ export default function Auth() {
   const [busy, setBusy] = useState(false)
   const [tenants, setTenants] = useState([])
   const [f, setF] = useState({ email: '', password: '', name: '', password2: '',
-    mode: 'new', org_name: '', org_gstin: '', org_state: '29', join_tenant_id: '' })
+    mode: 'new', org_name: '', org_gstin: '', org_state: '', join_tenant_id: '' })
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
 
   useEffect(() => { openTenants().then(setTenants).catch(() => {}) }, [])
 
-  async function doSignIn(e) {
+  async function doSignIn(e) {  
     e.preventDefault(); setErr(null); setBusy(true)
     try { await login(f.email, f.password) }
     catch (x) { setErr(x.message) } finally { setBusy(false) }
@@ -79,13 +120,47 @@ export default function Auth() {
               <option value="join">Join an organisation that already exists</option>
             </select></Field></div>
           {f.mode === 'new' ? (
-            <div className="row c2" style={{ marginTop: 11 }}>
-              <Field label="Organisation name">
-                <input value={f.org_name} onChange={e => set('org_name', e.target.value)} /></Field>
-              <Field label="GSTIN" hint="Optional, but the state code must match">
-                <input className="mono" maxLength={15} value={f.org_gstin}
-                  onChange={e => set('org_gstin', e.target.value.toUpperCase())} /></Field>
-            </div>
+            <>
+              <div className="row c2" style={{ marginTop: 11 }}>
+                <Field label="Organisation name">
+                  <input
+                    value={f.org_name}
+                    onChange={e => set('org_name', e.target.value)}
+                  />
+                </Field>
+
+                <Field label="State">
+                  <select
+                    value={f.org_state}
+                    onChange={e => set('org_state', e.target.value)}
+                    required
+                  >
+                    <option value="">— choose state —</option>
+                    {INDIAN_STATES.map(([code, name]) => (
+                      <option key={code} value={code}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+
+              <div style={{ marginTop: 11 }}>
+                <Field
+                  label="GSTIN"
+                  hint="Optional. If entered, its state code must match the selected state."
+                >
+                  <input
+                    className="mono"
+                    maxLength={15}
+                    value={f.org_gstin}
+                    onChange={e =>
+                      set('org_gstin', e.target.value.toUpperCase())
+                    }
+                  />
+                </Field>
+              </div>
+            </>
           ) : (
             <div style={{ marginTop: 11 }}>
               <Field label="Organisation"

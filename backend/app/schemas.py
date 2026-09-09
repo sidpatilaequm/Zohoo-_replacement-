@@ -12,7 +12,7 @@ class SignUp(BaseModel):
     mode: str = "new"                 # "new" | "join"
     org_name: str | None = None
     org_gstin: str | None = None
-    org_state: str = "29"
+    org_state: str | None = None
     join_tenant_id: int | None = None
 
     @model_validator(mode="after")
@@ -29,8 +29,7 @@ class SignUp(BaseModel):
                 raise ValueError("Enter the organisation name")
             if self.org_gstin and len(self.org_gstin) != 15:
                 raise ValueError("A GSTIN is exactly 15 characters")
-            if self.org_gstin and self.org_gstin[:2] != self.org_state:
-                raise ValueError("The GSTIN state code and the state selected disagree")
+            
         elif not self.join_tenant_id:
             raise ValueError("Choose the organisation you want to join")
         return self
