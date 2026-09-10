@@ -4,8 +4,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from .. import models as M, schemas as S
 from ..deps import Ctx, need
-from ..service import (next_no, bump, resolve_reg, build_lines,
-                       invoice_tax, po_tax, vinv_tax, settled)
+from ..service import (
+    next_no,
+    bump,
+    resolve_reg,
+    build_lines,
+    tracks_stock,
+    invoice_tax,
+    po_tax,
+    vinv_tax,
+    settled,
+)
 from ..tax import hsn_summary, in_words
 
 router = APIRouter(tags=["documents"])
@@ -68,8 +77,10 @@ def get_invoice(iid: int, ctx: Ctx = Depends(need("saved"))):
                                   "city": c.bill_city if c.ship_same else c.ship_city,
                                   "state": c.bill_state if c.ship_same else c.ship_state,
                                   "pin": c.bill_pin if c.ship_same else c.ship_pin},
-                         "ship_same": c.ship_same},
-            "totals": tax_json(t), "received": float(settled(ctx, invoice_id=inv.id))}
+                                "ship_same": c.ship_same},
+                                "subject": inv.subject,
+                                "instructions": inv.instructions,
+                                "totals": tax_json(t), "received": float(settled(ctx, invoice_id=inv.id))}
 
 
 @router.post("/invoices", status_code=201)
@@ -83,27 +94,56 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
     if c.party_type == "B2C" and body.gstin:
         raise HTTPException(422, "A B2C invoice cannot carry a recipient GSTIN")
     pos = body.pos_state or (reg.state_code if reg else c.bill_state)
-    doc_no = body.doc_no or next_no(ctx, "invoice")
+    doc_no = body.doc_no or next_no(ctx, "invoice", body.doc_date)
     if ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
                       .where(M.Invoice.doc_no == doc_no)).scalar_one_or_none():
         raise HTTPException(409, f"Invoice {doc_no} already exists")
     resolved = build_lines(ctx, body.lines)
-    for i, m, qty, _ in resolved:
-        if qty > m.stock_qty:
-            raise HTTPException(422, f"Line {i}: quantity {qty} exceeds stock of {m.stock_qty}")
-    inv = M.Invoice(tenant_id=ctx.tenant.id, doc_no=doc_no, doc_type=body.doc_type,
-                    doc_date=body.doc_date, due_date=body.due_date, customer_id=c.id,
-                    gstin=reg.gstin if reg else None, pos_state=pos, po_no=body.po_no,
-                    po_date=body.po_date, reverse_chg=body.reverse_chg)
+    stock = tracks_stock(ctx)
+
+    if stock:
+        for i, m, qty, _, _ in resolved:
+            if qty > m.stock_qty:
+                raise HTTPException(
+                    422,
+                    f"Line {i}: quantity {qty} exceeds stock of {m.stock_qty}"
+                )
+
+    inv = M.Invoice(
+        tenant_id=ctx.tenant.id,
+        doc_no=doc_no,
+        doc_type=body.doc_type,
+        doc_date=body.doc_date,
+        due_date=body.due_date,
+        customer_id=c.id,
+        gstin=reg.gstin if reg else None,
+        pos_state=pos,
+        po_no=body.po_no,
+        po_date=body.po_date,
+        reverse_chg=body.reverse_chg,
+        subject=(body.subject or "").strip() or None,
+        instructions=(body.instructions or "").strip() or None,
+    )
+
     ctx.db.add(inv)
     ctx.db.flush()
-    for n, m, qty, price in resolved:
-        ctx.db.add(M.InvoiceLine(invoice_id=inv.id, line_no=n, material_id=m.id,
-                                 qty=qty, price=price))
-        if body.doc_type == "TAX":
+    for n, m, qty, price, d2 in resolved:
+        ctx.db.add(
+            M.InvoiceLine(
+                invoice_id=inv.id,
+                line_no=n,
+                material_id=m.id,
+                qty=qty,
+                price=price,
+                descr2=d2,
+            )
+        )
+
+        if body.doc_type == "TAX" and stock:
             m.stock_qty = m.stock_qty - qty
+
     if not body.doc_no:
-        bump(ctx, "invoice")
+        bump(ctx, "invoice", body.doc_date)
     ctx.db.commit()
     ctx.db.refresh(inv)
     return {"id": inv.id, "doc_no": inv.doc_no, "totals": tax_json(invoice_tax(ctx, inv))}
@@ -116,15 +156,16 @@ def convert(iid: int, doc_no: str | None = None, ctx: Ctx = Depends(need("invoic
         raise HTTPException(404, "No such invoice")
     if inv.doc_type != "PRO":
         raise HTTPException(409, "Only a proforma can be converted")
-    new_no = doc_no or next_no(ctx, "invoice")
+    new_no = doc_no or next_no(ctx, "invoice", inv.doc_date)
     if ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
                       .where(M.Invoice.doc_no == new_no)).scalar_one_or_none():
         raise HTTPException(409, f"Invoice {new_no} already exists")
     inv.converted_from, inv.doc_no, inv.doc_type = inv.doc_no, new_no, "TAX"
-    for l in inv.lines:
-        l.material.stock_qty = l.material.stock_qty - l.qty
+    if tracks_stock(ctx):
+        for l in inv.lines:
+            l.material.stock_qty = l.material.stock_qty - l.qty
     if not doc_no:
-        bump(ctx, "invoice")
+        bump(ctx, "invoice", inv.doc_date)
     ctx.db.commit()
     return {"id": inv.id, "doc_no": inv.doc_no, "converted_from": inv.converted_from}
 
@@ -161,8 +202,9 @@ def cancel_invoice(iid: int, body: S.CancelIn, ctx: Ctx = Depends(need("invoice"
         ctx.db.add(r)
         reversed_entries.append({"receipt": f"RCPT/{p.id:05d}", "amount": float(p.amount),
                                  "tds": float(p.tds)})
-    for l in inv.lines:
-        l.material.stock_qty = l.material.stock_qty + l.qty
+    if tracks_stock(ctx):
+        for l in inv.lines:
+            l.material.stock_qty = l.material.stock_qty + l.qty
     t = invoice_tax(ctx, inv)
     inv.status, inv.cancelled_on = "CANCELLED", today
     inv.cancelled_by, inv.cancel_reason = ctx.user.name, body.reason
@@ -172,7 +214,10 @@ def cancel_invoice(iid: int, body: S.CancelIn, ctx: Ctx = Depends(need("invoice"
                              "sgst": float(t.sgst), "igst": float(t.igst)},
             "receipts_reversed": reversed_entries,
             "tds_reversed": float(sum(Decimal(str(r["tds"])) for r in reversed_entries)),
-            "stock_restored": [{"code": l.material.code, "qty": float(l.qty)} for l in inv.lines]}
+            "stock_restored": (
+                [{"code": l.material.code, "qty": float(l.qty)} for l in inv.lines]
+                if tracks_stock(ctx) else []
+            )}
 
 
 @router.delete("/invoices/{iid}", status_code=204)
@@ -182,7 +227,7 @@ def del_invoice(iid: int, ctx: Ctx = Depends(need("invoice"))):
         raise HTTPException(404, "No such invoice")
     if settled(ctx, invoice_id=iid) > 0:
         raise HTTPException(409, "That invoice has receipts against it")
-    if inv.doc_type == "TAX":
+    if inv.doc_type == "TAX" and tracks_stock(ctx):
         for l in inv.lines:
             l.material.stock_qty = l.material.stock_qty + l.qty
     ctx.db.delete(inv)
@@ -204,7 +249,7 @@ def list_pos(ctx: Ctx = Depends(need("po"))):
                     "tax": float(t.tax), "total": float(t.rounded), "intra": t.intra,
                     "lines": [{"material_id": l.material_id, "code": l.material.code,
                                "descr": l.material.descr, "qty": float(l.qty),
-                               "price": float(l.price)} for l in po.lines]})
+                               "price": float(l.price), "descr2": l.descr2} for l in po.lines]})
     return out
 
 
@@ -214,7 +259,7 @@ def add_po(body: S.PoIn, ctx: Ctx = Depends(need("po"))):
     if not v:
         raise HTTPException(422, "No such vendor in this organisation")
     reg = resolve_reg(v, body.gstin)
-    doc_no = body.doc_no or next_no(ctx, "po")
+    doc_no = body.doc_no or next_no(ctx, "po", body.doc_date)
     if ctx.db.execute(ctx.scope(select(M.PurchaseOrder), M.PurchaseOrder)
                       .where(M.PurchaseOrder.doc_no == doc_no)).scalar_one_or_none():
         raise HTTPException(409, f"Purchase order {doc_no} already exists")
@@ -227,10 +272,12 @@ def add_po(body: S.PoIn, ctx: Ctx = Depends(need("po"))):
                          ship_addr=bill if body.ship_same else body.ship_addr)
     ctx.db.add(po)
     ctx.db.flush()
-    for n, m, qty, price in build_lines(ctx, body.lines, use_cost=True):
-        ctx.db.add(M.PoLine(po_id=po.id, line_no=n, material_id=m.id, qty=qty, price=price))
+    for n, m, qty, price, d2 in build_lines(
+        ctx, body.lines, use_cost=True
+    ):
+        ctx.db.add(M.PoLine(po_id=po.id, line_no=n, material_id=m.id, qty=qty, price=price, descr2=d2,))
     if not body.doc_no:
-        bump(ctx, "po")
+        bump(ctx, "po", body.doc_date)
     ctx.db.commit()
     ctx.db.refresh(po)
     return {"id": po.id, "doc_no": po.doc_no, "totals": tax_json(po_tax(ctx, po))}
@@ -270,29 +317,61 @@ def add_vinv(body: S.VendorInvoiceIn, ctx: Ctx = Depends(need("vinv"))):
     if body.lines:
         resolved = build_lines(ctx, body.lines, use_cost=True)
     elif po:
-        resolved = [(l.line_no, l.material, l.qty, l.price)
+        resolved = [(l.line_no, l.material, l.qty, l.price, l.descr2)
                     for l in sorted(po.lines, key=lambda x: x.line_no)]
     else:
         raise HTTPException(422, "Give lines, or a purchase order to copy them from")
-    vi = M.VendorInvoice(tenant_id=ctx.tenant.id, doc_no=body.doc_no, doc_date=body.doc_date,
-                         due_date=body.due_date, vendor_id=vid,
-                         gstin=body.gstin or (po.gstin if po else None), po_id=body.po_id)
+
+    vi = M.VendorInvoice(
+        tenant_id=ctx.tenant.id,
+        doc_no=body.doc_no,
+        doc_date=body.doc_date,
+        due_date=body.due_date,
+        vendor_id=vid,
+        gstin=body.gstin or (po.gstin if po else None),
+        po_id=body.po_id,
+        our_no=next_no(ctx, "vinv", body.doc_date),
+    )
+    bump(ctx, "vinv", body.doc_date)
+
     ctx.db.add(vi)
     ctx.db.flush()
-    for n, m, qty, price in resolved:
-        ctx.db.add(M.VendorInvoiceLine(vinv_id=vi.id, line_no=n, material_id=m.id,
-                                       qty=qty, price=price))
-        m.stock_qty = m.stock_qty + qty
+
+    for n, m, qty, price, d2 in resolved:
+        ctx.db.add(
+            M.VendorInvoiceLine(
+                vinv_id=vi.id,
+                line_no=n,
+                material_id=m.id,
+                qty=qty,
+                price=price,
+                descr2=d2,
+            )
+        )
+
+        if tracks_stock(ctx):
+            m.stock_qty = m.stock_qty + qty
+
     if po:
         po.status = "INVOICED"
+
     ctx.db.commit()
     ctx.db.refresh(vi)
-    res = {"id": vi.id, "doc_no": vi.doc_no, "totals": tax_json(vinv_tax(ctx, vi))}
+
+    res = {
+        "id": vi.id,
+        "doc_no": vi.doc_no,
+        "totals": tax_json(vinv_tax(ctx, vi)),
+    }
+
     if po:
         pt, vt = po_tax(ctx, po), vinv_tax(ctx, vi)
-        res["variance"] = {"po_taxable": float(pt.taxable),
-                           "invoice_taxable": float(vt.taxable),
-                           "difference": float(vt.taxable - pt.taxable)}
+        res["variance"] = {
+            "po_taxable": float(pt.taxable),
+            "invoice_taxable": float(vt.taxable),
+            "difference": float(vt.taxable - pt.taxable),
+        }
+
     return res
 
 

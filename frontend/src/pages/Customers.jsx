@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { PanMsme, BankBlock, Contacts, ContactCell, BankCell, MsmeTag } from '../components/PartyExtras'
@@ -20,8 +20,31 @@ export default function Customers() {
   const [regs, setRegs] = useState([])
   const [g, setG] = useState({ gstin: '', label: '' })
   const [err, setErr] = useState(null)
+  const [editing, setEditing] = useState(null)
+  const logoRef = useRef(null)
+  function pickLogo(e) {
+    const file = e.target.files?.[0], id = Number(e.target.dataset.id); e.target.value = ''
+    if (!file || !id) return
+    if (file.size > 500 * 1024) return showFlash('That file is over 500 KB.', 'bad')
+    const r = new FileReader()
+    r.onload = async () => {
+      try { await api.customerLogo(id, r.result); list.reload(); showFlash('Logo saved — it prints on every document for this customer.') }
+      catch (x) { showFlash(x.message, 'bad') }
+    }
+    r.readAsDataURL(file)
+  }   // id of the customer being edited
   const [flash, showFlash] = useFlash()
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
+
+  function edit(c) {
+    setEditing(c.id)
+    setF({ ...BLANK, ...Object.fromEntries(Object.keys(BLANK).map(k => [k, c[k] ?? BLANK[k]])) })
+    setRegs(c.gstins.map(r => ({ gstin: r.gstin, label: r.label || '', is_default: r.is_default })))
+    setContacts(c.contacts.map(x => ({ first_name: x.first_name, middle_name: x.middle_name || '', last_name: x.last_name || '',
+      designation_id: x.designation_id || '', phone: x.phone || '', email: x.email || '', is_primary: x.is_primary })))
+    setErr(null); window.scrollTo({ top: 0 })
+  }
+  function cancelEdit() { setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setErr(null) }
 
   function addReg() {
     const v = g.gstin.trim().toUpperCase()
@@ -34,8 +57,10 @@ export default function Customers() {
   async function save(e) {
     e.preventDefault(); setErr(null)
     try {
-      await api.addCustomer({ ...f, code: f.code || null, gstins: regs, contacts })
-      setF(BLANK); setRegs([]); setContacts([]); list.reload(); showFlash('Customer saved.')
+      const body = { ...f, code: f.code || null, gstins: regs, contacts }
+      if (editing) await api.editCustomer(editing, body); else await api.addCustomer(body)
+      setEditing(null); setF(BLANK); setRegs([]); setContacts([]); list.reload()
+      showFlash(editing ? 'Customer updated.' : 'Customer saved.')
     } catch (x) { setErr(x.message) }
   }
   async function remove(id) {
@@ -49,7 +74,8 @@ export default function Customers() {
 
   return (<>
     {flash}
-    <Panel title="Add customer">
+    <Panel title={editing ? `Edit customer ${f.code}` : 'Add customer'}
+      right={editing && <button type="button" className="btn btn-sm" onClick={cancelEdit}>Cancel edit</button>}>
       <form onSubmit={save}>
         <div className="row">
           <Field label="Customer code" hint="Left blank, one is allocated">
@@ -135,7 +161,7 @@ export default function Customers() {
         <PanMsme f={f} set={set} />
         <BankBlock f={f} set={set} banks={banks.data} />
         <Contacts contacts={contacts} setContacts={setContacts} designations={desigs.data} />
-        <div className="ft"><button className="btn btn-a">Save customer</button>
+        <div className="ft"><button className="btn btn-a">{editing ? 'Update customer' : 'Save customer'}</button>
           {err && <span className="err">{err}</span>}</div>
       </form>
     </Panel>
@@ -147,7 +173,10 @@ export default function Customers() {
         {list.data.map(c => (
           <tr key={c.id}>
             <td className="mono">{c.code}</td>
-            <td><b>{c.name}</b>{c.email && <div className="fine">{c.email}</div>}</td>
+            <td style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {c.logo ? <img src={c.logo} alt="" style={{ height: 26, maxWidth: 60, objectFit: 'contain', border: '1px solid var(--line)', borderRadius: 4 }} />
+                : <span className="fine" style={{ fontSize: 11 }}>no logo</span>}
+              <div><b>{c.name}</b>{c.email && <div className="fine">{c.email}</div>}</div></td>
             <td className="c">{c.party_type === 'B2C'
               ? <Tag kind="warn">B2C</Tag> : <Tag kind="ok">B2B</Tag>}</td>
             <td>{c.gstins.length
@@ -161,9 +190,16 @@ export default function Customers() {
             <td><ContactCell contacts={c.contacts} /></td>
             <td className="fine">{c.bill_addr}, {c.bill_city} {c.bill_pin}
               {!c.ship_same && <div>ships to {c.ship_city}</div>}</td>
-            <td className="r"><button className="rm" onClick={() => remove(c.id)}>×</button></td>
+            <td className="r" style={{ whiteSpace: 'nowrap' }}>
+              <button className="btn btn-sm" onClick={() => edit(c)}>Edit</button>
+              <button className="btn btn-sm" style={{ marginLeft: 4 }} title="Upload this customer's logo; it prints on their documents"
+                onClick={() => { logoRef.current.dataset.id = c.id; logoRef.current.click() }}>{c.logo ? 'Change logo' : 'Logo'}</button>
+              {c.logo && <button className="btn btn-sm" style={{ marginLeft: 4 }} onClick={async () => {
+                try { await api.customerLogo(c.id, null); list.reload() } catch (x) { showFlash(x.message, 'bad') } }}>Remove logo</button>}
+              <button className="rm" style={{ marginLeft: 4 }} onClick={() => remove(c.id)}>×</button></td>
           </tr>))}
       </Table>
     </Panel>
+    <input type="file" ref={logoRef} accept="image/*" style={{ display: 'none' }} onChange={pickLogo} />
   </>)
 }

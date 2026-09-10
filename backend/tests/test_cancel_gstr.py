@@ -3,8 +3,8 @@ import io, json
 from tests.test_api import mat, cust, vend
 
 
-def _books(org):
-    c = org(gstin="29AABCA1234F1Z5")
+def _books(org, trading=False):
+    c = org(gstin="29AABCA1234F1Z5", trading=trading)
     m = mat(c, code="MAT-1", price=1000, cost=800, stock=100)
     cid = cust(c, state="27", gstin="27AAACE1234R1Z9")
     vid = vend(c, state="29", gstin="29AAACR1234K1Z5")
@@ -20,7 +20,7 @@ def _books(org):
 
 
 def test_cancel_reverses_gst_tds_and_stock(org):
-    c, m, cid, inv, inv2 = _books(org)
+    c, m, cid, inv, inv2 = _books(org, trading=True)
     # customer paid part, deducting TDS
     r = c.post("/api/receipts", json={"pay_type": "REC", "invoice_id": inv["id"],
                                       "pay_date": "2026-09-05", "amount": 5000, "tds": 100,
@@ -77,7 +77,7 @@ def test_cancelled_invoice_prints_with_watermark_and_any_invoice_prints_as_profo
     assert r.status_code == 200 and "proforma" in r.headers["content-disposition"]
     with pdfplumber.open(io.BytesIO(r.content)) as pdf:
         text = pdf.pages[0].extract_text()
-    assert "PROFORMA INVOICE" in text and inv2["doc_no"] in text
+    assert "PROFORMA" in text and inv2["doc_no"] in text
     assert c.get(f"/api/print/invoices/{inv2['id']}.pdf?as=XX").status_code == 422
 
 

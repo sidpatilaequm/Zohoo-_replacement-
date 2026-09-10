@@ -39,14 +39,19 @@ export function makeApi(token, tenantId) {
 
     customers:     ()   => call('/customers'),
     addCustomer:   (b)  => call('/customers', { method: 'POST', body: b }),
+    customerLogo:  (id, logo) => call(`/customers/${id}/logo`, { method: 'PUT', body: { logo } }),
+    editCustomer:  (id, b) => call(`/customers/${id}`, { method: 'PUT', body: b }),
     delCustomer:   (id) => call(`/customers/${id}`, { method: 'DELETE' }),
 
     vendors:       ()   => call('/vendors'),
     addVendor:     (b)  => call('/vendors', { method: 'POST', body: b }),
+    editVendor:    (id, b) => call(`/vendors/${id}`, { method: 'PUT', body: b }),
+    vendorLogo:    (id, logo) => call(`/vendors/${id}/logo`, { method: 'PUT', body: { logo } }),
     delVendor:     (id) => call(`/vendors/${id}`, { method: 'DELETE' }),
 
     materials:     ()   => call('/materials'),
     addMaterial:   (b)  => call('/materials', { method: 'POST', body: b }),
+    editMaterial:  (id, b) => call(`/materials/${id}`, { method: 'PUT', body: b }),
     delMaterial:   (id) => call(`/materials/${id}`, { method: 'DELETE' }),
 
     invoices:      ()   => call('/invoices'),
@@ -101,9 +106,10 @@ export function makeApi(token, tenantId) {
     gstr1SectionCsv: (s, p) => download(`/returns/gstr1/${s}.csv?period=${p}`, { token, tenantId }),
     upload3bJson:  (p, f) => upload(`/registers/gstr3b/upload-json?period=${p}`, f, { token, tenantId }),
     upload3bCsv:   (p, f) => upload(`/registers/gstr3b/upload-csv?period=${p}`, f, { token, tenantId }),
-    receivables:   ()   => call('/returns/reports/receivables'),
-    payables:      ()   => call('/returns/reports/payables'),
-    margin:        ()   => call('/returns/reports/margin'),
+    receivables:   (p)  => call('/returns/reports/receivables' + (p ? `?period=${encodeURIComponent(p)}` : '')),
+    payables:      (p)  => call('/returns/reports/payables' + (p ? `?period=${encodeURIComponent(p)}` : '')),
+    margin:        (p)  => call('/returns/reports/margin' + (p ? `?period=${encodeURIComponent(p)}` : '')),
+    financialYears: ()  => call('/returns/financial-years'),
     csvUrl:        (s, p) => `${BASE}/returns/gstr1/${s}.csv?period=${p}`,
 
     // ---- reference masters ----

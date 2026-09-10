@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aequm-production
+  cancel-in-progress: false
 
 jobs:
   backend:
@@ -73,52 +81,110 @@ jobs:
 
           script: |
             set -e
+            set -o pipefail
 
             APP_DIR="/home/ubuntu/aqqum-billing"
             BACKUP_DIR="$APP_DIR/backups"
+            TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+            RELEASE_DIR="/tmp/aequm-release-$TIMESTAMP"
 
             echo "======================================"
-            echo "Starting Aequm v2.2 deployment"
+            echo "Starting Aequm Billing production deployment"
             echo "======================================"
 
             cd "$APP_DIR"
 
             # --------------------------------------------------
-            # 1. Get latest code
+            # 1. BACKUP PRODUCTION DATABASE FIRST
             # --------------------------------------------------
-            git fetch origin
-            git reset --hard origin/main
 
-            # --------------------------------------------------
-            # 2. BACKUP PRODUCTION DATABASE
-            # --------------------------------------------------
             echo "Creating production database backup..."
 
             sudo mkdir -p "$BACKUP_DIR"
 
-            sudo mysqldump aequm_billing \
+            BACKUP_FILE="$BACKUP_DIR/aequm_billing_${TIMESTAMP}.sql.gz"
+
+            sudo mysqldump \
+              --single-transaction \
+              --routines \
+              --triggers \
+              aequm_billing \
               | gzip \
-              | sudo tee "$BACKUP_DIR/aequm_billing_$(date +%Y%m%d_%H%M%S).sql.gz" > /dev/null
+              | sudo tee "$BACKUP_FILE" > /dev/null
 
-            echo "Database backup completed."
+            sudo test -s "$BACKUP_FILE"
+
+            echo "Database backup completed: $BACKUP_FILE"
 
             # --------------------------------------------------
-            # 3. Backend dependencies
+            # 2. FETCH EXACT MAIN COMMIT
             # --------------------------------------------------
-            
+
+            echo "Fetching latest main..."
+
+            git fetch origin main
+
+            echo "Production target commit:"
+            git rev-parse origin/main
+
+            # --------------------------------------------------
+            # 3. CREATE TEMPORARY DEPLOYMENT WORKTREE
+            # --------------------------------------------------
+
+            echo "Creating temporary deployment worktree..."
+
+            rm -rf "$RELEASE_DIR"
+
+            git worktree add --detach "$RELEASE_DIR" origin/main
+
+            echo "Release commit:"
+            git -C "$RELEASE_DIR" log -1 --oneline
+
+            # --------------------------------------------------
+            # 4. UPDATE BACKEND SOURCE
+            # --------------------------------------------------
+
+            echo "Updating backend source..."
+
+            rsync -a \
+              --exclude='.venv/' \
+              --exclude='venv/' \
+              --exclude='__pycache__/' \
+              --exclude='run.sh' \
+              "$RELEASE_DIR/backend/" \
+              "$APP_DIR/backend/"
+
+            # --------------------------------------------------
+            # 5. UPDATE FRONTEND SOURCE
+            # --------------------------------------------------
+
+            echo "Updating frontend source..."
+
+            rsync -a \
+              --exclude='node_modules/' \
+              --exclude='dist/' \
+              --exclude='current/' \
+              "$RELEASE_DIR/frontend/" \
+              "$APP_DIR/frontend/"
+
+            # --------------------------------------------------
+            # 6. INSTALL BACKEND DEPENDENCIES
+            # --------------------------------------------------
 
             echo "Installing backend dependencies..."
 
             cd "$APP_DIR/backend"
 
             source venv/bin/activate
+
             pip install --upgrade pip setuptools wheel
             pip install -r requirements.txt
 
             # --------------------------------------------------
-            # 4. Check whether v2.2 migration is required
+            # 7. VERIFY v2.2 DATABASE MIGRATION
             # --------------------------------------------------
-            echo "Checking production database schema..."
+
+            echo "Checking v2.2 database schema..."
 
             STATUS_COLUMN=$(sudo mysql -N -s aequm_billing -e "
               SELECT COUNT(*)
@@ -139,63 +205,128 @@ jobs:
             echo "invoices.status = $STATUS_COLUMN"
             echo "payments.reverses_id = $REVERSAL_COLUMN"
 
-            # --------------------------------------------------
-            # 5. Apply ONLY v2.2 migration when needed
-            # --------------------------------------------------
-            cd "$APP_DIR"
-
             if [ "$STATUS_COLUMN" = "0" ] && [ "$REVERSAL_COLUMN" = "0" ]; then
 
-              echo "Applying v2.2 database migration..."
+              echo "Applying v2.2 migration..."
 
-              sudo mysql aequm_billing < db/03_cancel_and_gstr.sql
+              sudo mysql aequm_billing < "$RELEASE_DIR/db/03_cancel_and_gstr.sql"
 
               echo "v2.2 migration completed."
 
             elif [ "$STATUS_COLUMN" = "1" ] && [ "$REVERSAL_COLUMN" = "1" ]; then
 
-              echo "v2.2 database migration already applied."
-              echo "Skipping migration."
+              echo "v2.2 migration already applied."
 
             else
 
-              echo "ERROR: Database is in a partially migrated state."
+              echo "ERROR: Production database has a partial v2.2 migration."
+              exit 1
+
+            fi
+
+            # --------------------------------------------------
+            # 8. VERIFY v2.4 DATABASE MIGRATION
+            # --------------------------------------------------
+
+            echo "Checking v2.4 database schema..."
+
+            V24_COLUMNS=$(sudo mysql -N -s aequm_billing -e "
+              SELECT COUNT(*)
+              FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = 'aequm_billing'
+                AND (
+                  (TABLE_NAME = 'tenants' AND COLUMN_NAME IN (
+                    'bank_name',
+                    'bank_ifsc',
+                    'bank_account',
+                    'fy_start_month',
+                    'fy_start_day',
+                    'inv_fy',
+                    'po_fy',
+                    'vinv_prefix',
+                    'vinv_seq',
+                    'vinv_fy',
+                    'cust_prefix',
+                    'cust_seq',
+                    'vend_prefix',
+                    'vend_seq',
+                    'mat_prefix',
+                    'mat_seq'
+                  ))
+                  OR (TABLE_NAME = 'invoices' AND COLUMN_NAME IN (
+                    'subject',
+                    'instructions'
+                  ))
+                  OR (TABLE_NAME = 'invoice_lines' AND COLUMN_NAME = 'descr2')
+                  OR (TABLE_NAME = 'po_lines' AND COLUMN_NAME = 'descr2')
+                  OR (TABLE_NAME = 'vendor_invoice_lines' AND COLUMN_NAME = 'descr2')
+                  OR (TABLE_NAME = 'customers' AND COLUMN_NAME = 'logo')
+                  OR (TABLE_NAME = 'vendors' AND COLUMN_NAME = 'logo')
+                  OR (TABLE_NAME = 'vendor_invoices' AND COLUMN_NAME = 'our_no')
+                );
+            ")
+
+            V24_TABLE=$(sudo mysql -N -s aequm_billing -e "
+              SELECT COUNT(*)
+              FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = 'aequm_billing'
+                AND TABLE_NAME = 'doc_sequences';
+            ")
+
+            echo "v2.4 columns = $V24_COLUMNS / 24"
+            echo "doc_sequences = $V24_TABLE"
+
+            if [ "$V24_COLUMNS" = "0" ] && [ "$V24_TABLE" = "0" ]; then
+
+              echo "Applying v2.4 database migration..."
+
+              sudo mysql aequm_billing < "$RELEASE_DIR/aequm_safe_upgrade_v24.sql"
+
+              echo "v2.4 migration completed."
+
+            elif [ "$V24_COLUMNS" = "24" ] && [ "$V24_TABLE" = "1" ]; then
+
+              echo "v2.4 migration already applied."
+
+            else
+
+              echo "ERROR: Production database has a partial v2.4 migration."
               echo "Migration was NOT executed."
               exit 1
 
             fi
 
             # --------------------------------------------------
-            # IMPORTANT:
-            # DO NOT RUN:
+            # IMPORTANT DATABASE SAFETY RULE
+            # --------------------------------------------------
+            # NEVER run:
             #
             # db/01_schema.sql
             # db/02_seed.sql
             #
-            # Existing production data must remain untouched.
+            # Existing production business data must remain intact.
             # --------------------------------------------------
 
             # --------------------------------------------------
-            # 6. Restart backend
+            # 9. BACKEND HEALTH
             # --------------------------------------------------
+
             echo "Restarting backend..."
 
             sudo systemctl restart billing.service
 
             sleep 3
 
-            # --------------------------------------------------
-            # 7. Backend health check
-            # --------------------------------------------------
-            echo "Checking backend..."
+            sudo systemctl is-active --quiet billing.service
 
-            curl -f http://127.0.0.1:8000/docs
+            curl -fsS http://127.0.0.1:8000/docs > /dev/null
 
             echo "Backend is healthy."
 
             # --------------------------------------------------
-            # 8. Build frontend
+            # 10. BUILD FRONTEND
             # --------------------------------------------------
+
             echo "Building frontend..."
 
             cd "$APP_DIR/frontend"
@@ -204,39 +335,53 @@ jobs:
             npm run build
 
             # --------------------------------------------------
-            # 9. Deploy frontend
+            # 11. ATOMIC FRONTEND DEPLOYMENT
             # --------------------------------------------------
+
             echo "Deploying frontend..."
 
-            sudo rm -rf "$APP_DIR/frontend/current"
+            NEW_FRONTEND="$APP_DIR/frontend/current_new_$TIMESTAMP"
+            OLD_FRONTEND="$APP_DIR/frontend/current_previous_$TIMESTAMP"
 
-            sudo mkdir -p "$APP_DIR/frontend/current"
+            sudo rm -rf "$NEW_FRONTEND"
+            sudo mkdir -p "$NEW_FRONTEND"
 
-            sudo cp -r dist/* "$APP_DIR/frontend/current/"
+            sudo cp -a dist/. "$NEW_FRONTEND/"
+
+            sudo chown -R www-data:www-data "$NEW_FRONTEND"
+            sudo chmod -R 755 "$NEW_FRONTEND"
+
+            if [ -d "$APP_DIR/frontend/current" ]; then
+              sudo mv "$APP_DIR/frontend/current" "$OLD_FRONTEND"
+            fi
+
+            sudo mv "$NEW_FRONTEND" "$APP_DIR/frontend/current"
 
             # --------------------------------------------------
-            # 10. Fix permissions
+            # 12. RELOAD NGINX
             # --------------------------------------------------
-            sudo chown -R www-data:www-data "$APP_DIR/frontend/current"
 
-            sudo chmod -R 755 "$APP_DIR/frontend/current"
-
-            # --------------------------------------------------
-            # 11. Reload nginx
-            # --------------------------------------------------
             echo "Reloading nginx..."
 
+            sudo nginx -t
             sudo systemctl reload nginx
 
             # --------------------------------------------------
-            # 12. Frontend health check
+            # 13. FRONTEND HEALTH
             # --------------------------------------------------
-            echo "Checking frontend..."
 
-            curl -f http://127.0.0.1/
+            curl -fsS http://127.0.0.1/ > /dev/null
 
             echo "Frontend is healthy."
 
+            # --------------------------------------------------
+            # 14. CLEAN TEMPORARY WORKTREE
+            # --------------------------------------------------
+
+            cd "$APP_DIR"
+
+            git worktree remove --force "$RELEASE_DIR"
+
             echo "======================================"
-            echo "Aequm v2.2 deployment successful"
+            echo "Aequm Billing deployment successful"
             echo "======================================"

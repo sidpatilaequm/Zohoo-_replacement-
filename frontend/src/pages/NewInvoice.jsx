@@ -9,7 +9,9 @@ export default function NewInvoice() {
   const materials = useLoad(() => api.materials())
   const states = useLoad(() => api.states())
   const [h, setH] = useState({ doc_type: 'TAX', doc_date: today(), due_date: '',
-    customer_id: '', gstin: '', pos_state: '', po_no: '', po_date: '', reverse_chg: 'N' })
+    customer_id: '', gstin: '', pos_state: '', po_no: '', po_date: '', reverse_chg: 'N',
+    subject: '', instructions: '' })
+  const trading = me?.tenant?.company_type === 'TRADING'
   const [lines, setLines] = useState([])
   const [pick, setPick] = useState('')
   const [err, setErr] = useState(null)
@@ -51,7 +53,7 @@ export default function NewInvoice() {
   lines.forEach((l, i) => {
     const m = materials.data?.find(x => x.id === l.material_id)
     if (Number(l.qty) <= 0) problems.push(`Line ${i + 1}: quantity must be more than zero.`)
-    else if (m && Number(l.qty) > m.stock_qty) problems.push(`Line ${i + 1}: exceeds stock of ${m.stock_qty}.`)
+    else if (trading && m && Number(l.qty) > m.stock_qty) problems.push(`Line ${i + 1}: exceeds stock of ${m.stock_qty}.`)
     if (Number(l.price) <= 0) problems.push(`Line ${i + 1}: price must be more than zero.`)
   })
   if (h.po_date && h.po_date > h.doc_date) problems.push('PO date cannot be after the invoice date.')
@@ -62,10 +64,11 @@ export default function NewInvoice() {
       const d = await api.addInvoice({ ...h, customer_id: Number(h.customer_id),
         due_date: h.due_date || null, po_date: h.po_date || null,
         gstin: reg?.gstin || null, pos_state: pos,
+        subject: h.subject || null, instructions: h.instructions || null,
         lines: lines.map(l => ({ material_id: l.material_id, qty: Number(l.qty),
-          price: Number(l.price) })) })
+          price: Number(l.price), descr2: l.descr2 || null })) })
       showFlash(`${h.doc_type === 'PRO' ? 'Proforma' : 'Invoice'} ${d.doc_no} saved — ${money(d.totals.rounded)}.`)
-      setLines([]); setH(s => ({ ...s, customer_id: '', gstin: '', pos_state: '', po_no: '', po_date: '' }))
+      setLines([]); setH(s => ({ ...s, customer_id: '', gstin: '', pos_state: '', po_no: '', po_date: '', subject: '', instructions: '' }))
       materials.reload()
     } catch (x) { setErr(x.message) }
   }
@@ -116,6 +119,14 @@ export default function NewInvoice() {
           onChange={e => set('reverse_chg', e.target.value)}>
           <option value="N">N — no</option><option value="Y">Y — yes</option></select></Field>
       </div>
+      <div className="row" style={{ marginTop: 13 }}>
+        <Field label="Subject" hint="Printed under Bill To / Ship To"><input value={h.subject}
+          onChange={e => set('subject', e.target.value)} maxLength={200} /></Field>
+      </div>
+      <Field label="Specific instructions for this invoice" hint="Printed as Notes on the invoice, above the terms and bank details">
+        <textarea value={h.instructions} onChange={e => set('instructions', e.target.value)} rows={3} maxLength={2000}
+          style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--line2)', borderRadius: 7, font: 'inherit' }}
+          placeholder="e.g. Thanks for your business. Pay immediately for licence activation." /></Field>
       {cust && <Alert kind={intra ? 'ok' : 'warn'}>
         <b>{cust.name}</b> · GSTIN {reg?.gstin || 'unregistered'}<br />
         Place of supply {pos} — {stateName(pos)}. {intra
@@ -131,7 +142,7 @@ export default function NewInvoice() {
         {materials.data.map(m => <option key={m.id} value={m.id}>{m.code} · {m.descr}</option>)}
       </select>
       <button type="button" className="btn btn-sm btn-a" onClick={addLine}>Add item</button></>} bodyless>
-      <Table head={['#', 'Material', 'HSN', { label: 'Quantity', align: 'r' },
+      <Table head={['#', 'Material', 'Description 2', 'HSN', { label: 'Quantity', align: 'r' },
         { label: 'UoM', align: 'c' }, { label: 'Unit price', align: 'r' },
         { label: 'Amount', align: 'r' }, { label: 'Tax %', align: 'r' },
         { label: 'Tax', align: 'r' }, '']} empty="No items yet.">
@@ -139,10 +150,13 @@ export default function NewInvoice() {
           <tr key={i}>
             <td className="mono">{i + 1}</td>
             <td>{r.m.descr}<div className="fine mono">{r.m.code}</div></td>
+            <td><input value={r.descr2 || ''} placeholder="printed after the description" maxLength={200}
+              style={{ minWidth: 180 }} title="Saved on this invoice line only; the material master is unchanged"
+              onChange={e => setLines(lines.map((l, j) => j === i ? { ...l, descr2: e.target.value } : l))} /></td>
             <td className="mono">{r.m.hsn}</td>
             <td className="r"><input className="qty" type="number" min="0" value={r.qty}
               onChange={e => setLines(lines.map((l, j) => j === i ? { ...l, qty: e.target.value } : l))} />
-              {Number(r.qty) > r.m.stock_qty &&
+              {trading && Number(r.qty) > r.m.stock_qty &&
                 <div className="fine" style={{ color: 'var(--red)' }}>stock {r.m.stock_qty}</div>}</td>
             <td className="c mono">{r.m.uom}</td>
             <td className="r"><input className="pr" type="number" min="0" step="0.01" value={r.price}

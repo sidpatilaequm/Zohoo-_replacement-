@@ -3,12 +3,12 @@ import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr } from '../lib/fmt'
 
-const BLANK = { code: '', descr: '', price: '', cost: '', hsn: '', stock_qty: '0',
+const BLANK = { code: '', descr: '', price: '', cost: '', hsn: '',
   uom: 'NOS', batch_managed: false, shelf_life_days: '0',
   sgst_pct: '9', cgst_pct: '9', igst_pct: '18' }
 
 export default function Materials() {
-  const { api } = useAuth()
+  const { api, me } = useAuth()
   const list = useLoad(() => api.materials())
   const uoms = useLoad(() => api.uoms())
   const attrs = useLoad(() => api.attributes())
@@ -16,21 +16,35 @@ export default function Materials() {
   const [av, setAv] = useState({})
   const [f, setF] = useState(BLANK)
   const [err, setErr] = useState(null)
+  const [editing, setEditing] = useState(null)
+  const trading = me?.tenant?.company_type === 'TRADING'   // batch / shelf life / stock only matter for goods
   const [flash, showFlash] = useFlash()
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
+  function edit(m) {
+    setEditing(m.id)
+    setF({ code: m.code, descr: m.descr, price: String(m.price), cost: String(m.cost ?? ''), hsn: m.hsn, uom: m.uom,
+      batch_managed: m.batch_managed, shelf_life_days: String(m.shelf_life_days ?? 0),
+      sgst_pct: String(m.sgst_pct), cgst_pct: String(m.cgst_pct), igst_pct: String(m.igst_pct) })
+    setAv(Object.fromEntries(Object.entries(m.attributes || {}).map(([k, v]) => [k, v])))
+    setErr(null); window.scrollTo({ top: 0 })
+  }
+  function cancelEdit() { setEditing(null); setF(BLANK); setAv({}); setErr(null) }
   const split = Number(f.sgst_pct) + Number(f.cgst_pct)
   const mismatch = Math.abs(split - Number(f.igst_pct)) > 0.005
 
   async function save(e) {
     e.preventDefault(); setErr(null)
     try {
-      await api.addMaterial({ ...f, price: Number(f.price), cost: Number(f.cost || 0),
-        stock_qty: Number(f.stock_qty || 0), shelf_life_days: Number(f.shelf_life_days || 0),
+      const body = { ...f, code: f.code || null, price: Number(f.price), cost: Number(f.cost || 0),
+        batch_managed: trading ? f.batch_managed : false,
+        shelf_life_days: trading ? Number(f.shelf_life_days || 0) : 0,
         sgst_pct: Number(f.sgst_pct), cgst_pct: Number(f.cgst_pct),
-        igst_pct: Number(f.igst_pct),
+        igst_pct: Number(f.igst_pct), use_hsn_rates: false,
         attributes: Object.fromEntries(Object.entries(av)
-          .filter(([, v]) => v !== '' && v !== undefined)) })
-      setF(BLANK); setAv({}); list.reload(); showFlash('Material saved.')
+          .filter(([, v]) => v !== '' && v !== undefined)) }
+      if (editing) await api.editMaterial(editing, body); else await api.addMaterial(body)
+      setEditing(null); setF(BLANK); setAv({}); list.reload()
+      showFlash(editing ? 'Material updated.' : 'Material saved.')
     } catch (x) { setErr(x.message) }
   }
   if (list.loading || uoms.loading || attrs.loading || hsns.loading) return <Loading />
@@ -38,11 +52,12 @@ export default function Materials() {
 
   return (<>
     {flash}
-    <Panel title="Add material">
+    <Panel title={editing ? `Edit material ${f.code}` : 'Add material'}
+      right={editing && <button type="button" className="btn btn-sm" onClick={cancelEdit}>Cancel edit</button>}>
       <form onSubmit={save}>
         <div className="row">
-          <Field label="Material code"><input className="mono" value={f.code}
-            onChange={e => set('code', e.target.value.toUpperCase())} required /></Field>
+          <Field label="Material code" hint="Left blank, one is allocated from the company prefix"><input className="mono" value={f.code}
+            onChange={e => set('code', e.target.value.toUpperCase())} /></Field>
           <Field label="Description"><input value={f.descr}
             onChange={e => set('descr', e.target.value)} required /></Field>
           <Field label="Selling price"><input className="mono" type="number" step="0.01"
@@ -50,13 +65,13 @@ export default function Materials() {
           <Field label="Cost price" hint="Used on purchase orders"><input className="mono"
             type="number" step="0.01" value={f.cost}
             onChange={e => set('cost', e.target.value)} /></Field>
-          <Field label="Batch managed" hint="Stock is held by batch number">
+          {trading && <Field label="Batch managed" hint="Stock is held by batch number">
             <select value={f.batch_managed ? 'Y' : 'N'}
               onChange={e => set('batch_managed', e.target.value === 'Y')}>
-              <option value="N">No</option><option value="Y">Yes</option></select></Field>
-          <Field label="Shelf life in days" hint="Expiry is manufacturing date plus this">
+              <option value="N">No</option><option value="Y">Yes</option></select></Field>}
+          {trading && <Field label="Shelf life in days" hint="Expiry is manufacturing date plus this">
             <input className="mono" type="number" min="0" value={f.shelf_life_days}
-              onChange={e => set('shelf_life_days', e.target.value)} /></Field>
+              onChange={e => set('shelf_life_days', e.target.value)} /></Field>}
           <Field label="HSN / SAC"
             hint={hsns.data.length ? 'Choosing one fills the rates below' : 'No codes on file yet'}>
             <select value={f.hsn} required onChange={e => {
@@ -72,8 +87,6 @@ export default function Materials() {
             </select></Field>
         </div>
         <div className="row" style={{ marginTop: 13 }}>
-          <Field label="Stock quantity"><input className="mono" type="number"
-            value={f.stock_qty} onChange={e => set('stock_qty', e.target.value)} /></Field>
           <Field label="Unit of measure"><select value={f.uom}
             onChange={e => set('uom', e.target.value)}>
             {uoms.data.map(u => <option key={u.code} value={u.code}>{u.code}</option>)}</select></Field>
@@ -127,7 +140,7 @@ export default function Materials() {
         {mismatch && <Alert kind="warn">SGST {f.sgst_pct}% plus CGST {f.cgst_pct}% is {split}%,
           which does not equal IGST {f.igst_pct}%. Intra-state charges the split, inter-state
           charges the integrated rate — they must come to the same thing.</Alert>}
-        <div className="ft"><button className="btn btn-a" disabled={mismatch}>Save material</button>
+        <div className="ft"><button className="btn btn-a" disabled={mismatch}>{editing ? 'Update material' : 'Save material'}</button>
           {err && <span className="err">{err}</span>}</div>
       </form>
     </Panel>
@@ -135,7 +148,8 @@ export default function Materials() {
     <Panel title={`Materials — ${list.data.length}`} bodyless>
       <Table head={['Code', 'Description', { label: 'Selling', align: 'r' },
         { label: 'Cost', align: 'r' }, { label: 'Margin', align: 'r' }, 'HSN',
-        { label: 'Stock', align: 'r' }, { label: 'UoM', align: 'c' },
+        ...(trading ? [{ label: 'Stock', align: 'r' }] : []), { label: 'UoM', align: 'c' },
+        ...(trading ? [{ label: 'Batch', align: 'c' }, { label: 'Shelf life', align: 'r' }] : []), 'Attributes',
         { label: 'SGST', align: 'r' }, { label: 'CGST', align: 'r' },
         { label: 'IGST', align: 'r' }, '']} empty="No materials yet.">
         {list.data.map(m => {
@@ -147,9 +161,9 @@ export default function Materials() {
             <td className="r mono" style={mar !== null && mar < 0 ? { color: 'var(--red)' } : {}}>
               {mar === null ? '—' : mar.toFixed(1) + '%'}</td>
             <td className="mono">{m.hsn}</td>
-            <td className="r mono">{m.stock_qty}</td><td className="c mono">{m.uom}</td>
-            <td className="c">{m.batch_managed ? <Tag kind="warn">Yes</Tag> : <Tag>No</Tag>}</td>
-            <td className="r mono">{m.shelf_life_days ? m.shelf_life_days + ' d' : '—'}</td>
+            {trading && <td className="r mono">{m.stock_qty}</td>}<td className="c mono">{m.uom}</td>
+            {trading && <td className="c">{m.batch_managed ? <Tag kind="warn">Yes</Tag> : <Tag>No</Tag>}</td>}
+            {trading && <td className="r mono">{m.shelf_life_days ? m.shelf_life_days + ' d' : '—'}</td>}
             <td className="fine">{Object.entries(m.attributes || {})
               .map(([aid, val]) => {
                 const a = attrs.data.find(x => String(x.id) === String(aid))
@@ -157,7 +171,9 @@ export default function Materials() {
               }).filter(Boolean).join(' · ') || '—'}</td>
             <td className="r mono">{m.sgst_pct}%</td><td className="r mono">{m.cgst_pct}%</td>
             <td className="r mono">{m.igst_pct}%</td>
-            <td className="r"><button className="rm" onClick={async () => {
+            <td className="r" style={{ whiteSpace: 'nowrap' }}>
+              <button className="btn btn-sm" onClick={() => edit(m)}>Edit</button>
+              <button className="rm" style={{ marginLeft: 4 }} onClick={async () => {
               try { await api.delMaterial(m.id); list.reload() }
               catch (x) { showFlash(x.message, 'bad') } }}>×</button></td>
           </tr>)})}

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
-  usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
+  usePrintVariant, VariantPicker, PrintButtons, PeriodPicker, useDefaultFy } from '../components/ui'
 import { inr, money, gd } from '../lib/fmt'
 
 const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -10,7 +10,9 @@ const label = p => { const [y, m] = p.split('-'); return `${MON[+m - 1]} ${y}` }
 export default function Registers() {
   const { api } = useAuth()
   const periods = useLoad(() => api.periods())
-  const [period, setPeriod] = useState('')
+  const fys = useLoad(() => api.financialYears())
+  const [period, setPeriod] = useState(undefined)
+  useDefaultFy(fys.data, period, setPeriod)
   const [which, setWhich] = useState('invoices')
   const [variant, setVariant] = usePrintVariant()
   const [printAs, setPrintAs] = useState('')
@@ -20,7 +22,7 @@ export default function Registers() {
   const gst = useLoad(() => api.gstRegister(p), [p])
   const tds = useLoad(() => api.tdsRegister(p), [p])
 
-  if (periods.loading) return <Loading />
+  if (periods.loading || fys.loading || period === undefined) return <Loading />
   const busy = inv.loading || gst.loading || tds.loading
   const anyErr = inv.error || gst.error || tds.error
   if (anyErr) return <ErrorBox>{anyErr}</ErrorBox>
@@ -32,11 +34,7 @@ export default function Registers() {
       <option value="gst">GST register</option>
       <option value="tds">TDS register</option>
     </select>
-    <select value={period} onChange={e => setPeriod(e.target.value)}
-      style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
-      <option value="">All periods</option>
-      {(periods.data || []).map(x => <option key={x} value={x}>{label(x)}</option>)}
-    </select>
+    <PeriodPicker value={period} onChange={setPeriod} months={periods.data || []} years={fys.data || []} />
     <a className="btn btn-sm" href={api.registerCsv(which, p)}>Export CSV</a></>)
 
   if (busy) return <><Panel title="Registers" right={controls} /><Loading /></>

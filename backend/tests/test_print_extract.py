@@ -54,12 +54,13 @@ def test_print_pdf_contains_the_document_numbers(org):
     r = c.get(f"/api/print/invoices/{inv['id']}.pdf?variant=TRADING")
     with pdfplumber.open(io.BytesIO(r.content)) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages)
-    assert inv["doc_no"] in text and "TAX INVOICE" in text and "HSN" in text
-    assert "Ship to" in text and "Rupees" in text
+    assert inv["doc_no"] in text and "TAX INVOICE" in text and "HSN/SAC" in text
+    assert "Bill To" in text and "Ship To" in text and "Indian Rupee" in text
+    assert "Sub Total" in text and "Balance Due" in text and "Payment Made" in text
     r = c.get(f"/api/print/invoices/{inv['id']}.pdf?variant=NONTRADING")
     with pdfplumber.open(io.BytesIO(r.content)) as pdf:
         text = "\n".join(p.extract_text() or "" for p in pdf.pages)
-    assert "SAC" in text and "Service details" in text and "Ship to" not in text
+    assert "Terms & Conditions" in text and "Authorized Signature" in text
 
 
 def test_other_tenant_cannot_print_my_documents(org):

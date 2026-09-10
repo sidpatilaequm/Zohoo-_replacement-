@@ -115,3 +115,32 @@ export function PrintButtons({ kind, id, variant, onError, small = true, extra =
       onClick={() => go(false)} title="Download the PDF">{busy ? '…' : 'PDF'}</button>
   </span>)
 }
+/* ------------------------------------------------------------ period picker
+ * Financial years (from the company profile) first, then months, then "all".
+ * The value sent to the API is "FY2026-27", "2026-04" or "".
+ */
+export function PeriodPicker({ value, onChange, months = [], years = [], allLabel = 'All periods' }) {
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const ml = p => { const [y, m] = p.split('-'); return `${MON[+m - 1]} ${y}` }
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
+      <optgroup label="Financial year">
+        {years.map(f => <option key={f.label} value={'FY' + f.label}>FY {f.label}{f.current ? ' (current)' : ''}</option>)}
+      </optgroup>
+      {months.length > 0 && <optgroup label="Month">
+        {months.map(x => <option key={x} value={x}>{ml(x)}</option>)}
+      </optgroup>}
+      <option value="">{allLabel}</option>
+    </select>)
+}
+
+/** Default period = the current financial year, once the list has loaded. */
+export function useDefaultFy(years, value, setValue) {
+  useEffect(() => {
+    if (value === undefined && years) {
+      const cur = years.find(f => f.current)
+      setValue(cur ? 'FY' + cur.label : '')
+    }
+  }, [years]) // eslint-disable-line
+}

@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -183,7 +184,7 @@ class VendorIn(BankIn, PanMsmeIn):
 
 
 class MaterialIn(BaseModel):
-    code: str
+    code: str | None = None
     descr: str
     price: Decimal
     cost: Decimal = Decimal("0")
@@ -219,6 +220,7 @@ class LineIn(BaseModel):
     material_id: int
     qty: Decimal = Field(gt=0)
     price: Decimal | None = None
+    descr2: str | None = Field(None, max_length=200)
 
 
 class InvoiceIn(BaseModel):
@@ -232,6 +234,8 @@ class InvoiceIn(BaseModel):
     po_no: str | None = None
     po_date: date | None = None
     reverse_chg: str = "N"
+    subject: str | None = Field(None, max_length=200)
+    instructions: str | None = Field(None, max_length=2000)
     lines: list[LineIn]
 
     @model_validator(mode="after")
@@ -323,7 +327,55 @@ class TenantIn(BaseModel):
     inv_seq: int = 1
     po_prefix: str = "PO/"
     po_seq: int = 1
+
+    # v2.4 financial year / numbering
+    inv_fy: bool = False
+    po_fy: bool = False
+    vinv_prefix: str = "PINV/"
+    vinv_seq: int = 1
+    vinv_fy: bool = False
+
+    fy_start_month: int = Field(4, ge=1, le=12)
+    fy_start_day: int = Field(1, ge=1, le=31)
+
+    # automatic master codes
+    cust_prefix: str = Field("C", max_length=12)
+    cust_seq: int = Field(1, ge=1)
+    vend_prefix: str = Field("V", max_length=12)
+    vend_seq: int = Field(1, ge=1)
+    mat_prefix: str = Field("M", max_length=12)
+    mat_seq: int = Field(1, ge=1)
+
     bank: str | None = None
+    bank_name: str | None = None
+    bank_ifsc: str | None = None
+    bank_account: str | None = None
+    @model_validator(mode="after")
+    def _fy_and_bank(self):
+        from calendar import monthrange
+        import re
+
+        if self.fy_start_day > monthrange(2025, self.fy_start_month)[1]:
+            raise ValueError(
+                "That day does not exist in the financial-year start month"
+            )
+
+        if self.bank_ifsc:
+            self.bank_ifsc = self.bank_ifsc.strip().upper()
+            if not re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", self.bank_ifsc):
+                raise ValueError(
+                    f"{self.bank_ifsc} is not a valid IFSC "
+                    "(11 characters, e.g. SBIN0040807)"
+                )
+
+        if self.bank_account and not re.fullmatch(
+            r"[0-9]{6,24}", self.bank_account.strip()
+        ):
+            raise ValueError(
+                "Bank account number should be 6 to 24 digits"
+            )
+
+        return self
 
     @model_validator(mode="after")
     def _v(self):

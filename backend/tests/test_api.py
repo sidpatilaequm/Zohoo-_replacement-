@@ -151,7 +151,7 @@ def test_intra_and_inter_state_tax(org):
 
 
 def test_stock_moves_on_a_tax_invoice_but_not_a_proforma(org):
-    a = org(); m = mat(a, stock=100); c = cust(a)
+    a = org(trading=True); m = mat(a, stock=100); c = cust(a)
     a.post("/api/invoices", json={"doc_date": "2026-08-10", "doc_type": "PRO",
         "customer_id": c, "lines": [{"material_id": m, "qty": 10}]})
     assert a.get("/api/materials").json()[0]["stock_qty"] == 100
@@ -161,7 +161,7 @@ def test_stock_moves_on_a_tax_invoice_but_not_a_proforma(org):
 
 
 def test_proforma_converts_and_then_moves_stock(org):
-    a = org(); m = mat(a, stock=100); c = cust(a)
+    a = org(trading=True); m = mat(a, stock=100); c = cust(a)
     iid = a.post("/api/invoices", json={"doc_date": "2026-08-10", "doc_type": "PRO",
         "customer_id": c, "lines": [{"material_id": m, "qty": 10}]}).json()["id"]
     assert a.post(f"/api/invoices/{iid}/convert").status_code == 200
@@ -176,7 +176,7 @@ def test_b2c_invoice_cannot_carry_a_gstin(org):
 
 
 def test_stock_cannot_go_negative(org):
-    a = org(); m = mat(a, stock=5); c = cust(a)
+    a = org(trading=True); m = mat(a, stock=5); c = cust(a)
     r = a.post("/api/invoices", json={"doc_date": "2026-08-10", "customer_id": c,
         "lines": [{"material_id": m, "qty": 10}]})
     assert r.status_code == 422 and "exceeds stock" in r.text

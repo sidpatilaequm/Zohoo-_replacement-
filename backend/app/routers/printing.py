@@ -25,9 +25,21 @@ def _variant(ctx, variant):
 
 def _org(ctx):
     o = ctx.tenant
-    return {"name": o.name, "gstin": o.gstin, "pan": o.pan, "addr": o.addr, "city": o.city,
-            "state": o.state_code, "pin": o.pin, "bank": o.bank, "logo": o.logo,
-            "company_type": o.company_type}
+    return {
+        "name": o.name,
+        "gstin": o.gstin,
+        "pan": o.pan,
+        "addr": o.addr,
+        "city": o.city,
+        "state": o.state_code,
+        "pin": o.pin,
+        "bank": o.bank,
+        "bank_name": o.bank_name,
+        "bank_ifsc": o.bank_ifsc,
+        "bank_account": o.bank_account,
+        "logo": o.logo,
+        "company_type": o.company_type,
+    }
 
 
 def _pdf(data: bytes, filename: str, disposition: str):
@@ -54,7 +66,7 @@ def print_po(pid: int, variant: str | None = None, disposition: str = "attachmen
            "status": po.status, "gstin": po.gstin, "bill_addr": po.bill_addr,
            "ship_addr": po.ship_addr,
            "vendor": {"name": v.name, "addr": v.addr, "city": v.city, "pin": v.pin,
-                      "pan": v.pan, "email": v.email}}
+                      "pan": v.pan, "email": v.email,"logo": v.logo,}}
     pdf = render_po(_org(ctx), doc, tax_json(po_tax(ctx, po)), _variant(ctx, variant))
     return _pdf(pdf, f"{po.doc_no.replace('/', '-')}.pdf", disposition)
 
@@ -72,13 +84,13 @@ def print_invoice(iid: int, variant: str | None = None, disposition: str = "atta
     if dt not in ("TAX", "PRO"):
         raise HTTPException(422, "as must be TAX or PRO")
     c = inv.customer
-    doc = {"doc_no": inv.doc_no, "doc_type": dt, "doc_date": inv.doc_date,
+    doc = {"doc_no": inv.doc_no, "doc_type": dt, "doc_date": inv.doc_date,"subject": inv.subject, "instructions": inv.instructions,
            "cancelled": inv.status == "CANCELLED", "cancel_reason": inv.cancel_reason,
            "cancelled_on": inv.cancelled_on,
            "due_date": inv.due_date, "po_no": inv.po_no, "po_date": inv.po_date,
-           "gstin": inv.gstin, "pos_state": inv.pos_state, "reverse_chg": inv.reverse_chg,
+           "gstin": inv.gstin, "pos_state__name": inv.pos_state, "reverse_chg": inv.reverse_chg,
            "converted_from": inv.converted_from,
-           "customer": {"name": c.name, "email": c.email, "pan": c.pan,
+           "customer": {"name": c.name, "email": c.email, "pan": c.pan,"logo": c.logo,
                         "party_type": c.party_type, "ship_same": c.ship_same,
                         "bill": {"addr": c.bill_addr, "city": c.bill_city,
                                  "state": c.bill_state, "pin": c.bill_pin},
@@ -115,7 +127,7 @@ def print_receipt(pid: int, variant: str | None = None, disposition: str = "atta
           "amount": p.amount + p.tds, "received_before": before,
           "balance_after": t.rounded - before - p.amount - p.tds,
           "customer": {"name": c.name, "addr": c.bill_addr, "city": c.bill_city,
-                       "pin": c.bill_pin, "gstin": inv.gstin, "pan": c.pan},
+                       "pin": c.bill_pin, "gstin": inv.gstin, "pan": c.pan, "logo": c.logo,},
           "invoice": {"doc_no": inv.doc_no, "doc_date": inv.doc_date,
                       "due_date": inv.due_date, "total": t.rounded}}
     pdf = render_receipt(_org(ctx), rc, _variant(ctx, variant))

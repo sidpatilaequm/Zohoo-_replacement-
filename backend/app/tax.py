@@ -27,6 +27,7 @@ class TaxLine:
     material_id: int
     code: str
     descr: str
+    descr2: str | None
     hsn: str
     uom: str
     qty: Decimal
@@ -63,7 +64,13 @@ def compute(lines, org_state: str, pos_state: str, taxable_supply: bool = True) 
     """
     intra = pos_state == org_state
     res = TaxResult(intra=intra)
-    for line_no, m, qty, price in lines:
+    for row in lines:
+        if len(row) == 4:
+            line_no, m, qty, price = row
+            descr2 = None
+        else:
+            line_no, m, qty, price, descr2 = row
+
         qty, price = Decimal(str(qty)), Decimal(str(price))
         amount = q2(qty * price)
         if not taxable_supply:
@@ -78,7 +85,7 @@ def compute(lines, org_state: str, pos_state: str, taxable_supply: bool = True) 
             c = s = Decimal("0.00")
             i = q2(amount * Decimal(str(m.igst_pct)) / 100)
             rate = Decimal(str(m.igst_pct))
-        res.lines.append(TaxLine(line_no, m.id, m.code, m.descr, m.hsn, m.uom,
+        res.lines.append(TaxLine(line_no, m.id, m.code, m.descr,descr2, m.hsn, m.uom,
                                  qty, price, amount, c, s, i, rate))
         res.taxable += amount
         res.cgst += c
