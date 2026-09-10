@@ -71,7 +71,7 @@ def _lv(label, value):
     return _p(f"<font color='#6E6E68'>{_esc(label)}</font> {_esc(value)}", raw=True)
 
 
-RUPEE = "Rs."
+RUPEE = "Rs. "
 
 
 def _inr(x) -> str:
@@ -117,9 +117,15 @@ def _logo(data_url, size=16 * mm):
         return None
 
 
-def _addr_block(title, name, lines, extra=()):
+def _addr_block(title, name, lines, extra=(), logo=None):
     """A titled party block: name in bold, address lines, then key: value rows."""
-    body = [_p(title, "label"), _p(name, "bold")]
+    body = [_p(title, "label")]
+
+    lg = _logo(logo, size=11 * mm)
+    if lg:
+        body.append(lg)
+
+    body.append(_p(name, "bold"))
     for ln in lines:
         if ln and str(ln).strip():
             body.append(_p(ln))
@@ -357,7 +363,7 @@ def render_po(org: dict, po: dict, totals: dict, variant: str) -> bytes:
     blocks = [_addr_block("Vendor", v["name"], [v.get("addr"), " ".join(
         x for x in [v.get("city"), v.get("pin")] if x)],
         [("GSTIN", po.get("gstin") or "Unregistered"), ("PAN", v.get("pan")),
-         ("Email", v.get("email"))])]
+         ("Email", v.get("email"))], logo=v.get("logo"))]
     blocks.append(_addr_block("Bill to", "", [po.get("bill_addr")]))
     if goods:
         blocks.append(_addr_block("Deliver to", "", [po.get("ship_addr") or po.get("bill_addr")]))
@@ -371,60 +377,528 @@ def render_po(org: dict, po: dict, totals: dict, variant: str) -> bytes:
     _build(buf, f"Purchase order {po['doc_no']}", story)
     return buf.getvalue()
 
+def _bank_line(org):
+    """Build the bank/payment line for the invoice footer."""
+    if org.get("bank_name") or org.get("bank_account") or org.get("bank_ifsc"):
+        parts = [org["name"]]
+
+        if org.get("bank_name"):
+            parts[-1] += f", {org['bank_name']}"
+
+        if org.get("bank_account"):
+            parts.append(f"Account No: {org['bank_account']}")
+
+        if org.get("bank_ifsc"):
+            parts.append(f"IFSC Code: {org['bank_ifsc']}")
+
+        return " ".join(parts)
+
+    return org.get("bank") or ""
+
+
+def _terms_label(inv):
+    d0, d1 = inv.get("doc_date"), inv.get("due_date")
+
+    if not d1 or d1 == d0:
+        return "Due on Receipt"
+
+    try:
+        n = (d1 - d0).days
+        return f"Net {n} days"
+    except TypeError:
+        return "As agreed"
 
 def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0) -> bytes:
+    """Render the standard organisation invoice layout."""
     variant = variant if variant in VARIANTS else "NONTRADING"
-    goods = variant == "TRADING"
     pro = inv["doc_type"] == "PRO"
     title = "PROFORMA INVOICE" if pro else "TAX INVOICE"
-    buf, story, width = io.BytesIO(), [], A4[0] - 28 * mm
-    meta = [("Invoice no", inv["doc_no"]), ("Invoice date", _d(inv["doc_date"])),
-            ("Due date", _d(inv.get("due_date"))),
-            ("Place of supply", inv.get("pos_state")),
-            ("Reverse charge", "Yes" if inv.get("reverse_chg") == "Y" else "No")]
-    if inv.get("po_no"):
-        meta.append(("Your PO", f"{inv['po_no']} · {_d(inv.get('po_date'))}"))
-    if inv.get("converted_from"):
-        meta.append(("Converted from", inv["converted_from"]))
-    if inv.get("cancelled"):
-        meta.append(("Cancelled", f"{_d(inv.get('cancelled_on'))} — {inv.get('cancel_reason') or ''}"))
-    _header(story, org, title,
-            ("Supply of goods" if goods else "Supply of services / IT products")
-            + (" — not a tax invoice, not valid for input credit" if pro else ""),
-            meta, width)
-    c, b, sh = inv["customer"], inv["customer"]["bill"], inv["customer"]["ship"]
-    blocks = [_addr_block("Bill to", c["name"], [b.get("addr"), " ".join(
-        x for x in [b.get("city"), b.get("pin")] if x), f"State {b.get('state')}"],
-        [("GSTIN", inv.get("gstin") or ("Unregistered (B2C)" if c.get("party_type") == "B2C" else "—")),
-         ("PAN", c.get("pan")), ("Email", c.get("email"))])]
-    if goods:
-        blocks.append(_addr_block("Ship to", c["name"] if not c.get("ship_same") else "",
-                                  [sh.get("addr"), " ".join(x for x in [sh.get("city"), sh.get("pin")] if x),
-                                   f"State {sh.get('state')}"] if not c.get("ship_same")
-                                  else ["Same as billing address"],
-                                  [("Transport", inv.get("transport")), ("E-way bill", inv.get("eway"))]))
-    else:
-        blocks.append(_addr_block("Service details", "", [],
-                                  [("Service period", inv.get("service_period") or "As per order"),
-                                   ("Delivery", "Electronic / on-site as agreed")]))
-    _parties(story, blocks, width)
-    _lines_table(story, totals, variant, width, price_label="Rate", batch=inv.get("batches"))
-    extra = []
-    if not pro and received:
-        extra = [["Received to date", _inr(received)],
-                 ["Balance due", _inr(Decimal(str(totals["rounded"])) - Decimal(str(received)))]]
-    _hsn_and_totals(story, totals, variant, width, extra_rows=extra)
-    right = []
-    if org.get("bank"):
-        right += [_p("Pay to", "label"), _p(org["bank"])]
-    _footer(story, [_p("• " + t, "small") for t in TERMS["INV"][variant]]
-            + ([_p("This is a proforma for advance or approval. A tax invoice will follow.", "small")]
-               if pro else []),
-            right, width, org["name"])
-    _build(buf, f"{title.title()} {inv['doc_no']}", story,
-           watermark="CANCELLED" if inv.get("cancelled") else None)
-    return buf.getvalue()
+    intra = totals["intra"]
 
+    buf, story, width = io.BytesIO(), [], A4[0] - 28 * mm
+
+    # ---- masthead + title
+    left = []
+    lg = _logo(org.get("logo"))
+    if lg:
+        left.append(lg)
+
+    left += [
+        _p(org["name"], "h2"),
+        _p(
+            "\n".join(
+                x for x in [
+                    org.get("addr"),
+                    " ".join(
+                        y for y in [org.get("city"), org.get("pin")] if y
+                    ),
+                    "India",
+                ] if x
+            ),
+            "small",
+        ),
+        _p(f"GSTIN {org.get('gstin') or '—'}", "small"),
+    ]
+
+    right = [
+        Spacer(1, 10),
+        Paragraph(
+            _esc(title),
+            ParagraphStyle(
+                "invoice_title",
+                S["h1"],
+                fontSize=20,
+                leading=24,
+                alignment=TA_RIGHT,
+                textColor=INK,
+            ),
+        ),
+    ]
+
+    head = Table(
+        [[left, right]],
+        colWidths=[width * 0.6, width * 0.4],
+    )
+
+    head.setStyle(
+        TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ])
+    )
+
+    story.append(head)
+
+    # ---- invoice metadata
+    kv = lambda k, v: [_p(k, "small"), _p(f": {v}", "bold")]
+
+    meta_l = [
+        kv("#", inv["doc_no"]),
+        kv("Invoice Date", _d(inv["doc_date"])),
+        kv("Terms", _terms_label(inv)),
+        kv(
+            "Due Date",
+            _d(inv.get("due_date") or inv["doc_date"])
+        ),
+    ]
+
+    if inv.get("po_no"):
+        meta_l.append(kv("Your PO", inv["po_no"]))
+
+    if inv.get("cancelled"):
+        meta_l.append(
+            kv(
+                "Cancelled",
+                f"{_d(inv.get('cancelled_on'))} — "
+                f"{inv.get('cancel_reason') or ''}",
+            )
+        )
+
+    meta_r = [
+        kv(
+            "Place Of Supply",
+            f"{inv.get('pos_state_name') or ''} "
+            f"({inv.get('pos_state')})".strip(),
+        )
+    ]
+
+    if inv.get("reverse_chg") == "Y":
+        meta_r.append(kv("Reverse Charge", "Yes"))
+
+    if inv.get("converted_from"):
+        meta_r.append(kv("Converted from", inv["converted_from"]))
+
+    def _kvt(rows, w):
+        t = Table(
+            rows,
+            colWidths=[w * 0.35, w * 0.65],
+        )
+        t.setStyle(
+            TableStyle([
+                ("TOPPADDING", (0, 0), (-1, -1), 1),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ])
+        )
+        return t
+
+    meta = Table(
+        [[
+            _kvt(meta_l, width * 0.5 - 12),
+            _kvt(meta_r, width * 0.5 - 12),
+        ]],
+        colWidths=[width * 0.5, width * 0.5],
+    )
+
+    meta.setStyle(
+        TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+            ("LINEBEFORE", (1, 0), (1, 0), 0.5, LINE),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ])
+    )
+
+    story.append(meta)
+
+    # ---- bill to / ship to
+    c, b, sh = (
+        inv["customer"],
+        inv["customer"]["bill"],
+        inv["customer"]["ship"],
+    )
+
+    gst_line = (
+        f"GSTIN {inv['gstin']}"
+        if inv.get("gstin")
+        else (
+            "Unregistered (B2C)"
+            if c.get("party_type") == "B2C"
+            else ""
+        )
+    )
+
+    def _addr(a):
+        return "\n".join(
+            x
+            for x in [
+                a.get("addr"),
+                " ".join(
+                    y for y in [a.get("city"), a.get("pin")] if y
+                ),
+            ]
+            if x
+        )
+
+    clogo = _logo(c.get("logo"), size=11 * mm)
+
+    bill = (
+        ([clogo] if clogo else [])
+        + [
+            _p(c["name"], "bold"),
+            _p(_addr(b), "small"),
+            _p(gst_line, "small"),
+        ]
+    )
+
+    ship = [
+        _p(c["name"], "bold") if not c.get("ship_same") else _p(""),
+        _p(_addr(sh), "small"),
+        _p(gst_line, "small"),
+    ]
+
+    parties = Table(
+        [
+            [_p("Bill To", "bold"), _p("Ship To", "bold")],
+            [bill, ship],
+        ],
+        colWidths=[width / 2, width / 2],
+    )
+
+    parties.setStyle(
+        TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+            ("INNERGRID", (0, 0), (-1, -1), 0.5, LINE),
+            ("BACKGROUND", (0, 0), (-1, 0), SOFT),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ])
+    )
+
+    story.append(parties)
+
+    # ---- subject
+    subj = Table(
+        [[
+            [
+                _p("Subject :", "small"),
+                _p(inv.get("subject") or ""),
+            ]
+        ]],
+        colWidths=[width],
+    )
+
+    subj.setStyle(
+        TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ])
+    )
+
+    story += [subj, Spacer(1, 8)]
+
+    # ---- item grid
+    if intra:
+        tax_heads = [
+            ("CGST", ["%", "Amt"]),
+            ("SGST", ["%", "Amt"]),
+        ]
+    else:
+        tax_heads = [
+            ("IGST", ["%", "Amt"]),
+        ]
+
+    h1 = [
+        _p("#", "th"),
+        _p("Item & Description", "th"),
+        _p("HSN/SAC", "th"),
+        _p("Qty", "thr"),
+        _p("Rate", "thr"),
+    ]
+
+    h2 = [
+        _p("", "th"),
+        _p("", "th"),
+        _p("", "th"),
+        _p("", "th"),
+        _p("", "th"),
+    ]
+
+    for name, subs in tax_heads:
+        h1 += [_p(name, "thr"), _p("", "th")]
+        h2 += [
+            _p(subs[0], "thr"),
+            _p(subs[1], "thr"),
+        ]
+
+    h1.append(_p("Amount", "thr"))
+    h2.append(_p("", "th"))
+
+    rows = [h1, h2]
+
+    for L in totals["lines"]:
+        r = [
+            _p(L["line_no"], "center"),
+            [
+                _p(L["descr"]),
+                _p(L["code"], "small"),
+            ],
+            _p(L["hsn"], "center"),
+            _p(_qty(L["qty"]), "right"),
+            _p(_inr(L["price"]), "right"),
+        ]
+
+        if intra:
+            r += [
+                _p(f"{_qty(L['rate'] / 2)}%", "right"),
+                _p(_inr(L["cgst"]), "right"),
+                _p(f"{_qty(L['rate'] / 2)}%", "right"),
+                _p(_inr(L["sgst"]), "right"),
+            ]
+        else:
+            r += [
+                _p(f"{_qty(L['rate'])}%", "right"),
+                _p(_inr(L["igst"]), "right"),
+            ]
+
+        r.append(_p(_inr(L["amount"]), "rightb"))
+        rows.append(r)
+
+    fixed = (
+        [8, 18, 14, 20]
+        + ([11, 20, 11, 20] if intra else [12, 22])
+        + [24]
+    )
+
+    fixed = [w * mm for w in fixed]
+
+    widths = [
+        fixed[0],
+        width - sum(fixed),
+    ] + fixed[1:]
+
+    items = Table(
+        rows,
+        colWidths=widths,
+        repeatRows=2,
+    )
+
+    ncol = len(widths)
+
+    st = [
+        ("BACKGROUND", (0, 0), (-1, 1), ACCENT),
+        ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+        ("INNERGRID", (0, 2), (-1, -1), 0.4, LINE),
+        ("LINEBELOW", (0, 1), (-1, 1), 0.5, LINE),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("SPAN", (0, 0), (0, 1)),
+        ("SPAN", (1, 0), (1, 1)),
+        ("SPAN", (2, 0), (2, 1)),
+        ("SPAN", (3, 0), (3, 1)),
+        ("SPAN", (4, 0), (4, 1)),
+        ("SPAN", (ncol - 1, 0), (ncol - 1, 1)),
+    ]
+
+    col = 5
+
+    for _ in tax_heads:
+        st.append(
+            ("SPAN", (col, 0), (col + 1, 0))
+        )
+        col += 2
+
+    items.setStyle(TableStyle(st))
+
+    story += [items, Spacer(1, 6)]
+
+    # ---- totals
+    trows = [
+        ["Sub Total", _inr(totals["taxable"])]
+    ]
+
+    if totals["tax"] == 0:
+        trows.append(["GST", "nil"])
+    elif intra:
+        for h in totals["hsn"]:
+            trows.append([
+                f"CGST{_qty(h['rate'] / 2)} "
+                f"({_qty(h['rate'] / 2)}%)",
+                _inr(h["cgst"]),
+            ])
+            trows.append([
+                f"SGST{_qty(h['rate'] / 2)} "
+                f"({_qty(h['rate'] / 2)}%)",
+                _inr(h["sgst"]),
+            ])
+    else:
+        for h in totals["hsn"]:
+            trows.append([
+                f"IGST{_qty(h['rate'])} "
+                f"({_qty(h['rate'])}%)",
+                _inr(h["igst"]),
+            ])
+
+    if abs(totals["roundoff"]) >= 0.005:
+        trows.append([
+            "Round off",
+            _inr(totals["roundoff"]),
+        ])
+
+    trows.append([
+        "Total",
+        f"{RUPEE}{_inr(totals['rounded'])}",
+    ])
+
+    if not pro:
+        trows.append([
+            "Payment Made",
+            f"(-) {_inr(received)}",
+        ])
+        trows.append([
+            "Balance Due",
+            f"{RUPEE}{_inr(Decimal(str(totals['rounded'])) - Decimal(str(received)))}",
+        ])
+
+    bold_rows = {"Total", "Balance Due"}
+
+    tt = Table(
+        [
+            [
+                _p(k, "rightb" if k in bold_rows else "right"),
+                _p(v, "rightb" if k in bold_rows else "right"),
+            ]
+            for k, v in trows
+        ],
+        colWidths=[40 * mm, 34 * mm],
+    )
+
+    tt.setStyle(
+        TableStyle([
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ])
+    )
+
+    right_col = [
+        tt,
+        Spacer(1, 40),
+        _p("Authorized Signature", "center"),
+    ]
+
+    left_col = [
+        _p("Total In Words", "small"),
+        _p(
+            f"<b><i>Indian Rupee "
+            f"{in_words(totals['rounded'])} Only</i></b>",
+            raw=True,
+        ),
+        Spacer(1, 8),
+    ]
+
+    if inv.get("instructions"):
+        left_col += [
+            _p("Notes", "small"),
+            _p(inv["instructions"]),
+            Spacer(1, 8),
+        ]
+
+    terms = TERMS["INV"][variant][:1]
+
+    left_col += [
+        _p("Terms & Conditions", "small")
+    ] + [
+        _p(t) for t in terms
+    ]
+
+    bank = _bank_line(org)
+
+    if bank:
+        left_col += [
+            Spacer(1, 6),
+            _p(bank),
+        ]
+
+    if pro:
+        left_col += [
+            Spacer(1, 6),
+            _p(
+                "This is a proforma for advance or approval. "
+                "A tax invoice will follow.",
+                "small",
+            ),
+        ]
+
+    bottom = Table(
+        [[left_col, right_col]],
+        colWidths=[width * 0.58, width * 0.42],
+    )
+
+    bottom.setStyle(
+        TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LINEBEFORE", (1, 0), (1, 0), 0.5, LINE),
+            ("LINEBELOW", (0, 0), (-1, 0), 0.5, LINE),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ])
+    )
+
+    story.append(bottom)
+
+    _build(
+        buf,
+        f"{title.title()} {inv['doc_no']}",
+        story,
+        watermark="CANCELLED" if inv.get("cancelled") else None,
+    )
+
+    return buf.getvalue()
 
 def render_receipt(org: dict, rc: dict, variant: str) -> bytes:
     """Customer receipt voucher / payment acknowledgement."""
@@ -437,7 +911,7 @@ def render_receipt(org: dict, rc: dict, variant: str) -> bytes:
     _parties(story, [
         _addr_block("Received from", c["name"], [c.get("addr"), " ".join(
             x for x in [c.get("city"), c.get("pin")] if x)],
-            [("GSTIN", c.get("gstin")), ("PAN", c.get("pan"))]),
+            [("GSTIN", c.get("gstin")), ("PAN", c.get("pan"))], logo=c.get("logo")),
         _addr_block("Credited to", org["name"], [rc.get("bank_acct") or org.get("bank") or "—"],
                     [("Narration", rc.get("narration"))])], width)
     inv = rc["invoice"]

@@ -40,13 +40,17 @@ class Client:
 @pytest.fixture
 def org(api):
     """A fresh organisation with an administrator signed in."""
-    def _make(name="Aequm India", email="admin@aequm.in", gstin=None, state="29"):
+    def _make(name="Aequm India", email="admin@aequm.in", gstin=None, state="29", trading=False):
         r = api.post("/api/auth/signup", json={
             "name": "Admin", "email": email, "password": "correct horse",
             "mode": "new", "org_name": name, "org_gstin": gstin, "org_state": state})
         assert r.status_code == 201, r.text
         d = r.json()
-        return Client(api, d["token"], d["tenant_id"])
+        c = Client(api, d["token"], d["tenant_id"])
+        if trading:   # only a trading company moves stock through invoices
+            r = c.put("/api/org", json={"name": name, "gstin": gstin, "state_code": state, "company_type": "TRADING"})
+            assert r.status_code == 200, r.text
+        return c
     return _make
 
 

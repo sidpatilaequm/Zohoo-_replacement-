@@ -60,7 +60,7 @@ export default function PurchaseOrders() {
         bill_addr: h.bill_addr || orgAddr,
         ship_addr: h.ship_same ? null : h.ship_addr,
         lines: lines.map(l => ({ material_id: l.material_id, qty: Number(l.qty),
-          price: Number(l.price) })) })
+          price: Number(l.price), descr2: l.descr2 || null })) })
       showFlash(`Purchase order ${d.doc_no} saved — ${money(d.totals.rounded)}.`)
       setLines([]); setH(s => ({ ...s, vendor_id: '', gstin: '' })); list.reload()
     } catch (x) { setErr(x.message) }
@@ -124,13 +124,15 @@ export default function PurchaseOrders() {
           const m = materials.data.find(x => x.id === Number(pick))
           if (m) setLines([...lines, { material_id: m.id, qty: 1, price: m.cost || m.price }])
         }}>Add line</button></>} bodyless>
-        <Table head={['#', 'Material', 'HSN', { label: 'Quantity', align: 'r' },
+        <Table head={['#', 'Material', 'Description 2', 'HSN', { label: 'Quantity', align: 'r' },
           { label: 'UoM', align: 'c' }, { label: 'Cost price', align: 'r' },
           { label: 'Amount', align: 'r' }, { label: 'Tax', align: 'r' }, '']} empty="No lines yet.">
           {calc.rows.map((r, i) => (
             <tr key={i}>
               <td className="mono">{i + 1}</td>
               <td>{r.m.descr}<div className="fine mono">{r.m.code}</div></td>
+              <td><input value={r.descr2 || ''} placeholder="printed after the description" maxLength={200}
+                style={{ minWidth: 160 }} onChange={e => setLines(lines.map((l, j) => j === i ? { ...l, descr2: e.target.value } : l))} /></td>
               <td className="mono">{r.m.hsn}</td>
               <td className="r"><input className="qty" type="number" min="0" value={r.qty}
                 onChange={e => setLines(lines.map((l, j) => j === i ? { ...l, qty: e.target.value } : l))} /></td>

@@ -31,7 +31,7 @@ export default function VendorInvoices() {
     const o = openPos.find(x => x.id === Number(id))
     if (o) set('vendor_id', String(o.vendor_id))
     setLines(o ? o.lines.map(l => ({ material_id: l.material_id, poQty: l.qty,
-      poPrice: l.price, qty: l.qty, price: l.price })) : [])
+      poPrice: l.price, qty: l.qty, price: l.price, descr2: l.descr2 || '' })) : [])
   }
 
   /** Upload the vendor's PDF/image, read it, and fill the form from the proposal. */
@@ -77,7 +77,7 @@ export default function VendorInvoices() {
         due_date: h.due_date || null, po_id: h.po_id ? Number(h.po_id) : null,
         vendor_id: h.po_id ? null : Number(h.vendor_id),
         lines: lines.map(l => ({ material_id: l.material_id, qty: Number(l.qty),
-          price: Number(l.price) })) })
+          price: Number(l.price), descr2: l.descr2 || null })) })
       const v = d.variance
       showFlash(`Vendor invoice ${d.doc_no} recorded — ${money(d.totals.rounded)}.`
         + (v ? (Math.abs(v.difference) > 0.005
@@ -151,7 +151,7 @@ export default function VendorInvoices() {
       </Panel>
 
       {lines.length > 0 && <Panel title="Lines" bodyless>
-        <Table head={['#', 'Material', 'Read from file', { label: 'PO qty', align: 'r' },
+        <Table head={['#', 'Material', 'Description 2', 'Read from file', { label: 'PO qty', align: 'r' },
           { label: 'Invoiced qty', align: 'r' }, { label: 'PO price', align: 'r' },
           { label: 'Invoiced price', align: 'r' }, { label: 'Amount', align: 'r' },
           { label: 'Variance', align: 'c' }, '']}>
@@ -168,6 +168,9 @@ export default function VendorInvoices() {
                 <option value="">— pick a material —</option>
                 {materials.data.map(m => <option key={m.id} value={m.id}>{m.code} · {m.descr}</option>)}
               </select></td>
+              <td><input value={r.descr2 || ''} placeholder="printed after the description" maxLength={200}
+                style={{ minWidth: 150, padding: '6px 8px', border: '1px solid var(--line2)', borderRadius: 7 }}
+                onChange={e => setLines(lines.map((l, j) => j === i ? { ...l, descr2: e.target.value } : l))} /></td>
               <td className="fine">{r.read ? <>{r.read.descr}
                 {r.read.hsn && <span className="mono"> · {r.read.hsn}</span>}<br />
                 <Conf v={r.read.confidence} how={r.read.matched_by} /></> : '—'}</td>
@@ -203,13 +206,14 @@ export default function VendorInvoices() {
     </form>
 
     <Panel title={`Vendor invoice register — ${list.data.length}`} bodyless>
-      <Table head={['Invoice', 'Date', 'Vendor', 'Against PO', { label: 'Supply', align: 'c' },
+      <Table head={['Invoice', 'Our no.', 'Date', 'Vendor', 'Against PO', { label: 'Supply', align: 'c' },
         { label: 'Taxable', align: 'r' }, { label: 'Input tax', align: 'r' },
         { label: 'Total', align: 'r' }, { label: 'Paid', align: 'r' },
         { label: 'Status', align: 'c' }]} empty="No vendor invoices yet.">
         {list.data.map(v => (
           <tr key={v.id}>
             <td className="mono"><b>{v.doc_no}</b></td>
+            <td className="mono fine">{v.our_no || '—'}</td>
             <td className="mono">{gd(v.doc_date)}</td>
             <td>{v.vendor}</td>
             <td className="mono">{v.po_no || '—'}</td>

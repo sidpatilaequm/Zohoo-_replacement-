@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { PanMsme, BankBlock, Contacts, ContactCell, BankCell, MsmeTag } from '../components/PartyExtras'
@@ -19,8 +19,31 @@ export default function Vendors() {
   const [regs, setRegs] = useState([])
   const [g, setG] = useState({ gstin: '', label: '' })
   const [err, setErr] = useState(null)
+  const [editing, setEditing] = useState(null)
+  const logoRef = useRef(null)
+  function pickLogo(e) {
+    const file = e.target.files?.[0], id = Number(e.target.dataset.id); e.target.value = ''
+    if (!file || !id) return
+    if (file.size > 500 * 1024) return showFlash('That file is over 500 KB.', 'bad')
+    const r = new FileReader()
+    r.onload = async () => {
+      try { await api.vendorLogo(id, r.result); list.reload(); showFlash('Logo saved — it prints on every document for this vendor.') }
+      catch (x) { showFlash(x.message, 'bad') }
+    }
+    r.readAsDataURL(file)
+  }
   const [flash, showFlash] = useFlash()
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
+
+  function edit(v) {
+    setEditing(v.id)
+    setF({ ...BLANK, ...Object.fromEntries(Object.keys(BLANK).map(k => [k, v[k] ?? BLANK[k]])), tds_section: v.tds_section || '', tds_rate: v.tds_rate ?? 0 })
+    setRegs(v.gstins.map(r => ({ gstin: r.gstin, label: r.label || '', is_default: r.is_default })))
+    setContacts(v.contacts.map(x => ({ first_name: x.first_name, middle_name: x.middle_name || '', last_name: x.last_name || '',
+      designation_id: x.designation_id || '', phone: x.phone || '', email: x.email || '', is_primary: x.is_primary })))
+    setErr(null); window.scrollTo({ top: 0 })
+  }
+  function cancelEdit() { setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setErr(null) }
 
   function addReg() {
     const v = g.gstin.trim().toUpperCase()
@@ -32,8 +55,10 @@ export default function Vendors() {
   async function save(e) {
     e.preventDefault(); setErr(null)
     try {
-      await api.addVendor({ ...f, code: f.code || null, gstins: regs, contacts })
-      setF(BLANK); setRegs([]); setContacts([]); list.reload(); showFlash('Vendor saved.')
+      const body = { ...f, code: f.code || null, gstins: regs, contacts }
+      if (editing) await api.editVendor(editing, body); else await api.addVendor(body)
+      setEditing(null); setF(BLANK); setRegs([]); setContacts([]); list.reload()
+      showFlash(editing ? 'Vendor updated.' : 'Vendor saved.')
     } catch (x) { setErr(x.message) }
   }
   if (list.loading || states.loading || banks.loading || desigs.loading) return <Loading />
@@ -42,7 +67,8 @@ export default function Vendors() {
 
   return (<>
     {flash}
-    <Panel title="Add vendor">
+    <Panel title={editing ? `Edit vendor ${f.code}` : 'Add vendor'}
+      right={editing && <button type="button" className="btn btn-sm" onClick={cancelEdit}>Cancel edit</button>}>
       <form onSubmit={save}>
         <div className="row">
           <Field label="Vendor code"><input className="mono" value={f.code}
@@ -99,7 +125,7 @@ export default function Vendors() {
         <PanMsme f={f} set={set} />
         <BankBlock f={f} set={set} banks={banks.data} />
         <Contacts contacts={contacts} setContacts={setContacts} designations={desigs.data} />
-        <div className="ft"><button className="btn btn-a">Save vendor</button>
+        <div className="ft"><button className="btn btn-a">{editing ? 'Update vendor' : 'Save vendor'}</button>
           {err && <span className="err">{err}</span>}</div>
       </form>
     </Panel>
@@ -111,7 +137,10 @@ export default function Vendors() {
         {list.data.map(v => (
           <tr key={v.id}>
             <td className="mono">{v.code}</td>
-            <td><b>{v.name}</b>{v.email && <div className="fine">{v.email}</div>}</td>
+            <td style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {v.logo ? <img src={v.logo} alt="" style={{ height: 26, maxWidth: 60, objectFit: 'contain', border: '1px solid var(--line)', borderRadius: 4 }} />
+                : <span className="fine" style={{ fontSize: 11 }}>no logo</span>}
+              <div><b>{v.name}</b>{v.email && <div className="fine">{v.email}</div>}</div></td>
             <td className="c">{v.party_type === 'B2C'
               ? <Tag kind="warn">Unregistered</Tag> : <Tag kind="ok">Registered</Tag>}</td>
             <td>{v.gstins.length
@@ -123,11 +152,18 @@ export default function Vendors() {
             <td><BankCell p={v} /></td>
             <td><ContactCell contacts={v.contacts} /></td>
             <td className="fine">{v.addr}, {v.city} {v.pin}</td>
-            <td className="r"><button className="rm" onClick={async () => {
+            <td className="r" style={{ whiteSpace: 'nowrap' }}>
+              <button className="btn btn-sm" onClick={() => edit(v)}>Edit</button>
+              <button className="btn btn-sm" style={{ marginLeft: 4 }} title="Upload this vendor's logo; it prints on their documents"
+                onClick={() => { logoRef.current.dataset.id = v.id; logoRef.current.click() }}>{v.logo ? 'Change logo' : 'Logo'}</button>
+              {v.logo && <button className="btn btn-sm" style={{ marginLeft: 4 }} onClick={async () => {
+                try { await api.vendorLogo(v.id, null); list.reload() } catch (x) { showFlash(x.message, 'bad') } }}>Remove logo</button>}
+              <button className="rm" style={{ marginLeft: 4 }} onClick={async () => {
               try { await api.delVendor(v.id); list.reload() }
               catch (x) { showFlash(x.message, 'bad') } }}>×</button></td>
           </tr>))}
       </Table>
     </Panel>
+    <input type="file" ref={logoRef} accept="image/*" style={{ display: 'none' }} onChange={pickLogo} />
   </>)
 }

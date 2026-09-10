@@ -42,6 +42,27 @@ class Tenant(Base):
     po_prefix: Mapped[str]=mapped_column(String(24),default="PO/")
     po_seq: Mapped[int]=mapped_column(Integer,default=1)
     bank: Mapped[str|None]=mapped_column(String(255),nullable=True)
+        # v2.4 financial year / numbering
+    fy_start_month: Mapped[int]=mapped_column(Integer,default=4)
+    fy_start_day: Mapped[int]=mapped_column(Integer,default=1)
+    inv_fy: Mapped[bool]=mapped_column(Boolean,default=False)
+    po_fy: Mapped[bool]=mapped_column(Boolean,default=False)
+    vinv_prefix: Mapped[str]=mapped_column(String(24),default="PINV/")
+    vinv_seq: Mapped[int]=mapped_column(Integer,default=1)
+    vinv_fy: Mapped[bool]=mapped_column(Boolean,default=False)
+
+    # automatic master codes
+    cust_prefix: Mapped[str]=mapped_column(String(12),default="C")
+    cust_seq: Mapped[int]=mapped_column(Integer,default=1)
+    vend_prefix: Mapped[str]=mapped_column(String(12),default="V")
+    vend_seq: Mapped[int]=mapped_column(Integer,default=1)
+    mat_prefix: Mapped[str]=mapped_column(String(12),default="M")
+    mat_seq: Mapped[int]=mapped_column(Integer,default=1)
+
+    # structured organisation bank details
+    bank_name: Mapped[str|None]=mapped_column(String(120),nullable=True)
+    bank_ifsc: Mapped[str|None]=mapped_column(String(11),nullable=True)
+    bank_account: Mapped[str|None]=mapped_column(String(30),nullable=True)
     smtp_from_name: Mapped[str|None]=mapped_column(String(120),nullable=True)
     smtp_from_email: Mapped[str|None]=mapped_column(String(160),nullable=True)
     smtp_reply_to: Mapped[str|None]=mapped_column(String(160),nullable=True)
@@ -95,6 +116,7 @@ class Customer(Base):
     tenant_id: Mapped[int]=mapped_column(ForeignKey("tenants.id",ondelete="CASCADE"))
     code: Mapped[str]=mapped_column(String(20))
     name: Mapped[str]=mapped_column(String(160))
+    logo: Mapped[str|None]=mapped_column(Text,nullable=True)
     party_type: Mapped[str]=mapped_column(Enum("B2B","B2C",name="cpt"),default="B2B")
     bill_addr: Mapped[str]=mapped_column(String(255))
     bill_city: Mapped[str]=mapped_column(String(80))
@@ -136,6 +158,7 @@ class Vendor(Base):
     tenant_id: Mapped[int]=mapped_column(ForeignKey("tenants.id",ondelete="CASCADE"))
     code: Mapped[str]=mapped_column(String(20))
     name: Mapped[str]=mapped_column(String(160))
+    logo: Mapped[str|None]=mapped_column(Text,nullable=True)
     party_type: Mapped[str]=mapped_column(
         Enum("B2B","B2C",name="vpt"),default="B2B")
     addr: Mapped[str]=mapped_column(String(255))
@@ -210,6 +233,8 @@ class Invoice(Base):
     cancelled_on: Mapped[date|None]=mapped_column(Date,nullable=True)
     cancelled_by: Mapped[str|None]=mapped_column(String(120),nullable=True)
     cancel_reason: Mapped[str|None]=mapped_column(String(200),nullable=True)
+    subject: Mapped[str|None]=mapped_column(String(200),nullable=True)
+    instructions: Mapped[str|None]=mapped_column(Text,nullable=True)
     lines: Mapped[list["InvoiceLine"]]=relationship(back_populates="invoice",
         cascade="all, delete-orphan",lazy="selectin")
     customer: Mapped[Customer]=relationship(lazy="selectin")
@@ -223,6 +248,7 @@ class InvoiceLine(Base):
     material_id: Mapped[int]=mapped_column(ForeignKey("materials.id"))
     qty: Mapped[Decimal]=mapped_column(Numeric(14,3))
     price: Mapped[Decimal]=mapped_column(Numeric(14,2))
+    descr2: Mapped[str|None]=mapped_column(String(200),nullable=True)
     invoice: Mapped[Invoice]=relationship(back_populates="lines")
     material: Mapped[Material]=relationship(lazy="selectin")
 
@@ -253,6 +279,7 @@ class PoLine(Base):
     material_id: Mapped[int]=mapped_column(ForeignKey("materials.id"))
     qty: Mapped[Decimal]=mapped_column(Numeric(14,3))
     price: Mapped[Decimal]=mapped_column(Numeric(14,2))
+    descr2: Mapped[str|None]=mapped_column(String(200),nullable=True)
     po: Mapped[PurchaseOrder]=relationship(back_populates="lines")
     material: Mapped[Material]=relationship(lazy="selectin")
 
@@ -267,6 +294,7 @@ class VendorInvoice(Base):
     vendor_id: Mapped[int]=mapped_column(ForeignKey("vendors.id"))
     gstin: Mapped[str|None]=mapped_column(String(15),nullable=True)
     po_id: Mapped[int|None]=mapped_column(ForeignKey("purchase_orders.id"),nullable=True)
+    our_no: Mapped[str|None]=mapped_column(String(40),nullable=True)
     lines: Mapped[list["VendorInvoiceLine"]]=relationship(back_populates="vinv",
         cascade="all, delete-orphan",lazy="selectin")
     vendor: Mapped[Vendor]=relationship(lazy="selectin")
@@ -280,6 +308,7 @@ class VendorInvoiceLine(Base):
     material_id: Mapped[int]=mapped_column(ForeignKey("materials.id"))
     qty: Mapped[Decimal]=mapped_column(Numeric(14,3))
     price: Mapped[Decimal]=mapped_column(Numeric(14,2))
+    descr2: Mapped[str|None]=mapped_column(String(200),nullable=True)
     vinv: Mapped[VendorInvoice]=relationship(back_populates="lines")
     material: Mapped[Material]=relationship(lazy="selectin")
 
@@ -300,7 +329,17 @@ class Payment(Base):
     reverses_id: Mapped[int|None]=mapped_column(
         Integer,nullable=True
     )  # set on a reversal entry
+class DocSequence(Base):
+    """Next number per document kind per financial year."""
+    __tablename__="doc_sequences"
 
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        primary_key=True
+    )
+    kind: Mapped[str] = mapped_column(String(12), primary_key=True)
+    fy: Mapped[str] = mapped_column(String(9), primary_key=True)
+    next_no: Mapped[int] = mapped_column(Integer, default=1)
 # ---------------------------------------------------------- attributes
 class Attribute(Base):
     __tablename__="attributes"

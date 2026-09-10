@@ -3,6 +3,8 @@ from sqlalchemy import select, func
 from .. import models as M, schemas as S
 from ..db import get_db
 from ..deps import Ctx, current, need
+from ..service import next_code
+from ..fy import current_fy
 
 router = APIRouter(tags=["masters"])
 
@@ -29,9 +31,20 @@ def _save_contacts(ctx, kind, pid, contacts):
             last_name=c.last_name, designation_id=c.designation_id,
             phone=c.phone, email=c.email, is_primary=c.is_primary or n == 0))
 
+def _replace_contacts(ctx, kind, pid, contacts):
+    for old in ctx.db.execute(
+        select(M.PartyContact).where(
+            M.PartyContact.tenant_id == ctx.tenant.id,
+            M.PartyContact.party_kind == kind,
+            M.PartyContact.party_id == pid,
+        )
+    ).scalars():
+        ctx.db.delete(old)
 
+    ctx.db.flush()
+    _save_contacts(ctx, kind, pid, contacts)
 def _party_out(p, extra=None, contacts=None):
-    d = {"id": p.id, "code": p.code, "name": p.name, "party_type": p.party_type,
+    d = {"id": p.id, "code": p.code, "name": p.name, "party_type": p.party_type, "logo": p.logo,
          "email": p.email, "pan": p.pan, "msme_registered": p.msme_registered,
          "msme_number": p.msme_number, "bank_name": p.bank_name,
          "bank_ifsc": p.bank_ifsc, "bank_account": p.bank_account,
@@ -72,7 +85,7 @@ def list_customers(ctx: Ctx = Depends(need("customers"))):
 
 @router.post("/customers", status_code=201)
 def add_customer(body: S.CustomerIn, ctx: Ctx = Depends(need("customers"))):
-    code = body.code or f"C{ctx.db.execute(ctx.scope(select(M.Customer), M.Customer)).scalars().all().__len__() + 1:03d}"
+    code = body.code or next_code(ctx, "customer")
     if ctx.db.execute(ctx.scope(select(M.Customer), M.Customer)
                       .where(M.Customer.code == code)).scalar_one_or_none():
         raise HTTPException(409, f"Customer code {code} already exists in this organisation")
@@ -92,7 +105,108 @@ def add_customer(body: S.CustomerIn, ctx: Ctx = Depends(need("customers"))):
     ctx.db.refresh(c)
     return _party_out(c, contacts=_contacts_for(ctx, "CUSTOMER", c.id))
 
+@router.put("/customers/{cid}")
+def edit_customer(cid: int, body: S.CustomerIn, ctx: Ctx = Depends(need("customers"))):
+    c = ctx.get(M.Customer, cid)
+    if not c:
+        raise HTTPException(404, "No such customer")
 
+    code = body.code or c.code
+
+    other = ctx.db.execute(
+        ctx.scope(select(M.Customer), M.Customer)
+        .where(M.Customer.code == code, M.Customer.id != cid)
+    ).scalar_one_or_none()
+
+    if other:
+        raise HTTPException(
+            409,
+            f"Customer code {code} already exists in this organisation"
+        )
+
+    for g in body.gstins:
+        hit = ctx.db.execute(
+            select(M.CustomerGstin)
+            .where(M.CustomerGstin.gstin == g.gstin)
+        ).scalar_one_or_none()
+
+        if hit and hit.customer_id != cid:
+            raise HTTPException(
+                409,
+                f"GSTIN {g.gstin} is already recorded against another customer"
+            )
+
+    for k, v in body.model_dump(
+        exclude={"gstins", "code", "contacts"}
+    ).items():
+        setattr(c, k, v)
+
+    c.code = code
+
+    for old in ctx.db.execute(
+        select(M.CustomerGstin)
+        .where(M.CustomerGstin.customer_id == cid)
+    ).scalars():
+        ctx.db.delete(old)
+
+    ctx.db.flush()
+
+    for n, g in enumerate(body.gstins):
+        ctx.db.add(
+            M.CustomerGstin(
+                customer_id=c.id,
+                gstin=g.gstin,
+                state_code=g.gstin[:2],
+                label=g.label,
+                is_default=g.is_default or n == 0,
+            )
+        )
+
+    _replace_contacts(ctx, "CUSTOMER", c.id, body.contacts)
+
+    ctx.db.commit()
+    ctx.db.refresh(c)
+
+    return _party_out(
+        c,
+        contacts=_contacts_for(ctx, "CUSTOMER", c.id)
+    )
+
+def _check_logo(logo):
+    if logo and not str(logo).startswith("data:image/"):
+        raise HTTPException(
+            422,
+            "Send the logo as a data URI beginning data:image/"
+        )
+
+    if logo and len(logo) > 700_000:
+        raise HTTPException(
+            413,
+            "That image is too large. Keep it under about 500 KB."
+        )
+
+
+@router.put("/customers/{cid}/logo")
+def customer_logo(
+    cid: int,
+    body: dict,
+    ctx: Ctx = Depends(need("customers"))
+):
+    c = ctx.get(M.Customer, cid)
+
+    if not c:
+        raise HTTPException(404, "No such customer")
+
+    _check_logo(body.get("logo"))
+
+    c.logo = body.get("logo") or None
+
+    ctx.db.commit()
+
+    return {
+        "id": c.id,
+        "logo": c.logo
+    }
 @router.delete("/customers/{cid}", status_code=204)
 def del_customer(cid: int, ctx: Ctx = Depends(need("customers"))):
     c = ctx.get(M.Customer, cid)
@@ -117,8 +231,7 @@ def list_vendors(ctx: Ctx = Depends(need("vendors"))):
 
 @router.post("/vendors", status_code=201)
 def add_vendor(body: S.VendorIn, ctx: Ctx = Depends(need("vendors"))):
-    n = len(ctx.db.execute(ctx.scope(select(M.Vendor), M.Vendor)).scalars().all())
-    code = body.code or f"V{n + 1:03d}"
+    code = body.code or next_code(ctx, "vendor")
     if ctx.db.execute(ctx.scope(select(M.Vendor), M.Vendor)
                       .where(M.Vendor.code == code)).scalar_one_or_none():
         raise HTTPException(409, f"Vendor code {code} already exists in this organisation")
@@ -134,6 +247,88 @@ def add_vendor(body: S.VendorIn, ctx: Ctx = Depends(need("vendors"))):
     ctx.db.refresh(v)
     return _party_out(v, contacts=_contacts_for(ctx, "VENDOR", v.id))
 
+@router.put("/vendors/{vid}")
+def edit_vendor(
+    vid: int,
+    body: S.VendorIn,
+    ctx: Ctx = Depends(need("vendors"))
+):
+    v = ctx.get(M.Vendor, vid)
+
+    if not v:
+        raise HTTPException(404, "No such vendor")
+
+    code = body.code or v.code
+
+    other = ctx.db.execute(
+        ctx.scope(select(M.Vendor), M.Vendor)
+        .where(M.Vendor.code == code, M.Vendor.id != vid)
+    ).scalar_one_or_none()
+
+    if other:
+        raise HTTPException(
+            409,
+            f"Vendor code {code} already exists in this organisation"
+        )
+
+    for k, val in body.model_dump(
+        exclude={"gstins", "code", "contacts"}
+    ).items():
+        setattr(v, k, val)
+
+    v.code = code
+
+    for old in ctx.db.execute(
+        select(M.VendorGstin)
+        .where(M.VendorGstin.vendor_id == vid)
+    ).scalars():
+        ctx.db.delete(old)
+
+    ctx.db.flush()
+
+    for i, g in enumerate(body.gstins):
+        ctx.db.add(
+            M.VendorGstin(
+                vendor_id=v.id,
+                gstin=g.gstin,
+                state_code=g.gstin[:2],
+                label=g.label,
+                is_default=g.is_default or i == 0,
+            )
+        )
+
+    _replace_contacts(ctx, "VENDOR", v.id, body.contacts)
+
+    ctx.db.commit()
+    ctx.db.refresh(v)
+
+    return _party_out(
+        v,
+        contacts=_contacts_for(ctx, "VENDOR", v.id)
+    )
+
+
+@router.put("/vendors/{vid}/logo")
+def vendor_logo(
+    vid: int,
+    body: dict,
+    ctx: Ctx = Depends(need("vendors"))
+):
+    v = ctx.get(M.Vendor, vid)
+
+    if not v:
+        raise HTTPException(404, "No such vendor")
+
+    _check_logo(body.get("logo"))
+
+    v.logo = body.get("logo") or None
+
+    ctx.db.commit()
+
+    return {
+        "id": v.id,
+        "logo": v.logo
+    }
 
 @router.delete("/vendors/{vid}", status_code=204)
 def del_vendor(vid: int, ctx: Ctx = Depends(need("vendors"))):
@@ -170,7 +365,7 @@ def list_materials(ctx: Ctx = Depends(need("materials"))):
 
 @router.post("/materials", status_code=201)
 def add_material(body: S.MaterialIn, ctx: Ctx = Depends(need("materials"))):
-    code = body.code.upper()
+    code = (body.code or "").strip().upper() or next_code(ctx, "material")
     # an HSN on file supplies the rates unless the material overrides them
     hsn = ctx.db.execute(ctx.scope(select(M.HsnCode), M.HsnCode)
                          .where(M.HsnCode.code == body.hsn)).scalar_one_or_none()
@@ -202,7 +397,87 @@ def add_material(body: S.MaterialIn, ctx: Ctx = Depends(need("materials"))):
     ctx.db.commit()
     ctx.db.refresh(m)
     return _mat_out(m, {int(k): str(v) for k, v in (body.attributes or {}).items()})
+@router.put("/materials/{mid}")
+def edit_material(
+    mid: int,
+    body: S.MaterialIn,
+    ctx: Ctx = Depends(need("materials"))
+):
+    m = ctx.get(M.Material, mid)
 
+    if not m:
+        raise HTTPException(404, "No such material")
+
+    code = (body.code or "").strip().upper() or m.code
+
+    other = ctx.db.execute(
+        ctx.scope(select(M.Material), M.Material)
+        .where(M.Material.code == code, M.Material.id != mid)
+    ).scalar_one_or_none()
+
+    if other:
+        raise HTTPException(
+            409,
+            f"Material code {code} already exists in this organisation"
+        )
+
+    hsn = ctx.db.execute(
+        ctx.scope(select(M.HsnCode), M.HsnCode)
+        .where(M.HsnCode.code == body.hsn)
+    ).scalar_one_or_none()
+
+    if hsn and (body.use_hsn_rates or body.sgst_pct is None):
+        body.sgst_pct = hsn.sgst_pct
+        body.cgst_pct = hsn.cgst_pct
+        body.igst_pct = hsn.igst_pct
+
+    if body.sgst_pct is None:
+        raise HTTPException(
+            422,
+            f"No rates were given and HSN {body.hsn} is not in the HSN and SAC master."
+        )
+
+    data = body.model_dump(
+        exclude={"attributes", "use_hsn_rates", "stock_qty"}
+    )
+
+    for k, v in data.items():
+        setattr(m, k, v)
+
+    m.code = code
+
+    for old in ctx.db.execute(
+        select(M.MaterialAttribute)
+        .where(M.MaterialAttribute.material_id == mid)
+    ).scalars():
+        ctx.db.delete(old)
+
+    ctx.db.flush()
+
+    for aid, val in (body.attributes or {}).items():
+        a = ctx.db.get(M.Attribute, int(aid))
+
+        if not a:
+            raise HTTPException(
+                422,
+                f"Attribute {aid} does not exist"
+            )
+
+        ctx.db.add(
+            M.MaterialAttribute(
+                material_id=m.id,
+                attribute_id=a.id,
+                value=str(val)
+            )
+        )
+
+    ctx.db.commit()
+    ctx.db.refresh(m)
+
+    return _mat_out(
+        m,
+        {int(k): str(v) for k, v in (body.attributes or {}).items()}
+    )
 
 @router.delete("/materials/{mid}", status_code=204)
 def del_material(mid: int, ctx: Ctx = Depends(need("materials"))):
@@ -223,7 +498,23 @@ def get_org(ctx: Ctx = Depends(need("org"))):
             "city": t.city, "state_code": t.state_code, "pin": t.pin, "logo": t.logo,
             "company_type": t.company_type,
             "inv_prefix": t.inv_prefix, "inv_seq": t.inv_seq,
-            "po_prefix": t.po_prefix, "po_seq": t.po_seq, "bank": t.bank,
+            "po_prefix": t.po_prefix, "po_seq": t.po_seq, "bank": t.bank, "inv_fy": t.inv_fy,
+            "po_fy": t.po_fy,
+            "vinv_prefix": t.vinv_prefix,
+            "vinv_seq": t.vinv_seq,
+            "vinv_fy": t.vinv_fy,
+            "fy_start_month": t.fy_start_month,
+            "fy_start_day": t.fy_start_day,
+            "current_fy": current_fy(t),
+            "cust_prefix": t.cust_prefix,
+            "cust_seq": t.cust_seq,
+            "vend_prefix": t.vend_prefix,
+            "vend_seq": t.vend_seq,
+            "mat_prefix": t.mat_prefix,
+            "mat_seq": t.mat_seq,
+            "bank_name": t.bank_name,
+            "bank_ifsc": t.bank_ifsc,
+            "bank_account": t.bank_account,
             "smtp": {"from_name": t.smtp_from_name, "from_email": t.smtp_from_email,
                      "reply_to": t.smtp_reply_to, "bcc": t.smtp_bcc, "host": t.smtp_host,
                      "port": t.smtp_port, "encryption": t.smtp_encryption,

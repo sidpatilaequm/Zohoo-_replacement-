@@ -32,7 +32,15 @@ export default function Company() {
         gstin: f.gstin || null, pan: f.pan || null,
         addr: f.addr, city: f.city, state_code: f.state_code, pin: f.pin,
         inv_prefix: f.inv_prefix, inv_seq: Number(f.inv_seq),
-        po_prefix: f.po_prefix, po_seq: Number(f.po_seq), bank: f.bank })
+        po_prefix: f.po_prefix, po_seq: Number(f.po_seq), bank: f.bank || null,
+        inv_fy: !!f.inv_fy, po_fy: !!f.po_fy, vinv_prefix: f.vinv_prefix || 'PINV/',
+        vinv_seq: Number(f.vinv_seq || 1), vinv_fy: !!f.vinv_fy,
+        fy_start_month: Number(f.fy_start_month || 4), fy_start_day: Number(f.fy_start_day || 1),
+        cust_prefix: f.cust_prefix || 'C', cust_seq: Number(f.cust_seq || 1),
+        vend_prefix: f.vend_prefix || 'V', vend_seq: Number(f.vend_seq || 1),
+        mat_prefix: f.mat_prefix || 'M', mat_seq: Number(f.mat_seq || 1),
+        bank_name: f.bank_name || null, bank_ifsc: (f.bank_ifsc || '').toUpperCase() || null,
+        bank_account: f.bank_account || null })
       showFlash('Organisation saved.'); org.reload()
     } catch (x) { setErr(x.message) }
   }
@@ -55,6 +63,11 @@ export default function Company() {
   }
 
   const trading = f.company_type === 'TRADING'
+  const pad = (pre, n) => `${pre}${String(Number(n || 1)).padStart(3, '0')}`
+  const fyEnd = (m, d) => { const mm = Number(m || 4), dd = Number(d || 1)
+    const e = new Date(2027, mm - 1, dd); e.setDate(e.getDate() - 1)
+    return `${e.getDate()} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][e.getMonth()]}` }
+  const preview = (pre, fy, n) => fy ? `${pre}${org.data.current_fy || '2026-27'}/001` : pad(pre, n)
   return (<>
     {flash}
     <form onSubmit={saveOrg}>
@@ -170,18 +183,87 @@ export default function Company() {
           <Field label="PIN"><input className="mono" maxLength={6} value={f.pin || ''}
             onChange={e => set('pin', e.target.value)} /></Field>
         </div>
-        <div className="row" style={{ marginTop: 13 }}>
+        <h3 style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--muted)',
+          margin: '18px 0 8px', fontWeight: 500 }}>Financial year</h3>
+        <div className="row">
+          <Field label="Year starts on" hint="Indian default 1 April; 1 January gives a calendar year">
+            <div style={{ display: 'flex', gap: 6 }}>
+              <input className="mono" type="number" min="1" max="31" style={{ width: 70 }} value={f.fy_start_day ?? 1}
+                onChange={e => set('fy_start_day', e.target.value)} />
+              <select value={f.fy_start_month ?? 4} onChange={e => set('fy_start_month', e.target.value)}>
+                {['January','February','March','April','May','June','July','August','September','October','November','December'].map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+              </select></div></Field>
+          <Field label="Year ends on" hint="Always the day before the next start">
+            <input readOnly className="mono" value={fyEnd(f.fy_start_month, f.fy_start_day)} /></Field>
+          <Field label="Current financial year" hint="Registers and reports default to this">
+            <input readOnly className="mono" value={org.data.current_fy || ''} /></Field>
+        </div>
+
+        <h3 style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--muted)',
+          margin: '18px 0 8px', fontWeight: 500 }}>Number ranges</h3>
+        <p className="fine" style={{ margin: '0 0 8px' }}>Tick "with financial year" to put the year in the number and restart
+          the count every year — e.g. <span className="mono">INV/2026-27/001</span>. Untick for one running number.</p>
+        <div className="row">
           <Field label="Invoice prefix"><input className="mono" value={f.inv_prefix}
             onChange={e => set('inv_prefix', e.target.value)} /></Field>
-          <Field label="Next invoice number"><input className="mono" type="number" min="1"
-            value={f.inv_seq} onChange={e => set('inv_seq', e.target.value)} /></Field>
+          <Field label="Next invoice number" hint={f.inv_fy ? 'Per year; managed automatically' : ''}>
+            <input className="mono" type="number" min="1" disabled={!!f.inv_fy}
+              value={f.inv_seq} onChange={e => set('inv_seq', e.target.value)} /></Field>
+          <Field label="With financial year"><select value={f.inv_fy ? 'Y' : 'N'}
+            onChange={e => set('inv_fy', e.target.value === 'Y')}><option value="N">No</option><option value="Y">Yes</option></select></Field>
+          <Field label="Preview"><input readOnly className="mono" value={preview(f.inv_prefix, f.inv_fy, f.inv_seq)} /></Field>
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
           <Field label="PO prefix"><input className="mono" value={f.po_prefix}
             onChange={e => set('po_prefix', e.target.value)} /></Field>
-          <Field label="Next PO number"><input className="mono" type="number" min="1"
+          <Field label="Next PO number"><input className="mono" type="number" min="1" disabled={!!f.po_fy}
             value={f.po_seq} onChange={e => set('po_seq', e.target.value)} /></Field>
-          <Field label="Bank details for documents"><input value={f.bank || ''}
-            onChange={e => set('bank', e.target.value)} /></Field>
+          <Field label="With financial year"><select value={f.po_fy ? 'Y' : 'N'}
+            onChange={e => set('po_fy', e.target.value === 'Y')}><option value="N">No</option><option value="Y">Yes</option></select></Field>
+          <Field label="Preview"><input readOnly className="mono" value={preview(f.po_prefix, f.po_fy, f.po_seq)} /></Field>
         </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <Field label="Purchase invoice prefix" hint="Our own number for a vendor's invoice"><input className="mono" value={f.vinv_prefix || 'PINV/'}
+            onChange={e => set('vinv_prefix', e.target.value)} /></Field>
+          <Field label="Next purchase invoice number"><input className="mono" type="number" min="1" disabled={!!f.vinv_fy}
+            value={f.vinv_seq ?? 1} onChange={e => set('vinv_seq', e.target.value)} /></Field>
+          <Field label="With financial year"><select value={f.vinv_fy ? 'Y' : 'N'}
+            onChange={e => set('vinv_fy', e.target.value === 'Y')}><option value="N">No</option><option value="Y">Yes</option></select></Field>
+          <Field label="Preview"><input readOnly className="mono" value={preview(f.vinv_prefix || 'PINV/', f.vinv_fy, f.vinv_seq ?? 1)} /></Field>
+        </div>
+
+        <h3 style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--muted)',
+          margin: '18px 0 8px', fontWeight: 500 }}>Automatic codes for masters</h3>
+        <p className="fine" style={{ margin: '0 0 8px' }}>A customer, vendor or material saved without a code gets the next one from here.</p>
+        <div className="row">
+          <Field label="Customer code prefix"><input className="mono" value={f.cust_prefix ?? 'C'}
+            onChange={e => set('cust_prefix', e.target.value)} /></Field>
+          <Field label="Next customer"><input className="mono" type="number" min="1" value={f.cust_seq ?? 1}
+            onChange={e => set('cust_seq', e.target.value)} /></Field>
+          <Field label="Vendor code prefix"><input className="mono" value={f.vend_prefix ?? 'V'}
+            onChange={e => set('vend_prefix', e.target.value)} /></Field>
+          <Field label="Next vendor"><input className="mono" type="number" min="1" value={f.vend_seq ?? 1}
+            onChange={e => set('vend_seq', e.target.value)} /></Field>
+          <Field label="Material code prefix"><input className="mono" value={f.mat_prefix ?? 'M'}
+            onChange={e => set('mat_prefix', e.target.value)} /></Field>
+          <Field label="Next material"><input className="mono" type="number" min="1" value={f.mat_seq ?? 1}
+            onChange={e => set('mat_seq', e.target.value)} /></Field>
+        </div>
+        <p className="fine" style={{ margin: '6px 0 0' }}>Next codes: <span className="mono">{pad(f.cust_prefix ?? 'C', f.cust_seq)}</span> ·{' '}
+          <span className="mono">{pad(f.vend_prefix ?? 'V', f.vend_seq)}</span> · <span className="mono">{pad(f.mat_prefix ?? 'M', f.mat_seq)}</span></p>
+
+        <h3 style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--muted)',
+          margin: '18px 0 8px', fontWeight: 500 }}>Bank details — printed on customer invoices</h3>
+        <div className="row">
+          <Field label="Bank name"><input value={f.bank_name || ''} placeholder="e.g. SBI"
+            onChange={e => set('bank_name', e.target.value)} /></Field>
+          <Field label="IFSC code" hint="Eleven characters, e.g. SBIN0040807"><input className="mono" maxLength={11}
+            value={f.bank_ifsc || ''} onChange={e => set('bank_ifsc', e.target.value.toUpperCase())} /></Field>
+          <Field label="Account number"><input className="mono" value={f.bank_account || ''}
+            onChange={e => set('bank_account', e.target.value)} /></Field>
+        </div>
+        <p className="fine" style={{ margin: '6px 0 0' }}>Prints under Terms &amp; Conditions as
+          "{f.name}, {f.bank_name || 'Bank'} Account No: {f.bank_account || '…'} IFSC Code: {f.bank_ifsc || '…'}".</p>
         <div className="ft"><button className="btn btn-a">Save organisation</button>
           {err && <span className="err">{err}</span>}</div>
       </Panel>

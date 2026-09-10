@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
-import { Panel, Table, useLoad, Loading, ErrorBox } from '../components/ui'
+import { Panel, Table, useLoad, Loading, ErrorBox, PeriodPicker, useDefaultFy } from '../components/ui'
 import { inr, gd } from '../lib/fmt'
 import GstFiling from '../components/GstFiling'
 
@@ -14,10 +14,15 @@ const REPORTS = [
 export default function Reports() {
   const { api } = useAuth()
   const [kind, setKind] = useState('crec')
-  const rec = useLoad(() => api.receivables())
-  const pay = useLoad(() => api.payables())
-  const mar = useLoad(() => api.margin())
-  const busy = rec.loading || pay.loading || mar.loading
+  const fys = useLoad(() => api.financialYears())
+  const months = useLoad(() => api.periods())
+  const [period, setPeriod] = useState(undefined)
+  useDefaultFy(fys.data, period, setPeriod)
+  const p = period || null
+  const rec = useLoad(() => period === undefined ? [] : api.receivables(p), [period])
+  const pay = useLoad(() => period === undefined ? [] : api.payables(p), [period])
+  const mar = useLoad(() => period === undefined ? [] : api.margin(p), [period])
+  const busy = rec.loading || pay.loading || mar.loading || fys.loading || period === undefined
   if (busy) return <Loading />
   const anyErr = rec.error || pay.error || mar.error
   if (anyErr) return <ErrorBox>{anyErr}</ErrorBox>
@@ -42,11 +47,13 @@ export default function Reports() {
        'Purchase value', 'Margin', 'Margin %'], 'margin.csv')
   }
 
-  const picker = (
+  const picker = (<>
     <select value={kind} onChange={e => setKind(e.target.value)}
       style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
       {REPORTS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
-    </select>)
+    </select>
+    {kind !== 'gst' && <PeriodPicker value={period} onChange={setPeriod} months={months.data || []}
+      years={fys.data || []} allLabel="All years" />}</>)
 
   if (kind === 'gst') return (<>
     <Panel title="Reports" right={picker}>
