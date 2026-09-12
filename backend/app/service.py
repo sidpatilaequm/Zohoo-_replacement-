@@ -95,10 +95,21 @@ def build_lines(ctx, lines_in, use_cost=False):
     for i, li in enumerate(lines_in, 1):
         m = ctx.get(M.Material, li.material_id)
         if not m:
-            raise HTTPException(422, f"Line {i}: that material does not exist in this organisation")
-        price = li.price if li.price is not None else (m.cost if use_cost else m.price)
+            raise HTTPException(
+                422,
+                f"Line {i}: that material does not exist in this organisation"
+            )
+
+        price = li.price if li.price is not None else (
+            m.cost if use_cost else m.price
+        )
+
         if Decimal(str(price)) <= 0:
-            raise HTTPException(422, f"Line {i}: price must be more than zero")
+            raise HTTPException(
+                422,
+                f"Line {i}: price must be more than zero"
+            )
+
         out.append(
             (
                 i,
@@ -106,6 +117,7 @@ def build_lines(ctx, lines_in, use_cost=False):
                 Decimal(str(li.qty)),
                 Decimal(str(price)),
                 (li.descr2 or "").strip() or None,
+                bool(getattr(li, "price_inclusive", False)),
             )
         )
     return out
@@ -121,11 +133,43 @@ def live_invoices(ctx, doc_type="TAX"):
     if doc_type:
         q = q.where(M.Invoice.doc_type == doc_type)
     return q
+class _RatedMaterial:
+    """The material as this invoice line taxes it.
 
+    A line may select its own permitted GST rates. When present, those
+    rates override the material defaults; otherwise the material defaults
+    are used.
+    """
+    __slots__ = ("_m", "sgst_pct", "cgst_pct", "igst_pct")
+
+    def __init__(self, m, sgst, cgst, igst):
+        self._m = m
+        self.sgst_pct = m.sgst_pct if sgst is None else sgst
+        self.cgst_pct = m.cgst_pct if cgst is None else cgst
+        self.igst_pct = m.igst_pct if igst is None else igst
+
+    def __getattr__(self, name):
+        return getattr(self._m, name)
+
+
+def _rated(l):
+    return _RatedMaterial(
+        l.material,
+        getattr(l, "sgst_pct", None),
+        getattr(l, "cgst_pct", None),
+        getattr(l, "igst_pct", None),
+    )
 
 def invoice_tax(ctx, inv) -> TaxResult:
     lines = [
-        (l.line_no, l.material, l.qty, l.price, l.descr2)
+        (
+            l.line_no,
+            _rated(l),
+            l.qty,
+            l.price,
+            l.descr2,
+            bool(getattr(l, "price_inclusive", False)),
+        )
         for l in sorted(inv.lines, key=lambda x: x.line_no)
     ]
     return compute(lines, ctx.tenant.state_code, inv.pos_state)

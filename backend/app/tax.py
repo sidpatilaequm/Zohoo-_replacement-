@@ -37,6 +37,8 @@ class TaxLine:
     sgst: Decimal
     igst: Decimal
     rate: Decimal
+    inclusive: bool = False
+    gross: Decimal = Decimal("0")
 
 
 @dataclass
@@ -57,45 +59,116 @@ class TaxResult:
 
 
 def compute(lines, org_state: str, pos_state: str, taxable_supply: bool = True) -> TaxResult:
-    """lines: iterable of (line_no, material, qty, price).
+    """Compute GST per line.
 
-    taxable_supply=False switches tax off entirely, which is what an
-    unregistered vendor's supply looks like — no GST charged, no credit.
+    lines may contain:
+      (line_no, material, qty, price)
+      (line_no, material, qty, price, descr2)
+      (line_no, material, qty, price, descr2, inclusive)
+
+    taxable_supply=False switches tax off entirely.
+
+    When a line is GST-inclusive, the quoted gross amount is preserved and
+    GST is carved out of that amount rather than added on top.
     """
     intra = pos_state == org_state
     res = TaxResult(intra=intra)
-    for row in lines:
-        if len(row) == 4:
-            line_no, m, qty, price = row
-            descr2 = None
-        else:
-            line_no, m, qty, price, descr2 = row
 
-        qty, price = Decimal(str(qty)), Decimal(str(price))
-        amount = q2(qty * price)
+    for ln in lines:
+        line_no, m, qty, price = ln[0], ln[1], ln[2], ln[3]
+        descr2 = ln[4] if len(ln) > 4 else None
+        incl = bool(ln[5]) if len(ln) > 5 else bool(
+            getattr(m, "price_inclusive", False)
+        )
+
+        descr = f"{m.descr} {descr2}".strip() if descr2 else m.descr
+
+        qty = Decimal(str(qty))
+        price = Decimal(str(price))
+        gross = q2(qty * price)
+
+        cg = Decimal(str(m.cgst_pct))
+        sg = Decimal(str(m.sgst_pct))
+        ig = Decimal(str(m.igst_pct))
+
+        rate = (cg + sg) if intra else ig
+
         if not taxable_supply:
+            amount = gross
             c = s = i = Decimal("0.00")
             rate = Decimal("0")
-        elif intra:
-            c = q2(amount * Decimal(str(m.cgst_pct)) / 100)
-            s = q2(amount * Decimal(str(m.sgst_pct)) / 100)
-            i = Decimal("0.00")
-            rate = Decimal(str(m.cgst_pct)) + Decimal(str(m.sgst_pct))
+            incl = False
+
+        elif incl:
+            amount = q2(gross * 100 / (100 + rate)) if rate else gross
+            carved = q2(gross - amount)
+
+            if intra:
+                if (cg + sg):
+                    c = q2(carved * cg / (cg + sg))
+                    s = q2(carved - c)
+                else:
+                    c = s = Decimal("0.00")
+                i = Decimal("0.00")
+            else:
+                c = s = Decimal("0.00")
+                i = carved
+
         else:
-            c = s = Decimal("0.00")
-            i = q2(amount * Decimal(str(m.igst_pct)) / 100)
-            rate = Decimal(str(m.igst_pct))
-        res.lines.append(TaxLine(line_no, m.id, m.code, m.descr,descr2, m.hsn, m.uom,
-                                 qty, price, amount, c, s, i, rate))
+            amount = gross
+
+            if intra:
+                c = q2(amount * cg / 100)
+                s = q2(amount * sg / 100)
+                i = Decimal("0.00")
+            else:
+                c = s = Decimal("0.00")
+                i = q2(amount * ig / 100)
+
+            gross = q2(amount + c + s + i)
+
+        res.lines.append(
+            TaxLine(
+                line_no,
+                m.id,
+                m.code,
+                descr,
+                descr2,
+                m.hsn,
+                m.uom,
+                qty,
+                price,
+                amount,
+                c,
+                s,
+                i,
+                rate,
+                inclusive=incl,
+                gross=gross,
+            )
+        )
+
         res.taxable += amount
         res.cgst += c
         res.sgst += s
         res.igst += i
-    res.taxable, res.cgst = q2(res.taxable), q2(res.cgst)
-    res.sgst, res.igst = q2(res.sgst), q2(res.igst)
-    res.total = q2(res.taxable + res.cgst + res.sgst + res.igst)
-    res.rounded = res.total.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+    res.taxable = q2(res.taxable)
+    res.cgst = q2(res.cgst)
+    res.sgst = q2(res.sgst)
+    res.igst = q2(res.igst)
+
+    res.total = q2(
+        res.taxable + res.cgst + res.sgst + res.igst
+    )
+
+    res.rounded = res.total.quantize(
+        Decimal("1"),
+        rounding=ROUND_HALF_UP
+    )
+
     res.roundoff = q2(res.rounded - res.total)
+
     return res
 
 
