@@ -132,11 +132,17 @@ jobs:
             # 3. CREATE TEMPORARY DEPLOYMENT WORKTREE
             # --------------------------------------------------
 
-            echo "Creating temporary deployment worktree..."
+            echo "Creating temporary deployment release..."
 
             rm -rf "$RELEASE_DIR"
+            mkdir -p "$RELEASE_DIR"
 
-            git worktree add --detach "$RELEASE_DIR" origin/v3-upgrade
+            DEPLOY_COMMIT="$(git rev-parse origin/v3-upgrade)"
+
+            echo "Production target commit:"
+            echo "$DEPLOY_COMMIT"
+
+            git archive "$DEPLOY_COMMIT" | tar -x -C "$RELEASE_DIR"
 
             echo "Release commit:"
             git -C "$RELEASE_DIR" log -1 --oneline
