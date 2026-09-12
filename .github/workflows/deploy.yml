@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - v3-upgrade
   workflow_dispatch:
 
 permissions:
