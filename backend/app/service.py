@@ -160,6 +160,52 @@ def _rated(l):
         getattr(l, "igst_pct", None),
     )
 
+class _RatedMaterial:
+    """Material wrapper carrying the GST rate selected on the invoice line."""
+    __slots__ = ("_m", "sgst_pct", "cgst_pct", "igst_pct")
+
+    def __init__(self, m, sgst, cgst, igst):
+        self._m = m
+        self.sgst_pct = m.sgst_pct if sgst is None else sgst
+        self.cgst_pct = m.cgst_pct if cgst is None else cgst
+        self.igst_pct = m.igst_pct if igst is None else igst
+
+    def __getattr__(self, name):
+        return getattr(self._m, name)
+
+
+def _rated(l):
+    return _RatedMaterial(
+        l.material,
+        getattr(l, "sgst_pct", None),
+        getattr(l, "cgst_pct", None),
+        getattr(l, "igst_pct", None),
+    )
+
+
+class _RatedMaterial:
+    """Material wrapper carrying the GST rate selected on the invoice line."""
+    __slots__ = ("_m", "sgst_pct", "cgst_pct", "igst_pct")
+
+    def __init__(self, m, sgst, cgst, igst):
+        self._m = m
+        self.sgst_pct = m.sgst_pct if sgst is None else sgst
+        self.cgst_pct = m.cgst_pct if cgst is None else cgst
+        self.igst_pct = m.igst_pct if igst is None else igst
+
+    def __getattr__(self, name):
+        return getattr(self._m, name)
+
+
+def _rated(l):
+    return _RatedMaterial(
+        l.material,
+        getattr(l, "sgst_pct", None),
+        getattr(l, "cgst_pct", None),
+        getattr(l, "igst_pct", None),
+    )
+
+
 def invoice_tax(ctx, inv) -> TaxResult:
     lines = [
         (
