@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
 PERMS = ["invoice","saved","po","vinv","so","del","grn","disc","phys","stock",
+         "audit",
          "crec","vpay","reports","registers","gstr","customers","vendors",
          "materials","attrs","hsn","org","users","data"]
 
@@ -34,6 +35,7 @@ class Tenant(Base):
     city: Mapped[str|None]=mapped_column(String(80),nullable=True)
     state_code: Mapped[str]=mapped_column(String(2),ForeignKey("states.code"))
     pin: Mapped[str|None]=mapped_column(String(6),nullable=True)
+    user_limit: Mapped[int]=mapped_column(Integer,default=2)
     company_type: Mapped[str]=mapped_column(
         Enum("TRADING","NONTRADING",name="cotype"),default="NONTRADING")
     logo: Mapped[str|None]=mapped_column(Text,nullable=True)
@@ -91,6 +93,7 @@ class Group(Base):
     id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
     tenant_id: Mapped[int]=mapped_column(ForeignKey("tenants.id",ondelete="CASCADE"))
     name: Mapped[str]=mapped_column(String(80))
+    read_only: Mapped[bool]=mapped_column(Boolean,default=False)
     perms: Mapped[list["GroupPerm"]]=relationship(back_populates="group",
         cascade="all, delete-orphan",lazy="selectin")
 
@@ -134,6 +137,8 @@ class Customer(Base):
     bank_ifsc: Mapped[str|None]=mapped_column(String(11),nullable=True)
     bank_account: Mapped[str|None]=mapped_column(String(30),nullable=True)
     email: Mapped[str|None]=mapped_column(String(160),nullable=True)
+    payment_term_days: Mapped[int]=mapped_column(Integer,default=0)
+    payment_terms: Mapped[str|None]=mapped_column(String(120),nullable=True)
     pan: Mapped[str|None]=mapped_column(String(10),nullable=True)
     bank_ifsc: Mapped[str|None]=mapped_column(String(11),nullable=True)
     bank_account: Mapped[str|None]=mapped_column(String(24),nullable=True)
@@ -174,6 +179,8 @@ class Vendor(Base):
     bank_ifsc: Mapped[str|None]=mapped_column(String(11),nullable=True)
     bank_account: Mapped[str|None]=mapped_column(String(24),nullable=True)
     email: Mapped[str|None]=mapped_column(String(160),nullable=True)
+    payment_term_days: Mapped[int]=mapped_column(Integer,default=0)
+    payment_terms: Mapped[str|None]=mapped_column(String(120),nullable=True)
     tds_section: Mapped[str|None]=mapped_column(String(10),nullable=True)
     tds_rate: Mapped[Decimal]=mapped_column(Numeric(5,2),default=0)
 
@@ -200,6 +207,7 @@ class Material(Base):
     code: Mapped[str]=mapped_column(String(30))
     descr: Mapped[str]=mapped_column(String(200))
     price: Mapped[Decimal]=mapped_column(Numeric(14,2))
+    price_inclusive: Mapped[bool]=mapped_column(Boolean,default=False)
     cost: Mapped[Decimal]=mapped_column(Numeric(14,2),default=0)
     hsn: Mapped[str]=mapped_column(String(8))
     stock_qty: Mapped[Decimal]=mapped_column(Numeric(14,3),default=0)
@@ -235,6 +243,21 @@ class Invoice(Base):
     cancel_reason: Mapped[str|None]=mapped_column(String(200),nullable=True)
     subject: Mapped[str|None]=mapped_column(String(200),nullable=True)
     instructions: Mapped[str|None]=mapped_column(Text,nullable=True)
+
+    # v4.1 — selected billing/shipping addresses
+    bill_addr_id: Mapped[int|None]=mapped_column(
+        ForeignKey("party_addresses.id"),nullable=True
+    )
+    ship_addr_id: Mapped[int|None]=mapped_column(
+        ForeignKey("party_addresses.id"),nullable=True
+    )
+
+    # v4.1 — manual place of supply / price mode
+    pos_manual: Mapped[bool]=mapped_column(Boolean,default=False)
+    price_mode: Mapped[str]=mapped_column(
+        Enum("MATERIAL","INCL","EXCL",name="pmode2"),default="MATERIAL"
+    )
+
     lines: Mapped[list["InvoiceLine"]]=relationship(back_populates="invoice",
         cascade="all, delete-orphan",lazy="selectin")
     customer: Mapped[Customer]=relationship(lazy="selectin")
@@ -249,6 +272,15 @@ class InvoiceLine(Base):
     qty: Mapped[Decimal]=mapped_column(Numeric(14,3))
     price: Mapped[Decimal]=mapped_column(Numeric(14,2))
     descr2: Mapped[str|None]=mapped_column(String(200),nullable=True)
+
+    # v4.1 — GST rate selected for this invoice line
+    sgst_pct: Mapped[Decimal|None]=mapped_column(Numeric(5,2),nullable=True)
+    cgst_pct: Mapped[Decimal|None]=mapped_column(Numeric(5,2),nullable=True)
+    igst_pct: Mapped[Decimal|None]=mapped_column(Numeric(5,2),nullable=True)
+    rate_label: Mapped[str|None]=mapped_column(String(120),nullable=True)
+    # v4.1 — price entered inclusive of GST
+    price_inclusive: Mapped[bool]=mapped_column(Boolean,default=False)
+
     invoice: Mapped[Invoice]=relationship(back_populates="lines")
     material: Mapped[Material]=relationship(lazy="selectin")
 
@@ -266,6 +298,9 @@ class PurchaseOrder(Base):
     ship_same: Mapped[bool]=mapped_column(Boolean,default=True)
     ship_addr: Mapped[str]=mapped_column(Text)
     status: Mapped[str]=mapped_column(Enum("OPEN","INVOICED","CANCELLED",name="postat"),default="OPEN")
+    ship_addr_id: Mapped[int|None]=mapped_column(
+        ForeignKey("party_addresses.id"),nullable=True
+    )
     lines: Mapped[list["PoLine"]]=relationship(back_populates="po",
         cascade="all, delete-orphan",lazy="selectin")
     vendor: Mapped[Vendor]=relationship(lazy="selectin")
@@ -528,3 +563,50 @@ class Gstr3bUpload(Base):
     itc_igst: Mapped[Decimal]=mapped_column(Numeric(16,2),default=0)
     itc_cgst: Mapped[Decimal]=mapped_column(Numeric(16,2),default=0)
     itc_sgst: Mapped[Decimal]=mapped_column(Numeric(16,2),default=0)
+# ------------------------------------------------ additional addresses
+class PartyAddress(Base):
+    __tablename__="party_addresses"
+    __table_args__=(UniqueConstraint("tenant_id","party_kind","party_id","label",
+                                     name="uq_pa"),)
+
+    id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    tenant_id: Mapped[int]=mapped_column(
+        ForeignKey("tenants.id",ondelete="CASCADE")
+    )
+    party_kind: Mapped[str]=mapped_column(
+        Enum("CUSTOMER","VENDOR",name="pakind")
+    )
+    party_id: Mapped[int]=mapped_column(Integer)
+    label: Mapped[str]=mapped_column(String(80))
+    addr_type: Mapped[str]=mapped_column(
+        Enum("BILLING","SHIPPING","BOTH",name="paatype"),default="BOTH"
+    )
+    gstin: Mapped[str|None]=mapped_column(String(15),nullable=True)
+    addr: Mapped[str]=mapped_column(String(255))
+    city: Mapped[str]=mapped_column(String(80))
+    state_code: Mapped[str]=mapped_column(
+        String(2),ForeignKey("states.code")
+    )
+    pin: Mapped[str|None]=mapped_column(String(6),nullable=True)
+    contact: Mapped[str|None]=mapped_column(String(120),nullable=True)
+    phone: Mapped[str|None]=mapped_column(String(20),nullable=True)
+    is_default: Mapped[bool]=mapped_column(Boolean,default=False)
+    active: Mapped[bool]=mapped_column(Boolean,default=True)
+
+
+class HsnRate(Base):
+    __tablename__="hsn_rates"
+    __table_args__=(UniqueConstraint("hsn_id","label",name="uq_hr"),)
+
+    id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    hsn_id: Mapped[int]=mapped_column(
+        ForeignKey("hsn_codes.id",ondelete="CASCADE")
+    )
+    label: Mapped[str]=mapped_column(String(120))
+    sgst_pct: Mapped[Decimal]=mapped_column(Numeric(5,2))
+    cgst_pct: Mapped[Decimal]=mapped_column(Numeric(5,2))
+    igst_pct: Mapped[Decimal]=mapped_column(Numeric(5,2))
+    cess_pct: Mapped[Decimal]=mapped_column(Numeric(5,2),default=0)
+    condition_note: Mapped[str|None]=mapped_column(String(255),nullable=True)
+    is_default: Mapped[bool]=mapped_column(Boolean,default=False)
+    active: Mapped[bool]=mapped_column(Boolean,default=True)

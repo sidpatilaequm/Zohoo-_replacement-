@@ -102,7 +102,7 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
     stock = tracks_stock(ctx)
 
     if stock:
-        for i, m, qty, _, _ in resolved:
+        for i, m, qty, _, _, _inclusive in resolved:
             if qty > m.stock_qty:
                 raise HTTPException(
                     422,
@@ -127,7 +127,7 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
 
     ctx.db.add(inv)
     ctx.db.flush()
-    for n, m, qty, price, d2 in resolved:
+    for n, m, qty, price, d2, inclusive in resolved:
         ctx.db.add(
             M.InvoiceLine(
                 invoice_id=inv.id,
@@ -136,6 +136,7 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
                 qty=qty,
                 price=price,
                 descr2=d2,
+                price_inclusive=inclusive,
             )
         )
 
@@ -272,7 +273,7 @@ def add_po(body: S.PoIn, ctx: Ctx = Depends(need("po"))):
                          ship_addr=bill if body.ship_same else body.ship_addr)
     ctx.db.add(po)
     ctx.db.flush()
-    for n, m, qty, price, d2 in build_lines(
+    for n, m, qty, price, d2, _inclusive in build_lines(
         ctx, body.lines, use_cost=True
     ):
         ctx.db.add(M.PoLine(po_id=po.id, line_no=n, material_id=m.id, qty=qty, price=price, descr2=d2,))
@@ -315,7 +316,12 @@ def add_vinv(body: S.VendorInvoiceIn, ctx: Ctx = Depends(need("vinv"))):
             M.VendorInvoice.doc_no == body.doc_no)).scalar_one_or_none():
         raise HTTPException(409, f"{v.name} already has an invoice numbered {body.doc_no}")
     if body.lines:
-        resolved = build_lines(ctx, body.lines, use_cost=True)
+        resolved = [
+            (n, m, qty, price, d2)
+            for n, m, qty, price, d2, _inclusive
+            in build_lines(ctx, body.lines, use_cost=True)
+        ]
+
     elif po:
         resolved = [(l.line_no, l.material, l.qty, l.price, l.descr2)
                     for l in sorted(po.lines, key=lambda x: x.line_no)]
