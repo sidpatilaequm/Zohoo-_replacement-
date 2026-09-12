@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - v3-upgrade
   workflow_dispatch:
 
 permissions:
@@ -122,7 +123,7 @@ jobs:
 
             echo "Fetching latest main..."
 
-            git fetch origin main
+            git fetch origin main v3-upgrade
 
             echo "Production target commit:"
             git rev-parse origin/main
@@ -131,11 +132,16 @@ jobs:
             # 3. CREATE TEMPORARY DEPLOYMENT WORKTREE
             # --------------------------------------------------
 
-            echo "Creating temporary deployment worktree..."
+            echo "Creating temporary deployment release..."
 
             rm -rf "$RELEASE_DIR"
 
-            git worktree add --detach "$RELEASE_DIR" origin/main
+            DEPLOY_COMMIT="$(git rev-parse origin/v3-upgrade)"
+
+            echo "Production target commit:"
+            echo "$DEPLOY_COMMIT"
+
+            git worktree add --detach "$RELEASE_DIR" "$DEPLOY_COMMIT"
 
             echo "Release commit:"
             git -C "$RELEASE_DIR" log -1 --oneline
@@ -297,6 +303,41 @@ jobs:
             fi
 
             # --------------------------------------------------
+            # 9. VERIFY v3 READ-ONLY GROUP MIGRATION
+            # --------------------------------------------------
+
+            echo "Checking v3 user_groups.read_only schema..."
+
+            READ_ONLY_COLUMN=$(sudo mysql -N -s aequm_billing -e "
+              SELECT COUNT(*)
+              FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = 'aequm_billing'
+                AND TABLE_NAME = 'user_groups'
+                AND COLUMN_NAME = 'read_only';
+            ")
+
+            echo "user_groups.read_only = $READ_ONLY_COLUMN"
+
+            if [ "$READ_ONLY_COLUMN" = "0" ]; then
+
+              echo "Applying v3 read_only migration..."
+
+              sudo mysql aequm_billing < "$RELEASE_DIR/db/04_v3_read_only.sql"
+
+              echo "v3 read_only migration completed."
+
+            elif [ "$READ_ONLY_COLUMN" = "1" ]; then
+
+              echo "v3 read_only migration already applied."
+
+            else
+
+              echo "ERROR: Unexpected user_groups.read_only schema state."
+              exit 1
+
+            fi
+
+            # --------------------------------------------------
             # IMPORTANT DATABASE SAFETY RULE
             # --------------------------------------------------
             # NEVER run:
@@ -380,7 +421,7 @@ jobs:
 
             cd "$APP_DIR"
 
-            git worktree remove --force "$RELEASE_DIR"
+            git worktree remove --force "$RELEASE_DIR" || true
 
             echo "======================================"
             echo "Aequm Billing deployment successful"

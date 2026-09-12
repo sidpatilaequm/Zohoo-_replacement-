@@ -7,3 +7,4 @@ node_modules/
 dist/
 *.log
 aequm_billing_backup.sql
+.vrnv/
