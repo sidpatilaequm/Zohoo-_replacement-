@@ -136,7 +136,7 @@ jobs:
 
             rm -rf "$RELEASE_DIR"
 
-            git worktree add --detach "$RELEASE_DIR" origin/main
+            git worktree add --detach "$RELEASE_DIR" origin/v3-upgrade
 
             echo "Release commit:"
             git -C "$RELEASE_DIR" log -1 --oneline
