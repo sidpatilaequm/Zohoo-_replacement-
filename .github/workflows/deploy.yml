@@ -135,14 +135,13 @@ jobs:
             echo "Creating temporary deployment release..."
 
             rm -rf "$RELEASE_DIR"
-            mkdir -p "$RELEASE_DIR"
 
             DEPLOY_COMMIT="$(git rev-parse origin/v3-upgrade)"
 
             echo "Production target commit:"
             echo "$DEPLOY_COMMIT"
 
-            git archive "$DEPLOY_COMMIT" | tar -x -C "$RELEASE_DIR"
+            git worktree add --detach "$RELEASE_DIR" "$DEPLOY_COMMIT"
 
             echo "Release commit:"
             git -C "$RELEASE_DIR" log -1 --oneline
@@ -387,7 +386,7 @@ jobs:
 
             cd "$APP_DIR"
 
-            git worktree remove --force "$RELEASE_DIR"
+            git worktree remove --force "$RELEASE_DIR" || true
 
             echo "======================================"
             echo "Aequm Billing deployment successful"
