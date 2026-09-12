@@ -187,6 +187,7 @@ class MaterialIn(BaseModel):
     code: str | None = None
     descr: str
     price: Decimal
+    price_inclusive: bool = False
     cost: Decimal = Decimal("0")
     hsn: str
     stock_qty: Decimal = Decimal("0")
@@ -220,6 +221,8 @@ class LineIn(BaseModel):
     material_id: int
     qty: Decimal = Field(gt=0)
     price: Decimal | None = None
+    hsn_rate_id: int | None = None
+    price_inclusive: bool | None = None
     descr2: str | None = Field(None, max_length=200)
 
 
