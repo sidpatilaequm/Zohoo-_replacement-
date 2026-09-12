@@ -123,7 +123,7 @@ jobs:
 
             echo "Fetching latest main..."
 
-            git fetch origin main
+            git fetch origin main v3-upgrade
 
             echo "Production target commit:"
             git rev-parse origin/main
