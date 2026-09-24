@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
 PERMS = ["invoice","saved","po","vinv","so","del","grn","disc","phys","stock",
-         "audit",
+         "audit","bankstmt","cardstmt",
          "crec","vpay","reports","registers","gstr","customers","vendors",
          "materials","attrs","hsn","org","users","data"]
 
@@ -610,3 +610,67 @@ class HsnRate(Base):
     condition_note: Mapped[str|None]=mapped_column(String(255),nullable=True)
     is_default: Mapped[bool]=mapped_column(Boolean,default=False)
     active: Mapped[bool]=mapped_column(Boolean,default=True)
+
+# ------------------------------------------------ bank and card statements
+class StmtAccount(Base):
+    __tablename__="stmt_accounts"
+    __table_args__=(UniqueConstraint("tenant_id","kind","label",name="uq_sa"),)
+
+    id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    tenant_id: Mapped[int]=mapped_column(
+        ForeignKey("tenants.id",ondelete="CASCADE")
+    )
+    kind: Mapped[str]=mapped_column(Enum("BANK","CARD",name="sakind"))
+    label: Mapped[str]=mapped_column(String(120))
+    holder: Mapped[str|None]=mapped_column(String(120),nullable=True)
+    number_hint: Mapped[str|None]=mapped_column(String(30),nullable=True)
+    active: Mapped[bool]=mapped_column(Boolean,default=True)
+    created_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
+
+
+class StmtUpload(Base):
+    __tablename__="stmt_uploads"
+
+    id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    tenant_id: Mapped[int]=mapped_column(
+        ForeignKey("tenants.id",ondelete="CASCADE")
+    )
+    account_id: Mapped[int]=mapped_column(
+        ForeignKey("stmt_accounts.id",ondelete="CASCADE")
+    )
+    period: Mapped[str]=mapped_column(String(7))
+    filename: Mapped[str]=mapped_column(String(200))
+    uploaded_by: Mapped[str|None]=mapped_column(String(120),nullable=True)
+    txns_found: Mapped[int]=mapped_column(Integer,default=0)
+    txns_new: Mapped[int]=mapped_column(Integer,default=0)
+    created_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
+    account: Mapped[StmtAccount]=relationship(lazy="selectin")
+
+
+class StmtTxn(Base):
+    __tablename__="stmt_txns"
+    __table_args__=(UniqueConstraint("tenant_id","account_id","fingerprint",name="uq_st"),)
+
+    id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    tenant_id: Mapped[int]=mapped_column(
+        ForeignKey("tenants.id",ondelete="CASCADE")
+    )
+    account_id: Mapped[int]=mapped_column(
+        ForeignKey("stmt_accounts.id",ondelete="CASCADE")
+    )
+    upload_id: Mapped[int]=mapped_column(
+        ForeignKey("stmt_uploads.id",ondelete="CASCADE")
+    )
+    txn_date: Mapped[date]=mapped_column(Date)
+    descr: Mapped[str]=mapped_column(String(240))
+    debit: Mapped[Decimal]=mapped_column(Numeric(14,2),default=0)
+    credit: Mapped[Decimal]=mapped_column(Numeric(14,2),default=0)
+    fingerprint: Mapped[str]=mapped_column(String(40))
+    allocation: Mapped[str]=mapped_column(
+        Enum("NA","UNALLOCATED","COMPANY","PERSONAL",name="salloc"),
+        default="NA"
+    )
+    category: Mapped[str|None]=mapped_column(String(60),nullable=True)
+    notes: Mapped[str|None]=mapped_column(String(200),nullable=True)
+    allocated_by: Mapped[str|None]=mapped_column(String(120),nullable=True)
+    allocated_at: Mapped[datetime|None]=mapped_column(DateTime,nullable=True)

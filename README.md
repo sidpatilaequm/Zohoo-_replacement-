@@ -27,6 +27,179 @@ stack below is what stores data properly.
 Sign in as `alok@aequm.in` (any password — the demo does not check them, and says
 so on screen).
 
+
+## Version 4.1 changes
+
+Three points raised against the tax invoice print-out, checked against the code
+and covered by `tests/test_v41_print.py`.
+
+**Item & Description.** The line prints the material description and the
+invoice line's *Description 2* together, in that order, separated by a space
+(`Microsoft office Basic plan Annual subscription ...`), with the material code
+on the line beneath. A line saved without a Description 2 prints the master
+description alone. This is decided at print time from what is on the invoice
+line, so an invoice that shows only the master description was saved without a
+Description 2 on that line. The CSV importers for customer invoices, estimates,
+purchase orders and vendor invoices now carry an optional **Description 2**
+column; files made from the v4 templates, which do not have it, still load.
+
+**Payment Made and Balance Due.** Saving an invoice records no receipt. A new
+tax invoice prints `Payment Made (-) 0.00` and `Balance Due` equal to the
+total. The Payment Made figure is the sum of receipts recorded against that
+invoice on the Receipts screen, and nothing else, so an invoice printing a
+Payment Made equal to its total has a receipt on file for it. A test now pins
+this down: nil before a receipt, reduced by exactly the receipt after.
+
+**Place of supply.** This is unchanged, deliberately. Under GST the place of
+supply is where the recipient is, not where the supplier is: Aequm in
+Karnataka billing a customer in Delhi is an inter-state supply with place of
+supply Delhi (07) and IGST charged, which is what the invoice in question
+shows. Printing Karnataka against it would contradict the IGST on the same
+document and misfile the invoice in GSTR-1. The New Invoice screen still lets
+the place of supply be overridden for a specific document (a service actually
+performed in Karnataka, say), and when it is set to Karnataka the tax switches
+to CGST and SGST as it must.
+
+## Version 4 changes
+
+**The Reports link was broken, and this is why.** Two of the three endpoints the
+Reports screen calls were guarded by the `gstr` permission instead of `reports`,
+so any group holding Reports but not GST Returns — the seeded **Sales** group is
+exactly that — saw the menu item, clicked it and got an error. `returns/periods`
+had the same shape of problem, and now accepts any of `gstr`, `registers` or
+`reports` through a new `need_any()` dependency: a period list is wanted by
+three screens, and tying it to one meant a group that could open a screen could
+not load it.
+
+**Place of supply.** The field was editable, but selecting a GST registration
+overwrote it, so an override was lost the moment anything else on the header was
+touched. It now defaults from the billing address, shows plainly when it has been
+set by hand, offers a one-click way back to the default, records `pos_manual` on
+the invoice, and refuses a state code that does not exist.
+
+**Several addresses per party.** A customer or vendor can hold any number of
+addresses, each with its own state and its own GSTIN, because a party with
+premises in two states holds a separate registration for each. The invoice picks
+which to bill and which to deliver to, and the billing address chosen drives the
+default place of supply. An address already used on a document cannot be deleted,
+only deactivated, so old documents still print correctly.
+
+**Several rates per HSN or SAC code.** A rate is not a property of the code — it
+comes from the rate notification entry, and one code can sit against more than
+one entry. Each code now holds a list of permitted rates with the condition that
+earns each, and the invoice line says which applies.
+
+**Choosing the rate does not choose the head.** Whether the tax lands as CGST and
+SGST or as IGST still follows the place of supply and is not the user's to pick.
+A test pins this: the same 5% rate produces CGST 25.00 intra-state and IGST 50.00
+inter-state, with identical total tax.
+
+**Payment terms and the due date.** The customer master carries a credit period
+and the wording to print. The invoice due date is the invoice date plus that
+period, filled in automatically and overridable by typing. The footer carries the
+payment terms with the due date, **Remit To** with the organisation's own bank,
+and **Customer Bank Account On File** from the customer master.
+
+One thing worth flagging on that last point: the money normally travels the other
+way, so the organisation's own bank is what lets a customer pay. Both are printed,
+each labelled, rather than one silently replacing the other.
+
+
+## Licence seats
+
+A company set is licensed for **two users**, and the auditor occupies one of
+them. That is the point of the limit: it caps who can sign in, not who can
+change things.
+
+A seat is a *role in a company set*, not a person. Someone holding a role in two
+organisations occupies a seat in each, because they can sign in to each.
+
+Every path that could create a seat checks first — adding a user, approving a
+join request, or moving someone into the set — and refuses with the count rather
+than allowing an unlicensed sign-in. Changing an existing user's group does not
+take a new seat. `GET /api/licence` reports the position, and the Users screen
+shows it.
+
+## The auditor
+
+A seeded **Auditor** group that can open every screen carrying a document and
+change none of them.
+
+**Read-only is enforced at the HTTP verb, not the screen.** A screen permission
+grants the screen, not the verb, so without this a group given the Customers
+screen in order to *read* customers could also *create* them — which is exactly
+what happened the first time, and a test now pins it shut. A group flagged
+view-only is refused anything that is not a GET, whatever screens it holds.
+
+### Automatic reconciliation
+
+`GET /api/audit/reconcile?period=YYYY-MM` runs two checks and says plainly
+whether anything needs looking at.
+
+**GST** compares three statements of the same month: the invoice register, what
+GSTR-1 would carry, and what was actually filed in GSTR-3B. Proforma and
+cancelled documents are excluded and counted, because neither carries a
+liability. Where no GSTR-3B has been uploaded it says so, rather than quietly
+comparing the books against nothing. Differences under a rupee are rounding.
+
+**TDS** compares what was deducted against what the vendor master says should
+have been deducted, and flags the cases that carry a legal consequence of their
+own — a deduction with no PAN on file, a rate that does not match the section, a
+deduction where the master carries no rate at all, or nothing deducted where it
+does.
+
+Both are reconciliations of the records held here. Neither is a filing and
+neither touches the portal.
+
+One thing worth knowing: GSTR-1 and GSTR-3B are monthly, so the GST half only
+means anything against a period. The screen lands on the most recent one and
+says so if you switch to all periods.
+
+
+## Prices with GST in them, or without
+
+A material carries a **price basis**: the price is either before GST or has GST
+already in it. The invoice handles both, and an invoice can mix them.
+
+Three ways to decide, in order of precedence:
+
+1. the whole document — *Prices on this invoice are* set to all inclusive or all
+   exclusive, which overrides everything on it
+2. a single line, where the entry says so explicitly
+3. otherwise the flag on the material
+
+**The basis is frozen onto the invoice line.** Repricing a material later cannot
+re-interpret an invoice already issued, and a test pins that shut.
+
+### Why the tax is carved out by subtraction
+
+On an inclusive line the customer pays exactly quantity times price, so the tax
+is carved out of that figure rather than added to it:
+
+    taxable = gross x 100 / (100 + rate)
+    tax     = gross - taxable          <- subtraction, not a second percentage
+
+Deriving both halves independently would leave them disagreeing by a paisa on odd
+numbers, and the customer would be billed something other than the price they
+were quoted. The intra-state split works the same way: CGST is derived, SGST is
+whatever is left, so the two always add back to the carved amount.
+
+Tested on 3 x 333.33, 7 x 99.99, 11 x 45.55 and 2 x 1234.56 — taxable plus tax
+equals the gross to the paisa in every case.
+
+**The head still follows the place of supply.** Choosing a pricing basis does not
+choose between CGST/SGST and IGST, and neither does choosing a rate. An inclusive
+line of 1,180 gives CGST 90 and SGST 90 intra-state, or IGST 180 inter-state, with
+the same 1,000 taxable and the same 1,180 total.
+
+**GSTR-1 reports the taxable value, not the gross**, whichever way the price was
+quoted, because that is what the return asks for.
+
+On the printed invoice an inclusive line shows the value *before* tax in the Rate
+and Amount columns, so quantity times rate equals the amount on its own row.
+Printing the quoted figure there would break the arithmetic of the row. The line
+is marked and a note under the terms explains the carve-out.
+
 ## Running it
 
 ### Docker
@@ -125,6 +298,115 @@ carry a quantity so licences and service units can be counted.
 **Trading** — buys and sells physical goods. Stock comes in through a purchase
 order and goods receipt, and goes out through a sales order, delivery and goods
 issue.
+
+## PDF print-outs
+
+Purchase orders, customer invoices (tax and proforma) and customer receipt vouchers
+print as A4 PDFs from the **Purchase orders**, **Invoices** and **Receipts** screens —
+**View** opens the PDF in a new tab, **PDF** downloads it. The figures come from the
+same tax engine as the screen, so the print never disagrees with what was shown.
+
+Every print has two layouts, chosen with the **Print layout** picker on the page:
+
+| | Trading | Non-trading |
+|---|---|---|
+| Line columns | HSN · Qty · UoM | SAC · Units · Per |
+| Header | Required-by date | Service start / period |
+| Party blocks | Bill to **and** Deliver / Ship to | Bill to and Service details |
+| Terms | goods, delivery, transport, returns | services, licences, SLA, TDS |
+
+The default follows the organisation's company type (Company Information), and the
+other layout is always available, so a services company can still print a goods
+invoice for the odd hardware sale. The API is
+`GET /api/print/{purchase-orders|invoices|receipts}/{id}.pdf?variant=TRADING|NONTRADING`
+with `disposition=inline` to open in the browser; permissions are the same as for
+viewing the document.
+
+## Reading vendor invoices
+
+On **Vendor invoices**, upload the supplier's invoice as a PDF or image and the form is
+filled from it: invoice number and dates, the vendor (matched by GSTIN, then by name),
+the purchase order (by number), and the line items (by material code, then by HSN
+and description). Each match carries a confidence; anything uncertain is highlighted
+and listed under *Check before recording*. Nothing is written until **Record** is pressed,
+and a vendor invoice may now be recorded without a purchase order.
+
+Reading happens in three layers, each optional:
+
+1. **PDF text layer** — always available.
+2. **OCR** for scanned PDFs and images — `tesseract-ocr` is installed in the API
+   container; without it, image uploads are refused with a clear message.
+3. **Model reading** — set `ANTHROPIC_API_KEY` (and optionally `EXTRACT_MODEL`) in
+   `docker-compose.yml` or the environment and the text is also sent to Claude for a
+   structured reading; its answer fills gaps and is preferred when its lines reconcile
+   better with the printed total. The screen shows which layers are active.
+
+`POST /api/vendor-invoices/extract` (multipart `file`) returns the proposal;
+`GET /api/vendor-invoices/extract/capabilities` reports what the container can read.
+
+## v2.3 — masters editing, Description 2, invoice layout, services companies
+
+- **Edit customers, vendors and materials** — an *Edit* button on each list row loads the
+  record into the form; *Update* saves it (`PUT /api/customers/{id}`, `/api/vendors/{id}`,
+  `/api/materials/{id}`). Registrations and contact people are replaced as a set; invoices
+  keep their own copy of the GSTIN, so editing a customer never changes a filed document.
+- **Description 2** on every line of a customer invoice, purchase order and vendor invoice.
+  It is stored on the document line only — the material master is untouched — and every
+  print-out shows *Description + Description 2* (e.g. "Microsoft office basic plan migration").
+  A vendor invoice copied from a PO inherits the PO's Description 2.
+- **Invoice print-out** now follows the organisation's standard layout: masthead and GSTIN
+  left, TAX INVOICE right; #, Invoice Date, Terms (Due on Receipt / Net N days), Due Date,
+  Place of Supply; Bill To / Ship To with GSTIN; **Subject**; item grid with HSN/SAC, Qty,
+  Rate, a tax column group (IGST, or CGST + SGST) and Amount; Sub Total, IGST18 (18%), Total,
+  Payment Made (−), Balance Due; Total In Words; **Notes**; Terms & Conditions with the bank
+  line; Authorized Signature.
+- **Specific instructions** — a text box on the invoice form, saved with the invoice and
+  printed as *Notes*. Subject is printed under the party blocks.
+- **Company information → Bank details** are now three fields (Bank name, IFSC, Account
+  number, validated) and print under Terms & Conditions as
+  "Aequm India Private Limited, SBI Account No: 38600386525 IFSC Code: SBIN0040807".
+- **Non-trading (services) company**: the material master has no stock quantity, batch or
+  shelf-life fields; customer invoices and vendor invoices neither check nor move stock.
+  A trading company keeps all of that. The switch is *Company type* on Company information.
+
+Upgrading an existing database: run `db/04_descr2_bank_instructions.sql`.
+
+## Cancelling an invoice
+
+A tax invoice is cancelled from the **Invoice Register** (Cancel, with a reason). It is
+not deleted — a GST document number must not be reused — but:
+
+- it drops out of every GST register, GSTR-1 and GSTR-3B, which reverses the output
+  tax it carried, and GSTR-1 table 13 (documents issued) counts it as cancelled;
+- stock issued on it comes back;
+- every receipt against it, including TDS the customer deducted, is reversed by a
+  contra entry dated the day of cancellation that references the original receipt,
+  so the settlement position and the TDS receivable return to nil. Reversal entries
+  are shown in red on **Customer Payments** and cannot be printed as receipts.
+
+The print-out of a cancelled invoice carries a CANCELLED watermark and the reason.
+Proformas are not tax documents and are simply deleted. (`POST /api/invoices/{id}/cancel`.)
+
+The register can also print any invoice **as a proforma** (or a proforma as a tax
+invoice) with the *Print as* picker — `?as=PRO|TAX` on the print route.
+
+## GST filing — A, B and A − B
+
+Under **Reports → GST filing** (also on **GST Returns**):
+
+- **A — GSTR-1 register.** Every tax invoice of the period by table (B2B, B2CL, B2CS)
+  with totals. Downloads as **Portal JSON** — the GSTR-1 upload schema (`b2b`, `b2cl`,
+  `b2cs`, `hsn`, `doc_issue`) accepted by the GST portal and the Returns Offline Tool —
+  or as an **Offline tool Excel** workbook with one sheet per table, plus the section CSVs.
+- **B — GSTR-3B as filed.** Upload the GSTR-3B JSON downloaded from the portal
+  (`sup_details.osup_det` and `itc_elg` are read), a `field,value` CSV, or type the
+  figures. Stored per period.
+- **A − B.** Outward taxable, IGST, CGST, SGST and input credit head by head with the
+  difference. Until a GSTR-3B is uploaded, B is the 3B computed from the books and the
+  panel says so. (`GET /api/returns/reconciliation/ab?period=YYYY-MM`.)
+
+Upgrading an existing database: run `db/03_cancel_and_gstr.sql` (docker applies it
+automatically on a fresh volume).
 
 ## Stock
 

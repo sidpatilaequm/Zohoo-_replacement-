@@ -84,11 +84,16 @@ def print_invoice(iid: int, variant: str | None = None, disposition: str = "atta
     if dt not in ("TAX", "PRO"):
         raise HTTPException(422, "as must be TAX or PRO")
     c = inv.customer
+    pos_state = ctx.db.get(M.State, inv.pos_state)
     doc = {"doc_no": inv.doc_no, "doc_type": dt, "doc_date": inv.doc_date,"subject": inv.subject, "instructions": inv.instructions,
            "cancelled": inv.status == "CANCELLED", "cancel_reason": inv.cancel_reason,
            "cancelled_on": inv.cancelled_on,
            "due_date": inv.due_date, "po_no": inv.po_no, "po_date": inv.po_date,
-           "gstin": inv.gstin, "pos_state__name": inv.pos_state, "reverse_chg": inv.reverse_chg,
+            "gstin": inv.gstin,
+            "pos_state_name": pos_state.name if pos_state else inv.pos_state,
+            "pos_state": inv.pos_state,
+            "pos_manual": inv.pos_manual,
+            "reverse_chg": inv.reverse_chg,
            "converted_from": inv.converted_from,
            "customer": {"name": c.name, "email": c.email, "pan": c.pan,"logo": c.logo,
                         "party_type": c.party_type, "ship_same": c.ship_same,

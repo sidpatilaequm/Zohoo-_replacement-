@@ -8,8 +8,16 @@ export default function Templates() {
   const list = useLoad(() => api.templates())
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(null)
+  const [dl, setDl] = useState(null)
   const [flash, showFlash] = useFlash()
   const refs = useRef({})
+
+  async function fetchTemplate(key) {
+    setDl(key)
+    try { const name = await api.templateDl(key); showFlash(`${name} downloaded.`) }
+    catch (x) { showFlash(`Could not download the template: ${x.message}`, 'bad') }
+    finally { setDl(null) }
+  }
 
   if (list.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
@@ -40,7 +48,9 @@ export default function Templates() {
       const r = result && result.key === t.key ? result : null
       return (
         <Panel key={t.key} title={t.label} right={
-          <a className="btn btn-sm" href={api.templateUrl(t.key)}>Download template</a>}>
+          <button type="button" className="btn btn-sm" disabled={dl === t.key}
+            onClick={() => fetchTemplate(t.key)}>
+            {dl === t.key ? 'Downloading…' : 'Download template'}</button>}>
           <div className="fine" style={{ marginBottom: 10 }}>
             <b>Columns:</b> {t.columns.join(' · ')}</div>
           <div className="ft" style={{ marginTop: 0 }}>

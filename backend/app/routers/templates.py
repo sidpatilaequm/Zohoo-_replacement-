@@ -50,29 +50,33 @@ OBJECTS = {
   "customer-estimates": {
     "perm": "invoice", "label": "Customer estimates (proforma invoices)",
     "cols": ["Document Number","Document Date","Due Date","Customer Code","Recipient GSTIN",
-             "Place of Supply","Their Reference","Material Code","Quantity","Unit Price"],
+             "Place of Supply","Their Reference","Material Code","Description 2","Quantity","Unit Price"],
     "example": ["EST/900","2026-08-14","","C900","29AAACE1234R1Z9","29","RFQ-11",
-                "PHM-NEW","10","148.00"]},
+                "PHM-NEW","annual plan Oct 26 to Sep 27","10","148.00"]},
   "customer-invoices": {
     "perm": "invoice", "label": "Customer invoices",
     "cols": ["Invoice Number","Invoice Date","Due Date","Customer Code","Recipient GSTIN",
              "Place of Supply","PO Number","PO Date","Reverse Charge","Material Code",
-             "Quantity","Unit Price"],
+             "Description 2","Quantity","Unit Price"],
     "example": ["INV/900","2026-08-14","2026-09-13","C900","29AAACE1234R1Z9","29","PO-8891",
-                "2026-08-01","N","PHM-NEW","10","148.00"]},
+                "2026-08-01","N","PHM-NEW","annual plan Oct 26 to Sep 27","10","148.00"]},
   "vendor-estimates": {
     "perm": "po", "label": "Vendor estimates (purchase orders)",
     "cols": ["PO Number","PO Date","Required By","Vendor Code","Vendor GSTIN",
-             "Billing Address","Delivery Address","Material Code","Quantity","Cost Price"],
+             "Billing Address","Delivery Address","Material Code","Description 2","Quantity","Cost Price"],
     "example": ["PO/900","2026-08-01","2026-08-20","V900","27AABCE1234F1Z5",
-                "Our registered office","Warehouse 2","PHM-NEW","200","112.00"]},
+                "Our registered office","Warehouse 2","PHM-NEW","","200","112.00"]},
   "vendor-invoices": {
     "perm": "vinv", "label": "Vendor invoices",
     "cols": ["Vendor Invoice Number","Invoice Date","Due Date","Vendor Code","PO Number",
-             "Material Code","Quantity","Unit Price"],
-    "example": ["SUP/2026/77","2026-08-05","2026-09-04","V900","PO/900","PHM-NEW",
+             "Material Code","Description 2","Quantity","Unit Price"],
+    "example": ["SUP/2026/77","2026-08-05","2026-09-04","V900","PO/900","PHM-NEW","",
                 "200","112.00"]},
 }
+
+# Columns a file may leave out. "Description 2" arrived in v4.1, and files
+# made from the earlier templates must still load.
+OPTIONAL_COLS = {"Description 2"}
 
 
 @router.get("")
@@ -98,7 +102,7 @@ def template_csv(key: str, ctx: Ctx = Depends(need("data"))):
 # ------------------------------------------------------------- helpers
 def _rows(raw, cols):
     rdr = csv.DictReader(io.StringIO(raw))
-    missing = [c for c in cols if c not in (rdr.fieldnames or [])]
+    missing = [c for c in cols if c not in (rdr.fieldnames or []) and c not in OPTIONAL_COLS]
     if missing:
         raise HTTPException(422,
             f"These columns are missing from the file: {', '.join(missing)}. "
@@ -297,7 +301,9 @@ def _import_documents(ctx, key, rows):
                 price_col = "Unit Price" if "Unit Price" in r else "Cost Price"
                 lines.append({"material_id": m.id,
                               "qty": _dec(r["Quantity"], "Quantity", n),
-                              "price": _dec(r.get(price_col), price_col, n)})
+                              "price": _dec(r.get(price_col), price_col, n),
+                              # printed after the material description, on the same line
+                              "descr2": (r.get("Description 2") or "").strip() or None})
             if key in ("customer-estimates", "customer-invoices"):
                 c = find(M.Customer, first["Customer Code"].strip())
                 if not c:

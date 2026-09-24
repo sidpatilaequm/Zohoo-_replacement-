@@ -126,6 +126,8 @@ class PanMsmeIn(BaseModel):
 class CustomerIn(BankIn, PanMsmeIn):
     code: str | None = None
     name: str
+    payment_term_days: int = 0
+    payment_terms: str | None = None
     party_type: str = "B2B"
     bill_addr: str
     bill_city: str
@@ -154,6 +156,8 @@ class CustomerIn(BankIn, PanMsmeIn):
 class VendorIn(BankIn, PanMsmeIn):
     code: str | None = None
     name: str
+    payment_term_days: int = 0
+    payment_terms: str | None = None
     party_type: str = "B2B"
     tds_section: str | None = None
     tds_rate: Decimal = Decimal("0")
@@ -228,12 +232,16 @@ class LineIn(BaseModel):
 
 class InvoiceIn(BaseModel):
     doc_no: str | None = None
+    price_mode: str = "MATERIAL"
+    bill_addr_id: int | None = None
+    ship_addr_id: int | None = None
     doc_type: str = "TAX"
     doc_date: date
     due_date: date | None = None
     customer_id: int
     gstin: str | None = None
     pos_state: str | None = None
+    pos_manual: bool = False
     po_no: str | None = None
     po_date: date | None = None
     reverse_chg: str = "N"
@@ -251,6 +259,8 @@ class InvoiceIn(BaseModel):
             raise ValueError("PO date cannot be after the invoice date")
         if self.due_date and self.due_date < self.doc_date:
             raise ValueError("Due date cannot be before the invoice date")
+        if self.price_mode not in ("MATERIAL", "INCL", "EXCL"):
+            raise ValueError("price_mode must be MATERIAL, INCL or EXCL")
         return self
 
 
@@ -418,6 +428,7 @@ class SmtpIn(BaseModel):
 class GroupIn(BaseModel):
     name: str
     perms: list[str]
+    read_only: bool = False
 
     @model_validator(mode="after")
     def _v(self):
@@ -609,4 +620,72 @@ class Gstr3bIn(BaseModel):
         import re
         if not re.fullmatch(r"\d{4}-\d{2}", self.period):
             raise ValueError("Period must be written as YYYY-MM")
+        return self
+
+
+# ------------------------------------------------ version 4 additions
+class AddressIn(BaseModel):
+    label: str
+    addr_type: str = "BOTH"
+    gstin: str | None = None
+    addr: str
+    city: str
+    state_code: str
+    pin: str | None = None
+    contact: str | None = None
+    phone: str | None = None
+    is_default: bool = False
+
+    @model_validator(mode="after")
+    def _v(self):
+        if not self.label.strip():
+            raise ValueError(
+                "Give the address a label, for example Head office or Plant 2"
+            )
+        if self.addr_type not in ("BILLING", "SHIPPING", "BOTH"):
+            raise ValueError(
+                "addr_type must be BILLING, SHIPPING or BOTH"
+            )
+        if self.gstin:
+            self.gstin = self.gstin.strip().upper()
+            if len(self.gstin) != 15:
+                raise ValueError("A GSTIN is exactly 15 characters")
+            if self.gstin[:2] != self.state_code:
+                raise ValueError(
+                    f"GSTIN begins {self.gstin[:2]} but the address is in state "
+                    f"{self.state_code}. A registration belongs to the state it is issued in."
+                )
+        return self
+
+
+class HsnRateIn(BaseModel):
+    label: str
+    sgst_pct: Decimal
+    cgst_pct: Decimal
+    igst_pct: Decimal
+    cess_pct: Decimal = Decimal("0")
+    condition_note: str | None = None
+    is_default: bool = False
+
+    @model_validator(mode="after")
+    def _v(self):
+        if not self.label.strip():
+            raise ValueError(
+                "Give the rate a label, so the person invoicing knows which to pick"
+            )
+        if abs(self.sgst_pct + self.cgst_pct - self.igst_pct) > Decimal("0.005"):
+            raise ValueError(
+                f"SGST {self.sgst_pct}% plus CGST {self.cgst_pct}% is "
+                f"{self.sgst_pct + self.cgst_pct}%, which does not equal "
+                f"IGST {self.igst_pct}%. The split and the integrated rate "
+                f"have to come to the same thing."
+            )
+        for v, nm in (
+            (self.sgst_pct, "SGST"),
+            (self.cgst_pct, "CGST"),
+            (self.igst_pct, "IGST"),
+            (self.cess_pct, "Cess"),
+        ):
+            if v < 0 or v > 100:
+                raise ValueError(f"{nm} must be between 0 and 100")
         return self

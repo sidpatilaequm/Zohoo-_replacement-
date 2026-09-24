@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -20,6 +20,26 @@ from ..tax import hsn_summary, in_words
 router = APIRouter(tags=["documents"])
 
 
+def _party_address(ctx, address_id, party_kind, party_id):
+    if not address_id:
+        return None
+    a = ctx.db.execute(
+        ctx.scope(select(M.PartyAddress), M.PartyAddress)
+        .where(
+            M.PartyAddress.id == address_id,
+            M.PartyAddress.party_kind == party_kind,
+            M.PartyAddress.party_id == party_id,
+            M.PartyAddress.active == True,
+        )
+    ).scalar_one_or_none()
+    if not a:
+        raise HTTPException(
+            422,
+            "Selected address does not belong to this party or is inactive"
+        )
+    return a
+
+
 def tax_json(t):
     f = float
     return {"intra": t.intra, "taxable": f(t.taxable), "cgst": f(t.cgst), "sgst": f(t.sgst),
@@ -28,7 +48,7 @@ def tax_json(t):
             "lines": [{"line_no": L.line_no, "code": L.code, "descr": L.descr, "hsn": L.hsn,
                        "uom": L.uom, "qty": f(L.qty), "price": f(L.price), "amount": f(L.amount),
                        "cgst": f(L.cgst), "sgst": f(L.sgst), "igst": f(L.igst),
-                       "rate": f(L.rate)} for L in t.lines],
+                       "rate": f(L.rate), "inclusive": L.inclusive} for L in t.lines],
             "hsn": [{k: (f(v) if isinstance(v, Decimal) else v) for k, v in h.items()}
                     for h in hsn_summary(t)]}
 
@@ -62,10 +82,24 @@ def get_invoice(iid: int, ctx: Ctx = Depends(need("saved"))):
     if not inv:
         raise HTTPException(404, "No such invoice")
     t, c, o = invoice_tax(ctx, inv), inv.customer, ctx.tenant
-    return {"invoice": {"id": inv.id, "doc_no": inv.doc_no, "doc_type": inv.doc_type,
-                        "doc_date": inv.doc_date, "due_date": inv.due_date,
-                        "po_no": inv.po_no, "po_date": inv.po_date, "gstin": inv.gstin,
-                        "pos_state": inv.pos_state, "reverse_chg": inv.reverse_chg},
+    return {
+    "invoice": {
+        "id": inv.id,
+        "doc_no": inv.doc_no,
+        "doc_type": inv.doc_type,
+        "doc_date": inv.doc_date,
+        "due_date": inv.due_date,
+        "po_no": inv.po_no,
+        "po_date": inv.po_date,
+        "gstin": inv.gstin,
+        "pos_state": inv.pos_state,
+        "pos_manual": inv.pos_manual,
+        "bill_addr_id": inv.bill_addr_id,
+        "ship_addr_id": inv.ship_addr_id,
+        "price_mode": inv.price_mode,
+    },
+
+    "pos_manual": inv.pos_manual,
             "supplier": {"name": o.name, "gstin": o.gstin, "pan": o.pan, "addr": o.addr,
                          "city": o.city, "state": o.state_code, "pin": o.pin,
                          "bank": o.bank, "logo": o.logo},
@@ -80,8 +114,16 @@ def get_invoice(iid: int, ctx: Ctx = Depends(need("saved"))):
                                 "ship_same": c.ship_same},
                                 "subject": inv.subject,
                                 "instructions": inv.instructions,
-                                "totals": tax_json(t), "received": float(settled(ctx, invoice_id=inv.id))}
-
+                                "totals": tax_json(t),
+                                "received": float(settled(ctx, invoice_id=inv.id)),
+                                "payment": {
+                                "bank_name": c.bank_name,
+                                "bank_ifsc": c.bank_ifsc,
+                                "bank_account": c.bank_account,
+                                "terms": c.payment_terms,
+                                "term_days": c.payment_term_days,
+                            }
+    }
 
 @router.post("/invoices", status_code=201)
 def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
@@ -93,7 +135,27 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
         raise HTTPException(422, "A B2B customer must be billed under a GSTIN")
     if c.party_type == "B2C" and body.gstin:
         raise HTTPException(422, "A B2C invoice cannot carry a recipient GSTIN")
-    pos = body.pos_state or (reg.state_code if reg else c.bill_state)
+    bill_addr = _party_address(ctx, body.bill_addr_id, "CUSTOMER", c.id)
+    ship_addr = _party_address(ctx, body.ship_addr_id, "CUSTOMER", c.id)
+
+    if body.pos_state:
+        state = ctx.db.get(M.State, body.pos_state)
+        if not state:
+            raise HTTPException(422, "Invalid place of supply state")
+        pos = body.pos_state
+        pos_manual = True
+    else:
+        pos = (
+            bill_addr.state_code if bill_addr
+            else (reg.state_code if reg else c.bill_state)
+        )
+        pos_manual = False
+
+    if bill_addr and bill_addr.addr_type not in ("BILLING", "BOTH"):
+        raise HTTPException(422, "Selected address cannot be used for billing")
+    if ship_addr and ship_addr.addr_type not in ("SHIPPING", "BOTH"):
+        raise HTTPException(422, "Selected address cannot be used for shipping")
+
     doc_no = body.doc_no or next_no(ctx, "invoice", body.doc_date)
     if ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
                       .where(M.Invoice.doc_no == doc_no)).scalar_one_or_none():
@@ -114,20 +176,63 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
         doc_no=doc_no,
         doc_type=body.doc_type,
         doc_date=body.doc_date,
-        due_date=body.due_date,
+        due_date=body.due_date or (
+            body.doc_date + timedelta(days=c.payment_term_days)
+            if c.payment_term_days > 0
+            else None
+        ),
         customer_id=c.id,
         gstin=reg.gstin if reg else None,
         pos_state=pos,
+        pos_manual=pos_manual,
         po_no=body.po_no,
         po_date=body.po_date,
         reverse_chg=body.reverse_chg,
         subject=(body.subject or "").strip() or None,
         instructions=(body.instructions or "").strip() or None,
+        bill_addr_id=bill_addr.id if bill_addr else None,
+        ship_addr_id=ship_addr.id if ship_addr else None,
+        price_mode=body.price_mode,
     )
 
     ctx.db.add(inv)
     ctx.db.flush()
     for n, m, qty, price, d2, inclusive in resolved:
+        rate = None
+        requested_rate_id = body.lines[n - 1].hsn_rate_id
+
+        if requested_rate_id:
+            hsn = ctx.db.execute(
+                ctx.scope(select(M.HsnCode), M.HsnCode)
+                .where(
+                    M.HsnCode.code == m.hsn,
+                    M.HsnCode.active == True,
+                )
+            ).scalar_one_or_none()
+
+            if not hsn:
+                raise HTTPException(
+                    422,
+                    f"Line {n}: material HSN {m.hsn} is not active"
+                )
+
+            rate = ctx.db.execute(
+                select(M.HsnRate)
+                .join(M.HsnCode, M.HsnRate.hsn_id == M.HsnCode.id)
+                .where(
+                    M.HsnRate.id == requested_rate_id,
+                    M.HsnRate.hsn_id == hsn.id,
+                    M.HsnRate.active == True,
+                    M.HsnCode.tenant_id == ctx.tenant.id,
+                )
+            ).scalar_one_or_none()
+
+            if not rate:
+                raise HTTPException(
+                    422,
+                    f"Line {n}: selected HSN rate belongs to a different code than material HSN {m.hsn}"
+                )
+
         ctx.db.add(
             M.InvoiceLine(
                 invoice_id=inv.id,
@@ -136,7 +241,15 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
                 qty=qty,
                 price=price,
                 descr2=d2,
-                price_inclusive=inclusive,
+                price_inclusive=(
+                    True if body.price_mode == "INCL"
+                    else False if body.price_mode == "EXCL"
+                    else inclusive
+                ),
+                sgst_pct=rate.sgst_pct if rate else None,
+                cgst_pct=rate.cgst_pct if rate else None,
+                igst_pct=rate.igst_pct if rate else None,
+                rate_label=rate.label if rate else None,
             )
         )
 

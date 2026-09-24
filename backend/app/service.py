@@ -117,8 +117,12 @@ def build_lines(ctx, lines_in, use_cost=False):
                 Decimal(str(li.qty)),
                 Decimal(str(price)),
                 (li.descr2 or "").strip() or None,
-                bool(getattr(li, "price_inclusive", False)),
-            )
+                bool(
+                    getattr(li, "price_inclusive", None)
+                    if getattr(li, "price_inclusive", None) is not None
+                    else getattr(m, "price_inclusive", False)
+                ),
+        )
         )
     return out
 

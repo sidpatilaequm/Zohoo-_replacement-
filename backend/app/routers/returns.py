@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from .. import models as M
-from ..deps import Ctx, need
+from ..deps import Ctx, need, need_any
 from ..service import invoice_tax, vinv_tax, settled, live_invoices
 from ..tax import q2
 
@@ -34,7 +34,7 @@ def _cancelled(ctx, period):
 
 
 @router.get("/periods")
-def periods(ctx: Ctx = Depends(need("gstr"))):
+def periods(ctx: Ctx = Depends(need_any("gstr", "registers", "reports"))):
     p = {str(i.doc_date)[:7] for i in ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)).scalars()}
     p |= {str(v.doc_date)[:7] for v in ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)).scalars()}
     return sorted(p, reverse=True)
@@ -194,7 +194,7 @@ def receivables(ctx: Ctx = Depends(need("reports"))):
 
 
 @router.get("/reports/payables")
-def payables(ctx: Ctx = Depends(need("gstr"))):
+def payables(ctx: Ctx = Depends(need("reports"))):
     out = []
     for vi in ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)).scalars():
         t = vinv_tax(ctx, vi)
@@ -209,7 +209,7 @@ def payables(ctx: Ctx = Depends(need("gstr"))):
 
 
 @router.get("/reports/margin")
-def margin(ctx: Ctx = Depends(need("gstr"))):
+def margin(ctx: Ctx = Depends(need("reports"))):
     out = []
     for m in ctx.db.execute(ctx.scope(select(M.Material), M.Material).order_by(M.Material.code)).scalars():
         sq = sv = bq = bv = Decimal(0)

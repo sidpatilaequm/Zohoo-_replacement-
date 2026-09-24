@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .. import models as M, schemas as S
 from ..db import get_db
-from ..deps import Ctx, current
+from ..deps import Ctx, current, seats_used
 from ..security import hash_password, verify_password, make_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -14,6 +14,10 @@ DEFAULT_GROUPS = {
                  "crec","vpay","reports","registers","gstr","customers","vendors",
                  "materials","attrs","hsn","data"],
     "Sales": ["invoice","saved","so","del","customers","materials","stock","reports"],
+    # The auditor sees everything and changes nothing. Every permission here is
+    # a read-only screen; none of them can raise, alter or post a document.
+    "Auditor": ["saved","po","vinv","stock","crec","vpay","reports","registers",
+                "gstr","audit","customers","vendors","materials","hsn"],
     "Read only": ["saved","stock","reports","registers","gstr"],
 }
 
@@ -43,7 +47,8 @@ def seed_reference(db: Session) -> None:
 def seed_groups(db: Session, tenant_id: int) -> dict[str, M.Group]:
     made = {}
     for name, perms in DEFAULT_GROUPS.items():
-        g = M.Group(tenant_id=tenant_id, name=name)
+        g = M.Group(tenant_id=tenant_id, name=name,
+                    read_only=name in ("Auditor", "Read only"))
         db.add(g)
         db.flush()
         for p in perms:
@@ -71,16 +76,9 @@ def signup(body: S.SignUp, db: Session = Depends(get_db)):
                 M.Tenant.gstin == body.org_gstin)).scalar_one_or_none():
             raise HTTPException(409, "That GSTIN is already registered here")
         seed_reference(db)
-        state_code = body.org_gstin[:2] if body.org_gstin else body.org_state
-
-        t = M.Tenant(
-            name=body.org_name.strip(),
-            gstin=body.org_gstin or None,
-            pan=(body.org_gstin[2:12] if body.org_gstin else None),
-            state_code=state_code,
-            inv_prefix="INV/",
-            po_prefix="PO/"
-        )
+        t = M.Tenant(name=body.org_name.strip(), gstin=body.org_gstin or None,
+                     pan=(body.org_gstin[2:12] if body.org_gstin else None),
+                     state_code=body.org_state, inv_prefix="INV/", po_prefix="PO/")
         db.add(t)
         db.flush()
         groups = seed_groups(db, t.id)
@@ -130,5 +128,7 @@ def me(ctx: Ctx = Depends(current)):
             "tenant": {"id": t.id, "name": t.name, "gstin": t.gstin, "logo": t.logo,
                        "state_code": t.state_code, "company_type": t.company_type},
             "perms": sorted(ctx.perms),
+            "licence": {"limit": t.user_limit or 2,
+                        "used": seats_used(ctx.db, t.id)},
             "tenants": [{"id": r.tenant_id, "name": r.tenant.name, "group": r.group.name,
                          "perms": sorted(p.perm for p in r.group.perms)} for r in ctx.user.roles]}

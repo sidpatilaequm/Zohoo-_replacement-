@@ -2,12 +2,14 @@ import { useRef, useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { PanMsme, BankBlock, Contacts, ContactCell, BankCell, MsmeTag } from '../components/PartyExtras'
+import AddressBook from '../components/AddressBook'
 
 const BLANK = { code: '', name: '', party_type: 'B2B', bill_addr: '', bill_city: '',
   bill_state: '29', bill_pin: '', ship_same: true, ship_addr: '', ship_city: '',
   ship_state: '29', ship_pin: '', email: '',
   pan: '', msme_registered: false, msme_number: '',
-  bank_name: '', bank_ifsc: '', bank_account: '' }
+  bank_name: '', bank_ifsc: '', bank_account: '',
+  payment_term_days: 0, payment_terms: '' }
 
 export default function Customers() {
   const { api } = useAuth()
@@ -19,22 +21,30 @@ export default function Customers() {
   const [f, setF] = useState(BLANK)
   const [regs, setRegs] = useState([])
   const [g, setG] = useState({ gstin: '', label: '' })
-  const [err, setErr] = useState(null)
-  const [editing, setEditing] = useState(null)
+  const [openAddr, setOpenAddr] = useState(null)
   const logoRef = useRef(null)
+  const [err, setErr] = useState(null)
+  const [editing, setEditing] = useState(null)   // id of the customer being edited
+  const [flash, showFlash] = useFlash()
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }))
+
   function pickLogo(e) {
-    const file = e.target.files?.[0], id = Number(e.target.dataset.id); e.target.value = ''
+    const file = e.target.files?.[0], id = Number(e.target.dataset.id)
+    e.target.value = ''
     if (!file || !id) return
     if (file.size > 500 * 1024) return showFlash('That file is over 500 KB.', 'bad')
     const r = new FileReader()
     r.onload = async () => {
-      try { await api.customerLogo(id, r.result); list.reload(); showFlash('Logo saved — it prints on every document for this customer.') }
-      catch (x) { showFlash(x.message, 'bad') }
+      try {
+        await api.customerLogo(id, r.result)
+        list.reload()
+        showFlash('Logo saved — it prints on every document for this customer.')
+      } catch (x) {
+        showFlash(x.message, 'bad')
+      }
     }
     r.readAsDataURL(file)
-  }   // id of the customer being edited
-  const [flash, showFlash] = useFlash()
-  const set = (k, v) => setF(s => ({ ...s, [k]: v }))
+  }
 
   function edit(c) {
     setEditing(c.id)
@@ -57,7 +67,9 @@ export default function Customers() {
   async function save(e) {
     e.preventDefault(); setErr(null)
     try {
-      const body = { ...f, code: f.code || null, gstins: regs, contacts }
+      const body = { ...f, code: f.code || null, gstins: regs, contacts,
+        payment_term_days: Number(f.payment_term_days) || 0,
+        payment_terms: (f.payment_terms || '').trim() || null }
       if (editing) await api.editCustomer(editing, body); else await api.addCustomer(body)
       setEditing(null); setF(BLANK); setRegs([]); setContacts([]); list.reload()
       showFlash(editing ? 'Customer updated.' : 'Customer saved.')
@@ -160,6 +172,19 @@ export default function Customers() {
 
         <PanMsme f={f} set={set} />
         <BankBlock f={f} set={set} banks={banks.data} />
+        <h3 style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase',
+          color: 'var(--muted)', margin: '18px 0 8px', fontWeight: 500 }}>Payment terms</h3>
+        <div className="row">
+          <Field label="Credit period in days"
+            hint="The invoice due date is the invoice date plus this">
+            <input className="mono" type="number" min="0" value={f.payment_term_days}
+              onChange={e => set('payment_term_days', e.target.value)} /></Field>
+          <Field label="Terms as they should print"
+            hint="Shown in the invoice footer, for example 30 days net">
+            <input value={f.payment_terms}
+              onChange={e => set('payment_terms', e.target.value)} /></Field>
+        </div>
+
         <Contacts contacts={contacts} setContacts={setContacts} designations={desigs.data} />
         <div className="ft"><button className="btn btn-a">{editing ? 'Update customer' : 'Save customer'}</button>
           {err && <span className="err">{err}</span>}</div>
@@ -192,14 +217,24 @@ export default function Customers() {
               {!c.ship_same && <div>ships to {c.ship_city}</div>}</td>
             <td className="r" style={{ whiteSpace: 'nowrap' }}>
               <button className="btn btn-sm" onClick={() => edit(c)}>Edit</button>
-              <button className="btn btn-sm" style={{ marginLeft: 4 }} title="Upload this customer's logo; it prints on their documents"
-                onClick={() => { logoRef.current.dataset.id = c.id; logoRef.current.click() }}>{c.logo ? 'Change logo' : 'Logo'}</button>
-              {c.logo && <button className="btn btn-sm" style={{ marginLeft: 4 }} onClick={async () => {
-                try { await api.customerLogo(c.id, null); list.reload() } catch (x) { showFlash(x.message, 'bad') } }}>Remove logo</button>}
+              <button className="btn btn-sm" style={{ marginLeft: 4 }}
+                title="Upload this customer's logo; it prints on their documents"
+                onClick={() => { logoRef.current.dataset.id = c.id; logoRef.current.click() }}>
+                {c.logo ? 'Change logo' : 'Logo'}</button>
+              {c.logo && <button className="btn btn-sm" style={{ marginLeft: 4 }}
+                onClick={async () => {
+                  try { await api.customerLogo(c.id, null); list.reload() }
+                  catch (x) { showFlash(x.message, 'bad') }
+                }}>Remove logo</button>}
+              <button className="btn btn-sm" style={{ marginLeft: 4 }}
+                onClick={() => setOpenAddr(openAddr === c.id ? null : c.id)}>
+                {openAddr === c.id ? 'Hide addresses' : 'Addresses'}</button>
               <button className="rm" style={{ marginLeft: 4 }} onClick={() => remove(c.id)}>×</button></td>
           </tr>))}
       </Table>
     </Panel>
     <input type="file" ref={logoRef} accept="image/*" style={{ display: 'none' }} onChange={pickLogo} />
+
+    {openAddr && <AddressBook kind="customer" partyId={openAddr} states={states.data} />}
   </>)
 }

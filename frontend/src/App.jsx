@@ -17,6 +17,7 @@ import Reports from './pages/Reports'
 import GstReturns from './pages/GstReturns'
 import Company from './pages/Company'
 import Users from './pages/Users'
+import Audit from './pages/Audit'
 import Attributes from './pages/Attributes'
 import SalesOrders from './pages/SalesOrders'
 import Deliveries from './pages/Deliveries'
@@ -27,15 +28,18 @@ import StockReport from './pages/StockReport'
 import HsnCodes from './pages/HsnCodes'
 import Registers from './pages/Registers'
 import Templates from './pages/Templates'
+import BankStatements from './pages/BankStatements'
+import CardStatements from './pages/CardStatements'
 
 const PAGES = {
   invoice: NewInvoice, saved: Invoices, po: PurchaseOrders, vinv: VendorInvoices,
   crec: Receipts, vpay: VendorPayments, reports: Reports, gstr: GstReturns,
   customers: Customers, vendors: Vendors, materials: Materials,
-  org: Company, users: Users, attrs: Attributes,
+  org: Company, users: Users, audit: Audit, attrs: Attributes,
   so: SalesOrders, del: Deliveries, grn: GoodsReceipt, disc: Discrepancies,
   phys: PhysicalInventory, stock: StockReport,
   hsn: HsnCodes, registers: Registers, data: Templates,
+  bankstmt: BankStatements, cardstmt: CardStatements,
 }
 
 export default function App() {

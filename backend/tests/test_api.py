@@ -72,10 +72,14 @@ def test_no_token_means_no_access(api):
     assert api.get("/api/customers").status_code == 401
 
 
-def test_signup_seeds_four_groups(org):
+def test_signup_seeds_the_standard_groups(org):
     a = org()
-    names = sorted(g["name"] for g in a.get("/api/groups").json())
-    assert names == ["Accounts", "Administrator", "Read only", "Sales"]
+    groups = a.get("/api/groups").json()
+    names = sorted(g["name"] for g in groups)
+    assert names == ["Accounts", "Administrator", "Auditor", "Read only", "Sales"]
+    # the two view-only groups are flagged as such, and the others are not
+    ro = {g["name"] for g in groups if g["read_only"]}
+    assert ro == {"Auditor", "Read only"}
 
 
 # ------------------------------------------------- tenant isolation

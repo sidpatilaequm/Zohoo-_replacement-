@@ -3,7 +3,7 @@ import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr } from '../lib/fmt'
 
-const BLANK = { code: '', descr: '', price: '', cost: '', hsn: '',
+const BLANK = { code: '', descr: '', price: '', price_inclusive: false, cost: '', hsn: '',
   uom: 'NOS', batch_managed: false, shelf_life_days: '0',
   sgst_pct: '9', cgst_pct: '9', igst_pct: '18' }
 
@@ -36,6 +36,7 @@ export default function Materials() {
     e.preventDefault(); setErr(null)
     try {
       const body = { ...f, code: f.code || null, price: Number(f.price), cost: Number(f.cost || 0),
+        price_inclusive: !!f.price_inclusive,
         batch_managed: trading ? f.batch_managed : false,
         shelf_life_days: trading ? Number(f.shelf_life_days || 0) : 0,
         sgst_pct: Number(f.sgst_pct), cgst_pct: Number(f.cgst_pct),
@@ -60,7 +61,17 @@ export default function Materials() {
             onChange={e => set('code', e.target.value.toUpperCase())} /></Field>
           <Field label="Description"><input value={f.descr}
             onChange={e => set('descr', e.target.value)} required /></Field>
-          <Field label="Selling price"><input className="mono" type="number" step="0.01"
+          <Field label="Price basis"
+            hint={f.price_inclusive
+              ? 'The selling price already has GST in it'
+              : 'GST is added on top of the selling price'}>
+            <select value={f.price_inclusive ? 'INCL' : 'EXCL'}
+              onChange={e => set('price_inclusive', e.target.value === 'INCL')}>
+              <option value="EXCL">Exclusive of GST</option>
+              <option value="INCL">Inclusive of GST</option>
+            </select></Field>
+          <Field label={f.price_inclusive ? 'Selling price, GST included' : 'Selling price'}>
+            <input className="mono" type="number" step="0.01"
             value={f.price} onChange={e => set('price', e.target.value)} required /></Field>
           <Field label="Cost price" hint="Used on purchase orders"><input className="mono"
             type="number" step="0.01" value={f.cost}
@@ -160,6 +171,8 @@ export default function Materials() {
             <td className="r mono">{m.cost ? inr(m.cost) : '—'}</td>
             <td className="r mono" style={mar !== null && mar < 0 ? { color: 'var(--red)' } : {}}>
               {mar === null ? '—' : mar.toFixed(1) + '%'}</td>
+            <td className="c">{m.price_inclusive
+              ? <Tag kind="warn">incl GST</Tag> : <Tag kind="ok">excl GST</Tag>}</td>
             <td className="mono">{m.hsn}</td>
             {trading && <td className="r mono">{m.stock_qty}</td>}<td className="c mono">{m.uom}</td>
             {trading && <td className="c">{m.batch_managed ? <Tag kind="warn">Yes</Tag> : <Tag>No</Tag>}</td>}

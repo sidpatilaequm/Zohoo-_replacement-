@@ -5,7 +5,7 @@ from ..db import get_db
 from ..deps import Ctx, current, need
 from ..service import next_code
 from ..fy import current_fy
-
+from sqlalchemy.exc import IntegrityError
 router = APIRouter(tags=["masters"])
 
 
@@ -339,8 +339,139 @@ def del_vendor(vid: int, ctx: Ctx = Depends(need("vendors"))):
         raise HTTPException(409, "That vendor has purchase orders and cannot be deleted")
     ctx.db.delete(v)
     ctx.db.commit()
+# ============================================================ party addresses
+
+def _address_out(a):
+    return {
+        "id": a.id,
+        "party_kind": a.party_kind,
+        "party_id": a.party_id,
+        "label": a.label,
+        "addr_type": a.addr_type,
+        "gstin": a.gstin,
+        "addr": a.addr,
+        "city": a.city,
+        "state_code": a.state_code,
+        "pin": a.pin,
+        "contact": a.contact,
+        "phone": a.phone,
+        "is_default": a.is_default,
+        "active": a.active,
+    }
 
 
+def _list_addresses(ctx, kind, party_id):
+    return ctx.db.execute(
+        ctx.scope(select(M.PartyAddress), M.PartyAddress)
+        .where(
+            M.PartyAddress.party_kind == kind,
+            M.PartyAddress.party_id == party_id,
+            M.PartyAddress.active == True,
+        )
+        .order_by(M.PartyAddress.id)
+    ).scalars().all()
+
+
+def _add_address(ctx, kind, party_id, body):
+    party = (
+        ctx.get(M.Customer, party_id)
+        if kind == "CUSTOMER"
+        else ctx.get(M.Vendor, party_id)
+    )
+    if not party:
+        raise HTTPException(404, f"No such {kind.lower()}")
+
+    if body.is_default:
+        for old in _list_addresses(ctx, kind, party_id):
+            old.is_default = False
+
+    a = M.PartyAddress(
+        tenant_id=ctx.tenant.id,
+        party_kind=kind,
+        party_id=party_id,
+        **body.model_dump(),
+    )
+
+    ctx.db.add(a)
+    try:
+        ctx.db.commit()
+    except IntegrityError:
+        ctx.db.rollback()
+        raise HTTPException(409, "An address with this label already exists")
+
+    ctx.db.refresh(a)
+
+    return _address_out(a)
+
+
+@router.get("/parties/customer/{cid}/addresses")
+def customer_addresses(
+    cid: int,
+    ctx: Ctx = Depends(need("customers")),
+):
+    if not ctx.get(M.Customer, cid):
+        raise HTTPException(404, "No such customer")
+    return [_address_out(a) for a in _list_addresses(ctx, "CUSTOMER", cid)]
+
+
+@router.post("/parties/customer/{cid}/addresses", status_code=201)
+def add_customer_address(
+    cid: int,
+    body: S.AddressIn,
+    ctx: Ctx = Depends(need("customers")),
+):
+    return _add_address(ctx, "CUSTOMER", cid, body)
+
+
+@router.get("/parties/vendor/{vid}/addresses")
+def vendor_addresses(
+    vid: int,
+    ctx: Ctx = Depends(need("vendors")),
+):
+    if not ctx.get(M.Vendor, vid):
+        raise HTTPException(404, "No such vendor")
+    return [_address_out(a) for a in _list_addresses(ctx, "VENDOR", vid)]
+
+
+@router.post("/parties/vendor/{vid}/addresses", status_code=201)
+def add_vendor_address(
+    vid: int,
+    body: S.AddressIn,
+    ctx: Ctx = Depends(need("vendors")),
+):
+    return _add_address(ctx, "VENDOR", vid, body)
+@router.delete("/addresses/{aid}")
+def delete_address(
+    aid: int,
+    ctx: Ctx = Depends(need("customers")),
+):
+    a = ctx.db.execute(
+        ctx.scope(
+            select(M.PartyAddress),
+            M.PartyAddress
+        ).where(M.PartyAddress.id == aid)
+    ).scalar_one_or_none()
+
+    if not a:
+        raise HTTPException(404, "No such address")
+
+    used = ctx.db.execute(
+        select(M.Invoice.id).where(
+            (M.Invoice.bill_addr_id == aid) |
+            (M.Invoice.ship_addr_id == aid)
+        ).limit(1)
+    ).scalar_one_or_none()
+
+    if used:
+        raise HTTPException(
+            409,
+            "Address is used by a document and cannot be deleted; mark it inactive"
+        )
+
+    a.active = False
+    ctx.db.commit()
+
+    return {"ok": True}
 # ------------------------------------------------------------ materials
 def _mat_out(m, attrs=None):
     return {"id": m.id, "code": m.code, "descr": m.descr, "price": float(m.price),
@@ -348,7 +479,8 @@ def _mat_out(m, attrs=None):
             "uom": m.uom, "batch_managed": m.batch_managed,
             "shelf_life_days": m.shelf_life_days,
             "sgst_pct": float(m.sgst_pct), "cgst_pct": float(m.cgst_pct),
-            "igst_pct": float(m.igst_pct), "active": m.active,
+            "igst_pct": float(m.igst_pct), "price_inclusive": m.price_inclusive,
+            "active": m.active,
             "attributes": attrs or {}}
 
 
@@ -665,3 +797,68 @@ def del_hsn(hid: int, ctx: Ctx = Depends(need("hsn"))):
         raise HTTPException(409, f"That code is on {used} material(s)")
     ctx.db.delete(h)
     ctx.db.commit()
+# ============================================================ HSN rates
+
+def _hsn_rate_out(r):
+    return {
+        "id": r.id,
+        "hsn_id": r.hsn_id,
+        "label": r.label,
+        "sgst_pct": float(r.sgst_pct),
+        "cgst_pct": float(r.cgst_pct),
+        "igst_pct": float(r.igst_pct),
+        "cess_pct": float(r.cess_pct),
+        "condition_note": r.condition_note,
+        "is_default": r.is_default,
+        "active": r.active,
+    }
+
+
+@router.get("/hsn/{hid}/rates")
+def list_hsn_rates(hid: int, ctx: Ctx = Depends(current)):
+    h = ctx.get(M.HsnCode, hid)
+    if not h:
+        raise HTTPException(404, "No such HSN or SAC code")
+
+    rows = ctx.db.execute(
+        select(M.HsnRate)
+        .join(M.HsnCode, M.HsnRate.hsn_id == M.HsnCode.id)
+        .where(
+            M.HsnRate.hsn_id == hid,
+            M.HsnCode.tenant_id == ctx.tenant.id,
+        )
+        .order_by(M.HsnRate.id)
+    ).scalars().all()
+
+    return [_hsn_rate_out(r) for r in rows]
+
+
+@router.post("/hsn/{hid}/rates", status_code=201)
+def add_hsn_rate(
+    hid: int,
+    body: S.HsnRateIn,
+    ctx: Ctx = Depends(need("hsn"))
+):
+    h = ctx.get(M.HsnCode, hid)
+    if not h:
+        raise HTTPException(404, "No such HSN or SAC code")
+
+    if body.is_default:
+        for old in ctx.db.execute(
+            select(M.HsnRate).where(
+                M.HsnRate.hsn_id == hid,
+                M.HsnRate.is_default == True
+            )
+        ).scalars():
+            old.is_default = False
+
+    r = M.HsnRate(
+        hsn_id=hid,
+        **body.model_dump()
+    )
+
+    ctx.db.add(r)
+    ctx.db.commit()
+    ctx.db.refresh(r)
+
+    return _hsn_rate_out(r)

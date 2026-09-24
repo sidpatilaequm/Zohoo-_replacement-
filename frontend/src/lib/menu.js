@@ -16,10 +16,14 @@ export const MENU = [
   { group: 'Money', items: [
     { key: 'crec', label: 'Customer Payments', path: '/receipts' },
     { key: 'vpay', label: 'Vendor Payments',   path: '/vendor-payments' } ] },
+  { group: 'Banking', items: [
+    { key: 'bankstmt', label: 'Bank Statements', path: '/bank-statements' },
+    { key: 'cardstmt', label: 'Director Cards',  path: '/card-statements' } ] },
   { group: 'Insight', items: [
     { key: 'reports',   label: 'Reports',       path: '/reports' },
     { key: 'registers', label: 'Registers',     path: '/registers' },
-    { key: 'gstr',      label: 'GST Returns',   path: '/gst' } ] },
+    { key: 'gstr',      label: 'GST Returns',   path: '/gst' },
+    { key: 'audit',     label: 'Audit',         path: '/audit' } ] },
   { group: 'Masters', items: [
     { key: 'customers', label: 'Customers', path: '/customers' },
     { key: 'vendors',   label: 'Vendors',   path: '/vendors' },

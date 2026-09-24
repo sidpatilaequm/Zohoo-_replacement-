@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import (auth, masters, docs, returns, admin, inventory, ordering,
-                      registers, templates, printing, extraction)
+                      registers, templates, printing, extraction, audit, statements)
 
 app = FastAPI(title="Aequm billing API", version="2.4.0",
               description="Multi-tenant invoicing, purchasing and GST returns.")
@@ -11,7 +11,7 @@ app.add_middleware(CORSMiddleware,
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 for r in (auth, masters, docs, returns, admin, inventory, ordering,
-          registers, templates, printing, extraction):
+          registers, templates, printing, extraction, audit, statements):
     app.include_router(r.router, prefix="/api")
 
 

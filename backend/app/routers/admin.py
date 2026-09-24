@@ -2,14 +2,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from .. import models as M, schemas as S
-from ..deps import Ctx, need
+from ..deps import Ctx, need, seats_used, check_seat
 from ..security import hash_password
 
 router = APIRouter(tags=["admin"])
 
 
 def _group_out(g):
-    return {"id": g.id, "name": g.name, "perms": sorted(p.perm for p in g.perms)}
+    return {"id": g.id, "name": g.name, "read_only": bool(g.read_only),
+            "perms": sorted(p.perm for p in g.perms)}
 
 
 @router.get("/perms")
@@ -33,7 +34,8 @@ def add_group(body: S.GroupIn, ctx: Ctx = Depends(need("users"))):
     if ctx.db.execute(select(M.Group).where(M.Group.tenant_id == ctx.tenant.id,
                                             M.Group.name == body.name)).scalar_one_or_none():
         raise HTTPException(409, "A group with that name already exists here")
-    g = M.Group(tenant_id=ctx.tenant.id, name=body.name.strip())
+    g = M.Group(tenant_id=ctx.tenant.id, name=body.name.strip(),
+                read_only=bool(getattr(body, "read_only", False)))
     ctx.db.add(g)
     ctx.db.flush()
     for p in body.perms:
@@ -54,6 +56,7 @@ def edit_group(gid: int, body: S.GroupIn, ctx: Ctx = Depends(need("users"))):
     if mine and mine.group_id == gid and "users" not in body.perms:
         raise HTTPException(422, "That would remove your own access to user administration")
     g.name = body.name.strip()
+    g.read_only = bool(getattr(body, "read_only", False))
     for p in list(g.perms):
         ctx.db.delete(p)
     ctx.db.flush()
@@ -73,6 +76,21 @@ def del_group(gid: int, ctx: Ctx = Depends(need("users"))):
         raise HTTPException(409, "That group is in use")
     ctx.db.delete(g)
     ctx.db.commit()
+
+
+@router.get("/licence")
+def licence(ctx: Ctx = Depends(need("users"))):
+    used = seats_used(ctx.db, ctx.tenant.id)
+    limit = ctx.tenant.user_limit or 2
+    pending = ctx.db.execute(select(M.User).where(
+        M.User.status == "PENDING",
+        M.User.requested_tenant == ctx.tenant.id)).scalars().all()
+    return {"limit": limit, "used": used, "free": max(0, limit - used),
+            "waiting": len(pending),
+            "note": ("Every seat is taken. The auditor counts as one, because the "
+                     "licence limits who can sign in, not who can change things."
+                     if used >= limit else
+                     f"{limit - used} seat{'' if limit - used == 1 else 's'} free.")}
 
 
 @router.get("/users")
@@ -108,6 +126,7 @@ def add_user(body: dict, ctx: Ctx = Depends(need("users"))):
     g = ctx.db.get(M.Group, gid)
     if not g or g.tenant_id != ctx.tenant.id:
         raise HTTPException(422, "Choose a group in this organisation")
+    check_seat(ctx.db, ctx.tenant)
     u = ctx.db.execute(select(M.User).where(M.User.email == email)).scalar_one_or_none()
     if u:
         if ctx.db.execute(select(M.UserRole).where(
@@ -142,8 +161,9 @@ def set_role(uid: int, body: S.UserRoleIn, ctx: Ctx = Depends(need("users"))):
     if not g or g.tenant_id != ctx.tenant.id:
         raise HTTPException(422, "Choose a group in this organisation")
     if role:
-        role.group_id = g.id
+        role.group_id = g.id          # already holds a seat, just changing group
     else:
+        check_seat(ctx.db, ctx.tenant)
         ctx.db.add(M.UserRole(user_id=uid, tenant_id=ctx.tenant.id, group_id=g.id))
     if u.status == "PENDING":
         u.status = "ACTIVE"

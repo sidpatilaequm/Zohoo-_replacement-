@@ -96,22 +96,23 @@ def tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
     for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
                             .where(M.Payment.pay_type == "PAY")
                             .order_by(M.Payment.pay_date)).scalars():
-        if not _in_period(p.pay_date, period) or Decimal(str(p.tds)) <= 0:
+        tds = Decimal(str(p.tds or 0))
+        if not _in_period(p.pay_date, period) or tds <= 0:
             continue
         vi = ctx.db.get(M.VendorInvoice, p.vinv_id)
         if not vi:
             continue
         t = vinv_tax(ctx, vi)
         v = vi.vendor
-        gross = Decimal(str(p.amount)) + Decimal(str(p.tds))
-        rate = (Decimal(str(p.tds)) / t.taxable * 100) if t.taxable else D0
+        gross = Decimal(str(p.amount)) + tds
+        rate = (tds / t.taxable * 100) if t.taxable else D0
         out.append({"pay_date": p.pay_date, "vendor": v.name, "vendor_code": v.code,
                     "pan": v.pan, "gstin": vi.gstin,
                     "msme": v.msme_registered, "msme_number": v.msme_number,
                     "vendor_invoice": vi.doc_no, "invoice_date": vi.doc_date,
                     "invoice_taxable": float(t.taxable),
                     "invoice_total": float(t.rounded),
-                    "gross": float(gross), "tds": float(p.tds),
+                    "gross": float(gross), "tds": float(tds),
                     "paid": float(p.amount), "mode": p.mode, "bank_ref": p.bank_ref,
                     "implied_rate_pct": float(q2(rate))})
     total = float(q2(sum((Decimal(str(r["tds"])) for r in out), D0)))

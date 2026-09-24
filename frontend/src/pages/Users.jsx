@@ -7,14 +7,15 @@ export default function Users() {
   const { api, me } = useAuth()
   const users = useLoad(() => api.users())
   const groups = useLoad(() => api.groups())
+  const lic = useLoad(() => api.licence())
   const [u, setU] = useState({ name: '', email: '', password: '', group_id: '' })
-  const [g, setG] = useState({ name: '', perms: new Set() })
+  const [g, setG] = useState({ name: '', perms: new Set(), read_only: false })
   const [gEdit, setGEdit] = useState(null)
   const [uErr, setUErr] = useState(null)
   const [gErr, setGErr] = useState(null)
   const [flash, showFlash] = useFlash()
 
-  if (users.loading || groups.loading) return <Loading />
+  if (users.loading || groups.loading || lic.loading) return <Loading />
   if (users.error) return <ErrorBox>{users.error}</ErrorBox>
 
   const pending = users.data.filter(x => x.pending)
@@ -31,10 +32,10 @@ export default function Users() {
   async function saveGroup(e) {
     e.preventDefault(); setGErr(null)
     try {
-      const body = { name: g.name, perms: [...g.perms] }
+      const body = { name: g.name, perms: [...g.perms], read_only: !!g.read_only }
       if (gEdit) await api.editGroup(gEdit, body)
       else await api.addGroup(body)
-      setG({ name: '', perms: new Set() }); setGEdit(null)
+      setG({ name: '', perms: new Set(), read_only: false }); setGEdit(null)
       groups.reload(); users.reload(); showFlash('Group saved.')
     } catch (x) { setGErr(x.message) }
   }
@@ -44,6 +45,12 @@ export default function Users() {
   }
 
   return (<>
+    {lic.data && <Alert kind={lic.data.free ? 'ok' : 'warn'}>
+      <b>Licensed for {lic.data.limit} user{lic.data.limit === 1 ? '' : 's'} —
+        {' '}{lic.data.used} assigned, {lic.data.free} free.</b> {lic.data.note}
+      {lic.data.waiting > 0 && <> {lic.data.waiting} request
+        {lic.data.waiting === 1 ? '' : 's'} waiting.</>}
+    </Alert>}
     {flash}
     {pending.length > 0 && (
       <Alert kind="warn">
@@ -104,6 +111,14 @@ export default function Users() {
             onChange={e => setG({ ...g, name: e.target.value })} required /></Field>
           <h3 style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase',
             color: 'var(--muted)', margin: '18px 0 8px', fontWeight: 500 }}>Menu access</h3>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 12px',
+            cursor: 'pointer', padding: '8px 10px', border: '1px solid var(--line)',
+            borderRadius: 7, background: g.read_only ? 'var(--amber-soft)' : '#fff' }}>
+            <input type="checkbox" checked={!!g.read_only} style={{ width: 16, height: 16 }}
+              onChange={e => setG({ ...g, read_only: e.target.checked })} />
+            <span>View only — can open every screen ticked below but cannot create, change
+              or delete anything</span>
+          </label>
           <div className="perm">
             {ALL_PERMS.map(p => (
               <label key={p}>
@@ -115,7 +130,7 @@ export default function Users() {
           </div>
           <div className="ft"><button className="btn btn-a">Save group</button>
             {gEdit && <button type="button" className="btn" onClick={() => {
-              setG({ name: '', perms: new Set() }); setGEdit(null) }}>Cancel</button>}
+              setG({ name: '', perms: new Set(), read_only: false }); setGEdit(null) }}>Cancel</button>}
             {gErr && <span className="err">{gErr}</span>}</div>
         </Panel>
       </form>
@@ -144,7 +159,8 @@ export default function Users() {
         { label: 'In use', align: 'c' }, '']}>
         {groups.data.map(x => (
           <tr key={x.id}>
-            <td><b>{x.name}</b></td>
+            <td><b>{x.name}</b>
+              {x.read_only && <Tag kind="warn"> view only</Tag>}</td>
             <td className="c mono">{x.perms.length}</td>
             <td className="fine">{x.perms.map(p => PERM_LABEL[p]).filter(Boolean).join(', ')}</td>
             <td className="c">{x.users
@@ -152,7 +168,7 @@ export default function Users() {
               : <Tag>unused</Tag>}</td>
             <td className="r">
               <button className="btn btn-sm" onClick={() => {
-                setGEdit(x.id); setG({ name: x.name, perms: new Set(x.perms) })
+                setGEdit(x.id); setG({ name: x.name, perms: new Set(x.perms), read_only: !!x.read_only })
                 window.scrollTo({ top: 0, behavior: 'smooth' })
               }}>Edit</button>
               {!x.users && <button className="rm" onClick={async () => {

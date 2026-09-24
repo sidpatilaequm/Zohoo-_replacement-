@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
+import HsnRates from '../components/HsnRates'
 
 const BLANK = { code: '', descr: '', kind: 'HSN', sgst_pct: '9', cgst_pct: '9',
   igst_pct: '18', cess_pct: '0' }
@@ -9,6 +10,7 @@ export default function HsnCodes() {
   const { api } = useAuth()
   const list = useLoad(() => api.hsn())
   const [f, setF] = useState(BLANK)
+  const [openRates, setOpenRates] = useState(null)
   const [editing, setEditing] = useState(null)
   const [err, setErr] = useState(null)
   const [flash, showFlash] = useFlash()
@@ -88,11 +90,17 @@ export default function HsnCodes() {
                   cess_pct: h.cess_pct })
                 window.scrollTo({ top: 0, behavior: 'smooth' })
               }}>Edit</button>
+              <button className="btn btn-sm" style={{ marginLeft: 4 }}
+                onClick={() => setOpenRates(openRates === h.id ? null : h.id)}>
+                {openRates === h.id ? 'Hide rates' : 'Rates'}</button>
               {!h.used_on && <button className="rm" onClick={async () => {
                 try { await api.delHsn(h.id); list.reload() }
                 catch (x) { showFlash(x.message, 'bad') } }}>×</button>}
             </td></tr>))}
       </Table>
     </Panel>
+
+    {openRates && list.data.find(h => h.id === openRates) &&
+      <HsnRates hsn={list.data.find(h => h.id === openRates)} />}
   </>)
 }

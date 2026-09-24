@@ -137,7 +137,7 @@ export default function GstFiling({ period: fixedPeriod }) {
     </Panel>
 
     <Panel title={`B — GSTR-3B as filed for ${periodLabel(period)} · upload here`} right={
-      <button className="btn btn-sm" onClick={() => dl(() => { window.location.href = api.template3bUrl(); return Promise.resolve() }, 'Template')}>
+      <button className="btn btn-sm" disabled={busy} onClick={() => dl(() => api.template3bDl(), 'Template')}>
         Blank CSV</button>}>
       <div className="ft" style={{ marginTop: 0, flexWrap: 'wrap' }}>
         <Field label="Portal GSTR-3B JSON">
