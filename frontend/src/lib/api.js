@@ -160,22 +160,22 @@ export function makeApi(token, tenantId) {
     template3bUrl: ()   => `${BASE}/registers/gstr3b/template.csv`,
 
     // ---- bank and card statements ----
-    stmtAccounts:  () => call('/accounts'),
-    addStmtAccount: (b) => call('/accounts', { method: 'POST', body: b }),
-    editStmtAccount: (id, b) => call(`/accounts/${id}`, { method: 'PUT', body: b }),
+    stmtAccounts:  () => call('/statements/accounts'),
+    addStmtAccount: (b) => call('/statements/accounts', { method: 'POST', body: b }),
+    editStmtAccount: (id, b) => call(`/statements/accounts/${id}`, { method: 'PUT', body: b }),
     uploadStmt: (id, period, file) =>
-      upload(`/accounts/${id}/upload?period=${encodeURIComponent(period)}`, file, { token, tenantId }),
-    stmtUploads: (id) => call(`/accounts/${id}/uploads`),
-    delStmtUpload: (id) => call(`/uploads/${id}`, { method: 'DELETE' }),
+      upload(`/statements/accounts/${id}/upload?period=${encodeURIComponent(period)}`, file, { token, tenantId }),
+    stmtUploads: (id) => call(`/statements/accounts/${id}/uploads`),
+    delStmtUpload: (id) => call(`/statements/uploads/${id}`, { method: 'DELETE' }),
     stmtTxns: (id, period) =>
-      call(`/accounts/${id}/txns?period=${encodeURIComponent(period)}`),
+      call(`/statements/accounts/${id}/txns?period=${encodeURIComponent(period)}`),
     allocateTxn: (id, b) =>
-      call(`/txns/${id}/allocate`, { method: 'PUT', body: b }),
-    stmtCategories: () => call('/categories'),
+      call(`/statements/txns/${id}/allocate`, { method: 'PUT', body: b }),
+    stmtCategories: () => call('/statements/categories'),
     stmtReconcile: (period) =>
-      call(`/reconcile?period=${encodeURIComponent(period)}`),
+      call(`/statements/reconcile?period=${encodeURIComponent(period)}`),
     expenseLedger: (period) =>
-      call(`/ledger?period=${encodeURIComponent(period)}`),
+      call(`/statements/ledger?period=${encodeURIComponent(period)}`),
 
     // ---- master data templates ----
     templates:     ()   => call('/templates'),

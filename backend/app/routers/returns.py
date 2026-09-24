@@ -40,6 +40,30 @@ def periods(ctx: Ctx = Depends(need_any("gstr", "registers", "reports"))):
     return sorted(p, reverse=True)
 
 
+@router.get("/financial-years")
+def financial_years(ctx: Ctx = Depends(need_any("gstr", "registers", "reports"))):
+    years = set()
+
+    invoices = ctx.db.execute(
+        ctx.scope(select(M.Invoice), M.Invoice)
+    ).scalars()
+
+    vendor_invoices = ctx.db.execute(
+        ctx.scope(select(M.VendorInvoice), M.VendorInvoice)
+    ).scalars()
+
+    for doc in list(invoices) + list(vendor_invoices):
+        if doc.doc_date:
+            y = doc.doc_date.year
+            m = doc.doc_date.month
+            years.add(
+                f"{y}-{str(y + 1)[-2:]}" if m >= 4
+                else f"{y - 1}-{str(y)[-2:]}"
+            )
+
+    return sorted(years, reverse=True)
+
+
 @router.get("/gstr1")
 def gstr1(period: str = Query(..., description="YYYY-MM"), ctx: Ctx = Depends(need("gstr"))):
     """The return as it would be filed, split into its sections."""
