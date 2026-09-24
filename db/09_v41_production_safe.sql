@@ -14,52 +14,430 @@
 USE aequm_billing;
 
 -- Existing v2.3/v2.4 columns, added only when absent.
-ALTER TABLE tenants
-  ADD COLUMN IF NOT EXISTS bank_name VARCHAR(120) NULL,
-  ADD COLUMN IF NOT EXISTS bank_ifsc VARCHAR(11) NULL,
-  ADD COLUMN IF NOT EXISTS bank_account VARCHAR(30) NULL,
-  ADD COLUMN IF NOT EXISTS user_limit INT NOT NULL DEFAULT 2;
+-- Safe column additions for tenants
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE tenants ADD COLUMN bank_name VARCHAR(120) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'tenants'
+    AND column_name = 'bank_name'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-ALTER TABLE invoices
-  ADD COLUMN IF NOT EXISTS subject VARCHAR(200) NULL,
-  ADD COLUMN IF NOT EXISTS instructions TEXT NULL,
-  ADD COLUMN IF NOT EXISTS bill_addr_id INT NULL,
-  ADD COLUMN IF NOT EXISTS ship_addr_id INT NULL,
-  ADD COLUMN IF NOT EXISTS pos_manual BOOLEAN NOT NULL DEFAULT FALSE,
-  ADD COLUMN IF NOT EXISTS price_mode ENUM('MATERIAL','INCL','EXCL') NOT NULL DEFAULT 'MATERIAL';
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE tenants ADD COLUMN bank_ifsc VARCHAR(11) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'tenants'
+    AND column_name = 'bank_ifsc'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-ALTER TABLE invoice_lines
-  ADD COLUMN IF NOT EXISTS descr2 VARCHAR(200) NULL,
-  ADD COLUMN IF NOT EXISTS sgst_pct DECIMAL(5,2) NULL,
-  ADD COLUMN IF NOT EXISTS cgst_pct DECIMAL(5,2) NULL,
-  ADD COLUMN IF NOT EXISTS igst_pct DECIMAL(5,2) NULL,
-  ADD COLUMN IF NOT EXISTS rate_label VARCHAR(120) NULL,
-  ADD COLUMN IF NOT EXISTS price_inclusive BOOLEAN NOT NULL DEFAULT FALSE;
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE tenants ADD COLUMN bank_account VARCHAR(30) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'tenants'
+    AND column_name = 'bank_account'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-ALTER TABLE po_lines
-  ADD COLUMN IF NOT EXISTS descr2 VARCHAR(200) NULL;
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE tenants ADD COLUMN user_limit INT NOT NULL DEFAULT 2',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'tenants'
+    AND column_name = 'user_limit'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-ALTER TABLE vendor_invoice_lines
-  ADD COLUMN IF NOT EXISTS descr2 VARCHAR(200) NULL;
 
-ALTER TABLE customers
-  ADD COLUMN IF NOT EXISTS logo MEDIUMTEXT NULL,
-  ADD COLUMN IF NOT EXISTS payment_term_days INT NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(120) NULL;
+-- Safe column additions for invoices
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoices ADD COLUMN subject VARCHAR(200) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoices'
+    AND column_name = 'subject'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-ALTER TABLE vendors
-  ADD COLUMN IF NOT EXISTS logo MEDIUMTEXT NULL,
-  ADD COLUMN IF NOT EXISTS payment_term_days INT NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(120) NULL;
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoices ADD COLUMN instructions TEXT NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoices'
+    AND column_name = 'instructions'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-ALTER TABLE vendor_invoices
-  ADD COLUMN IF NOT EXISTS our_no VARCHAR(40) NULL;
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoices ADD COLUMN bill_addr_id INT NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoices'
+    AND column_name = 'bill_addr_id'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-ALTER TABLE materials
-  ADD COLUMN IF NOT EXISTS price_inclusive BOOLEAN NOT NULL DEFAULT FALSE;
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoices ADD COLUMN ship_addr_id INT NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoices'
+    AND column_name = 'ship_addr_id'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-ALTER TABLE purchase_orders
-  ADD COLUMN IF NOT EXISTS ship_addr_id INT NULL;
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoices ADD COLUMN pos_manual BOOLEAN NOT NULL DEFAULT FALSE',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoices'
+    AND column_name = 'pos_manual'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoices ADD COLUMN price_mode ENUM(''MATERIAL'',''INCL'',''EXCL'') NOT NULL DEFAULT ''MATERIAL''',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoices'
+    AND column_name = 'price_mode'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+-- Safe column additions for invoice_lines
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoice_lines ADD COLUMN descr2 VARCHAR(200) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoice_lines'
+    AND column_name = 'descr2'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoice_lines ADD COLUMN sgst_pct DECIMAL(5,2) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoice_lines'
+    AND column_name = 'sgst_pct'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoice_lines ADD COLUMN cgst_pct DECIMAL(5,2) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoice_lines'
+    AND column_name = 'cgst_pct'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoice_lines ADD COLUMN igst_pct DECIMAL(5,2) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoice_lines'
+    AND column_name = 'igst_pct'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoice_lines ADD COLUMN rate_label VARCHAR(120) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoice_lines'
+    AND column_name = 'rate_label'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE invoice_lines ADD COLUMN price_inclusive BOOLEAN NOT NULL DEFAULT FALSE',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'invoice_lines'
+    AND column_name = 'price_inclusive'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+-- Safe column additions for po_lines
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE po_lines ADD COLUMN descr2 VARCHAR(200) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'po_lines'
+    AND column_name = 'descr2'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+-- Safe column additions for vendor_invoice_lines
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE vendor_invoice_lines ADD COLUMN descr2 VARCHAR(200) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'vendor_invoice_lines'
+    AND column_name = 'descr2'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+-- Safe column additions for customers
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE customers ADD COLUMN logo MEDIUMTEXT NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'customers'
+    AND column_name = 'logo'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE customers ADD COLUMN payment_term_days INT NOT NULL DEFAULT 0',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'customers'
+    AND column_name = 'payment_term_days'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE customers ADD COLUMN payment_terms VARCHAR(120) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'customers'
+    AND column_name = 'payment_terms'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+-- Safe column additions for vendors
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE vendors ADD COLUMN logo MEDIUMTEXT NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'vendors'
+    AND column_name = 'logo'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE vendors ADD COLUMN payment_term_days INT NOT NULL DEFAULT 0',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'vendors'
+    AND column_name = 'payment_term_days'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE vendors ADD COLUMN payment_terms VARCHAR(120) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'vendors'
+    AND column_name = 'payment_terms'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+-- Safe column additions for vendor_invoices
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE vendor_invoices ADD COLUMN our_no VARCHAR(40) NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'vendor_invoices'
+    AND column_name = 'our_no'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+-- Safe column additions for materials
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE materials ADD COLUMN price_inclusive BOOLEAN NOT NULL DEFAULT FALSE',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'materials'
+    AND column_name = 'price_inclusive'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+
+-- Safe column additions for purchase_orders
+SET @sql = (
+  SELECT IF(
+    COUNT(*) = 0,
+    'ALTER TABLE purchase_orders ADD COLUMN ship_addr_id INT NULL',
+    'SELECT 1'
+  )
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'purchase_orders'
+    AND column_name = 'ship_addr_id'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
 
 -- Financial-year document sequence table. Existing rows are preserved.
 CREATE TABLE IF NOT EXISTS doc_sequences (
