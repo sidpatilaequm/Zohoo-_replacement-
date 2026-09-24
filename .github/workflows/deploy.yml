@@ -117,15 +117,15 @@ jobs:
             echo "Database backup completed: $BACKUP_FILE"
 
             # --------------------------------------------------
-            # 2. FETCH EXACT MAIN COMMIT
+            # 2. FETCH EXACT TRIGGERING COMMIT
             # --------------------------------------------------
 
             echo "Fetching triggering commit..."
 
-            git fetch origin "${GITHUB_SHA}"
+            git fetch origin "${{ github.sha }}"
 
             echo "Production target commit:"
-            echo "${GITHUB_SHA}"
+            echo "${{ github.sha }}"
 
             # --------------------------------------------------
             # 3. CREATE TEMPORARY DEPLOYMENT WORKTREE
@@ -135,7 +135,7 @@ jobs:
 
             rm -rf "$RELEASE_DIR"
 
-            DEPLOY_COMMIT="${GITHUB_SHA}"
+            DEPLOY_COMMIT="${{ github.sha }}"
 
             echo "Production target commit:"
             echo "$DEPLOY_COMMIT"
@@ -337,6 +337,23 @@ jobs:
             fi
 
             # --------------------------------------------------
+            # 10. VERIFY/APPLY v4.1 PRODUCTION-SAFE MIGRATION
+            # --------------------------------------------------
+
+            echo "Checking v4.1 production-safe migration..."
+
+            V41_MIGRATION="$RELEASE_DIR/db/09_v41_production_safe.sql"
+
+            if [ ! -f "$V41_MIGRATION" ]; then
+              echo "ERROR: v4.1 production-safe migration file not found."
+              exit 1
+            fi
+
+            echo "Applying v4.1 production-safe migration..."
+            sudo mysql aequm_billing < "$V41_MIGRATION"
+            echo "v4.1 production-safe migration completed."
+
+            # --------------------------------------------------
             # IMPORTANT DATABASE SAFETY RULE
             # --------------------------------------------------
             # NEVER run:
@@ -348,7 +365,7 @@ jobs:
             # --------------------------------------------------
 
             # --------------------------------------------------
-            # 9. BACKEND HEALTH
+            # 11. BACKEND HEALTH
             # --------------------------------------------------
 
             echo "Restarting backend..."
@@ -364,7 +381,7 @@ jobs:
             echo "Backend is healthy."
 
             # --------------------------------------------------
-            # 10. BUILD FRONTEND
+            # 12. BUILD FRONTEND
             # --------------------------------------------------
 
             echo "Building frontend..."
@@ -375,7 +392,7 @@ jobs:
             npm run build
 
             # --------------------------------------------------
-            # 11. ATOMIC FRONTEND DEPLOYMENT
+            # 13. ATOMIC FRONTEND DEPLOYMENT
             # --------------------------------------------------
 
             echo "Deploying frontend..."
@@ -398,7 +415,7 @@ jobs:
             sudo mv "$NEW_FRONTEND" "$APP_DIR/frontend/current"
 
             # --------------------------------------------------
-            # 12. RELOAD NGINX
+            # 14. RELOAD NGINX
             # --------------------------------------------------
 
             echo "Reloading nginx..."
@@ -407,7 +424,7 @@ jobs:
             sudo systemctl reload nginx
 
             # --------------------------------------------------
-            # 13. FRONTEND HEALTH
+            # 15. FRONTEND HEALTH
             # --------------------------------------------------
 
             curl -fsS http://127.0.0.1/ > /dev/null
@@ -415,7 +432,7 @@ jobs:
             echo "Frontend is healthy."
 
             # --------------------------------------------------
-            # 14. CLEAN TEMPORARY WORKTREE
+            # 16. CLEAN TEMPORARY WORKTREE
             # --------------------------------------------------
 
             cd "$APP_DIR"
