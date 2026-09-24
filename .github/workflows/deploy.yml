@@ -3,8 +3,7 @@ name: Aequm Billing CI/CD
 on:
   push:
     branches:
-      - main
-      - v3-upgrade
+      - '**'
   workflow_dispatch:
 
 permissions:
@@ -121,12 +120,12 @@ jobs:
             # 2. FETCH EXACT MAIN COMMIT
             # --------------------------------------------------
 
-            echo "Fetching latest main..."
+            echo "Fetching triggering commit..."
 
-            git fetch origin main v3-upgrade
+            git fetch origin "${GITHUB_SHA}"
 
             echo "Production target commit:"
-            git rev-parse origin/main
+            echo "${GITHUB_SHA}"
 
             # --------------------------------------------------
             # 3. CREATE TEMPORARY DEPLOYMENT WORKTREE
@@ -136,7 +135,7 @@ jobs:
 
             rm -rf "$RELEASE_DIR"
 
-            DEPLOY_COMMIT="$(git rev-parse origin/v3-upgrade)"
+            DEPLOY_COMMIT="${GITHUB_SHA}"
 
             echo "Production target commit:"
             echo "$DEPLOY_COMMIT"
