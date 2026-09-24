@@ -159,6 +159,24 @@ export function makeApi(token, tenantId) {
     compare3b:     (p)  => call(`/registers/gstr3b/compare?period=${p}`),
     template3bUrl: ()   => `${BASE}/registers/gstr3b/template.csv`,
 
+    // ---- bank and card statements ----
+    stmtAccounts:  () => call('/accounts'),
+    addStmtAccount: (b) => call('/accounts', { method: 'POST', body: b }),
+    editStmtAccount: (id, b) => call(`/accounts/${id}`, { method: 'PUT', body: b }),
+    uploadStmt: (id, period, file) =>
+      upload(`/accounts/${id}/upload?period=${encodeURIComponent(period)}`, file, { token, tenantId }),
+    stmtUploads: (id) => call(`/accounts/${id}/uploads`),
+    delStmtUpload: (id) => call(`/uploads/${id}`, { method: 'DELETE' }),
+    stmtTxns: (id, period) =>
+      call(`/accounts/${id}/txns?period=${encodeURIComponent(period)}`),
+    allocateTxn: (id, b) =>
+      call(`/txns/${id}/allocate`, { method: 'PUT', body: b }),
+    stmtCategories: () => call('/categories'),
+    stmtReconcile: (period) =>
+      call(`/reconcile?period=${encodeURIComponent(period)}`),
+    expenseLedger: (period) =>
+      call(`/ledger?period=${encodeURIComponent(period)}`),
+
     // ---- master data templates ----
     templates:     ()   => call('/templates'),
     templateUrl:   (k)  => `${BASE}/templates/${k}.csv`,
