@@ -72,6 +72,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Verify deployment SSH key
+        env:
+          DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
+        run: |
+          printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+
+          ssh-keygen -y -f /tmp/deploy_key > /tmp/deploy_key.pub
+          ssh-keygen -lf /tmp/deploy_key.pub
+
       - name: Deploy to Host iCare
         uses: appleboy/ssh-action@v1.2.2
         with:
@@ -83,6 +93,7 @@ jobs:
           script: |
             set -e
             set -o pipefail
+
 
             APP_DIR="/opt/aequm-billing"
             BACKUP_DIR="$APP_DIR/backups"
