@@ -82,6 +82,23 @@ jobs:
           ssh-keygen -y -f /tmp/deploy_key > /tmp/deploy_key.pub
           ssh-keygen -lf /tmp/deploy_key.pub
 
+      - name: Test direct SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
+        run: |
+          printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+
+          ssh-keygen -y -f /tmp/deploy_key > /tmp/deploy_key.pub
+
+          ssh -vvv \
+            -i /tmp/deploy_key \
+            -p 3052 \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            root@103.17.193.174 \
+            "echo SSH_AUTH_OK"
+
       - name: Deploy to Host iCare
         uses: appleboy/ssh-action@v1.2.2
         with:
@@ -93,7 +110,6 @@ jobs:
           script: |
             set -e
             set -o pipefail
-
 
             APP_DIR="/opt/aequm-billing"
             BACKUP_DIR="$APP_DIR/backups"
@@ -167,7 +183,7 @@ jobs:
             mkdir -p "$APP_DIR/db"
 
             cp "$RELEASE_DIR/db/10_v42_employees_bank_links.sql" \
-               "$APP_DIR/db/10_v42_employees_bank_links.sql"
+              "$APP_DIR/db/10_v42_employees_bank_links.sql"
 
             echo "Checking v4.2 database migration..."
 
