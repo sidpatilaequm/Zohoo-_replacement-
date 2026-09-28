@@ -175,13 +175,19 @@ jobs:
 
           echo "Updating backend source..."
 
-          rsync -a \
-            --exclude='.venv/' \
-            --exclude='venv/' \
-            --exclude='__pycache__/' \
+          tar -C "$RELEASE_DIR/backend" \
+            --exclude='.venv' \
+            --exclude='venv' \
+            --exclude='__pycache__' \
             --exclude='run.sh' \
-            "$RELEASE_DIR/backend/" \
-            "$APP_DIR/backend/"
+            -cf - . | tar -C "$APP_DIR/backend" -xf -
+
+          echo "Updating frontend source..."
+
+          tar -C "$RELEASE_DIR/frontend" \
+            --exclude='node_modules' \
+            --exclude='dist' \
+            -cf - . | tar -C "$APP_DIR/frontend" -xf -
 
           echo "Updating frontend source..."
 
