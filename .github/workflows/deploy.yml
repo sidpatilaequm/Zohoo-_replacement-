@@ -3,7 +3,7 @@ name: Aequm Billing CI/CD
 on:
   push:
     branches:
-      - '**'
+      - main
   workflow_dispatch:
 
 permissions:
@@ -65,17 +65,18 @@ jobs:
         run: npm run build
 
   deploy:
-    name: Deploy to EC2
+    name: Deploy to Host iCare
     needs:
       - backend
       - frontend
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy to EC2
+      - name: Deploy to Host iCare
         uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.EC2_HOST }}
+          port: 3052
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
 
@@ -83,71 +84,54 @@ jobs:
             set -e
             set -o pipefail
 
-            APP_DIR="/home/ubuntu/aqqum-billing"
+            APP_DIR="/opt/aequm-billing"
             BACKUP_DIR="$APP_DIR/backups"
             TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
             RELEASE_DIR="/tmp/aequm-release-$TIMESTAMP"
 
             echo "======================================"
-            echo "Starting Aequm Billing production deployment"
+            echo "Aequm Billing v4.2 deployment"
             echo "======================================"
 
             cd "$APP_DIR"
 
-            # --------------------------------------------------
-            # 1. BACKUP PRODUCTION DATABASE FIRST
-            # --------------------------------------------------
+            echo "Checking production containers..."
+            docker compose ps
 
             echo "Creating production database backup..."
 
-            sudo mkdir -p "$BACKUP_DIR"
+            mkdir -p "$BACKUP_DIR"
 
             BACKUP_FILE="$BACKUP_DIR/aequm_billing_${TIMESTAMP}.sql.gz"
 
-            sudo mysqldump \
+            docker exec billing-mysql \
+              mysqldump \
               --single-transaction \
               --routines \
               --triggers \
               aequm_billing \
-              | gzip \
-              | sudo tee "$BACKUP_FILE" > /dev/null
+              | gzip > "$BACKUP_FILE"
 
-            sudo test -s "$BACKUP_FILE"
+            test -s "$BACKUP_FILE"
 
-            echo "Database backup completed: $BACKUP_FILE"
+            echo "Database backup completed:"
+            echo "$BACKUP_FILE"
 
-            # --------------------------------------------------
-            # 2. FETCH EXACT TRIGGERING COMMIT
-            # --------------------------------------------------
+            echo "Fetching latest repository..."
 
-            echo "Fetching triggering commit..."
-
-            git fetch origin "${{ github.sha }}"
-
-            echo "Production target commit:"
-            echo "${{ github.sha }}"
-
-            # --------------------------------------------------
-            # 3. CREATE TEMPORARY DEPLOYMENT WORKTREE
-            # --------------------------------------------------
-
-            echo "Creating temporary deployment release..."
-
-            rm -rf "$RELEASE_DIR"
+            git fetch origin main
 
             DEPLOY_COMMIT="${{ github.sha }}"
 
-            echo "Production target commit:"
+            echo "Deployment commit:"
             echo "$DEPLOY_COMMIT"
+
+            rm -rf "$RELEASE_DIR"
 
             git worktree add --detach "$RELEASE_DIR" "$DEPLOY_COMMIT"
 
-            echo "Release commit:"
+            echo "Release created:"
             git -C "$RELEASE_DIR" log -1 --oneline
-
-            # --------------------------------------------------
-            # 4. UPDATE BACKEND SOURCE
-            # --------------------------------------------------
 
             echo "Updating backend source..."
 
@@ -159,286 +143,90 @@ jobs:
               "$RELEASE_DIR/backend/" \
               "$APP_DIR/backend/"
 
-            # --------------------------------------------------
-            # 5. UPDATE FRONTEND SOURCE
-            # --------------------------------------------------
-
             echo "Updating frontend source..."
 
             rsync -a \
               --exclude='node_modules/' \
               --exclude='dist/' \
-              --exclude='current/' \
               "$RELEASE_DIR/frontend/" \
               "$APP_DIR/frontend/"
 
-            # --------------------------------------------------
-            # 6. INSTALL BACKEND DEPENDENCIES
-            # --------------------------------------------------
+            echo "Updating database migration files..."
 
-            echo "Installing backend dependencies..."
+            mkdir -p "$APP_DIR/db"
 
-            cd "$APP_DIR/backend"
+            cp "$RELEASE_DIR/db/10_v42_employees_bank_links.sql" \
+               "$APP_DIR/db/10_v42_employees_bank_links.sql"
 
-            source venv/bin/activate
+            echo "Checking v4.2 database migration..."
 
-            pip install --upgrade pip setuptools wheel
-            pip install -r requirements.txt
+            EMPLOYEES_TABLE=$(docker exec billing-mysql \
+              mysql -N -s aequm_billing -e "
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_SCHEMA = 'aequm_billing'
+                  AND TABLE_NAME = 'employees';
+              ")
 
-            # --------------------------------------------------
-            # 7. VERIFY v2.2 DATABASE MIGRATION
-            # --------------------------------------------------
+            STMT_LINKS_TABLE=$(docker exec billing-mysql \
+              mysql -N -s aequm_billing -e "
+                SELECT COUNT(*)
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_SCHEMA = 'aequm_billing'
+                  AND TABLE_NAME = 'stmt_txn_links';
+              ")
 
-            echo "Checking v2.2 database schema..."
+            echo "employees table = $EMPLOYEES_TABLE"
+            echo "stmt_txn_links table = $STMT_LINKS_TABLE"
 
-            STATUS_COLUMN=$(sudo mysql -N -s aequm_billing -e "
-              SELECT COUNT(*)
-              FROM INFORMATION_SCHEMA.COLUMNS
-              WHERE TABLE_SCHEMA = 'aequm_billing'
-                AND TABLE_NAME = 'invoices'
-                AND COLUMN_NAME = 'status';
-            ")
+            if [ "$EMPLOYEES_TABLE" = "0" ] || [ "$STMT_LINKS_TABLE" = "0" ]; then
 
-            REVERSAL_COLUMN=$(sudo mysql -N -s aequm_billing -e "
-              SELECT COUNT(*)
-              FROM INFORMATION_SCHEMA.COLUMNS
-              WHERE TABLE_SCHEMA = 'aequm_billing'
-                AND TABLE_NAME = 'payments'
-                AND COLUMN_NAME = 'reverses_id';
-            ")
+              echo "Applying v4.2 database migration..."
 
-            echo "invoices.status = $STATUS_COLUMN"
-            echo "payments.reverses_id = $REVERSAL_COLUMN"
+              docker exec -i billing-mysql \
+                mysql aequm_billing \
+                < "$APP_DIR/db/10_v42_employees_bank_links.sql"
 
-            if [ "$STATUS_COLUMN" = "0" ] && [ "$REVERSAL_COLUMN" = "0" ]; then
-
-              echo "Applying v2.2 migration..."
-
-              sudo mysql aequm_billing < "$RELEASE_DIR/db/03_cancel_and_gstr.sql"
-
-              echo "v2.2 migration completed."
-
-            elif [ "$STATUS_COLUMN" = "1" ] && [ "$REVERSAL_COLUMN" = "1" ]; then
-
-              echo "v2.2 migration already applied."
+              echo "v4.2 migration completed."
 
             else
 
-              echo "ERROR: Production database has a partial v2.2 migration."
-              exit 1
+              echo "v4.2 migration already present."
+              echo "No database migration required."
 
             fi
 
-            # --------------------------------------------------
-            # 8. VERIFY v2.4 DATABASE MIGRATION
-            # --------------------------------------------------
+            echo "Rebuilding Billing containers..."
 
-            echo "Checking v2.4 database schema..."
+            docker compose build billing-api billing-ui
 
-            V24_COLUMNS=$(sudo mysql -N -s aequm_billing -e "
-              SELECT COUNT(*)
-              FROM INFORMATION_SCHEMA.COLUMNS
-              WHERE TABLE_SCHEMA = 'aequm_billing'
-                AND (
-                  (TABLE_NAME = 'tenants' AND COLUMN_NAME IN (
-                    'bank_name',
-                    'bank_ifsc',
-                    'bank_account',
-                    'fy_start_month',
-                    'fy_start_day',
-                    'inv_fy',
-                    'po_fy',
-                    'vinv_prefix',
-                    'vinv_seq',
-                    'vinv_fy',
-                    'cust_prefix',
-                    'cust_seq',
-                    'vend_prefix',
-                    'vend_seq',
-                    'mat_prefix',
-                    'mat_seq'
-                  ))
-                  OR (TABLE_NAME = 'invoices' AND COLUMN_NAME IN (
-                    'subject',
-                    'instructions'
-                  ))
-                  OR (TABLE_NAME = 'invoice_lines' AND COLUMN_NAME = 'descr2')
-                  OR (TABLE_NAME = 'po_lines' AND COLUMN_NAME = 'descr2')
-                  OR (TABLE_NAME = 'vendor_invoice_lines' AND COLUMN_NAME = 'descr2')
-                  OR (TABLE_NAME = 'customers' AND COLUMN_NAME = 'logo')
-                  OR (TABLE_NAME = 'vendors' AND COLUMN_NAME = 'logo')
-                  OR (TABLE_NAME = 'vendor_invoices' AND COLUMN_NAME = 'our_no')
-                );
-            ")
+            echo "Restarting Billing application..."
 
-            V24_TABLE=$(sudo mysql -N -s aequm_billing -e "
-              SELECT COUNT(*)
-              FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = 'aequm_billing'
-                AND TABLE_NAME = 'doc_sequences';
-            ")
+            docker compose up -d billing-api billing-ui
 
-            echo "v2.4 columns = $V24_COLUMNS / 24"
-            echo "doc_sequences = $V24_TABLE"
+            echo "Waiting for Billing API..."
 
-            if [ "$V24_COLUMNS" = "0" ] && [ "$V24_TABLE" = "0" ]; then
+            for i in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:8000/api/health > /dev/null 2>&1; then
+                echo "Billing API is healthy."
+                break
+              fi
 
-              echo "Applying v2.4 database migration..."
+              sleep 2
+            done
 
-              sudo mysql aequm_billing < "$RELEASE_DIR/aequm_safe_upgrade_v24.sql"
+            curl -fsS http://127.0.0.1:8000/api/health > /dev/null
 
-              echo "v2.4 migration completed."
+            echo "Checking Billing containers..."
 
-            elif [ "$V24_COLUMNS" = "24" ] && [ "$V24_TABLE" = "1" ]; then
+            docker compose ps
 
-              echo "v2.4 migration already applied."
-
-            else
-
-              echo "ERROR: Production database has a partial v2.4 migration."
-              echo "Migration was NOT executed."
-              exit 1
-
-            fi
-
-            # --------------------------------------------------
-            # 9. VERIFY v3 READ-ONLY GROUP MIGRATION
-            # --------------------------------------------------
-
-            echo "Checking v3 user_groups.read_only schema..."
-
-            READ_ONLY_COLUMN=$(sudo mysql -N -s aequm_billing -e "
-              SELECT COUNT(*)
-              FROM INFORMATION_SCHEMA.COLUMNS
-              WHERE TABLE_SCHEMA = 'aequm_billing'
-                AND TABLE_NAME = 'user_groups'
-                AND COLUMN_NAME = 'read_only';
-            ")
-
-            echo "user_groups.read_only = $READ_ONLY_COLUMN"
-
-            if [ "$READ_ONLY_COLUMN" = "0" ]; then
-
-              echo "Applying v3 read_only migration..."
-
-              sudo mysql aequm_billing < "$RELEASE_DIR/db/04_v3_read_only.sql"
-
-              echo "v3 read_only migration completed."
-
-            elif [ "$READ_ONLY_COLUMN" = "1" ]; then
-
-              echo "v3 read_only migration already applied."
-
-            else
-
-              echo "ERROR: Unexpected user_groups.read_only schema state."
-              exit 1
-
-            fi
-
-            # --------------------------------------------------
-            # 10. VERIFY/APPLY v4.1 PRODUCTION-SAFE MIGRATION
-            # --------------------------------------------------
-
-            echo "Checking v4.1 production-safe migration..."
-
-            V41_MIGRATION="$RELEASE_DIR/db/09_v41_production_safe.sql"
-
-            if [ ! -f "$V41_MIGRATION" ]; then
-              echo "ERROR: v4.1 production-safe migration file not found."
-              exit 1
-            fi
-
-            echo "Applying v4.1 production-safe migration..."
-            sudo mysql aequm_billing < "$V41_MIGRATION"
-            echo "v4.1 production-safe migration completed."
-
-            # --------------------------------------------------
-            # IMPORTANT DATABASE SAFETY RULE
-            # --------------------------------------------------
-            # NEVER run:
-            #
-            # db/01_schema.sql
-            # db/02_seed.sql
-            #
-            # Existing production business data must remain intact.
-            # --------------------------------------------------
-
-            # --------------------------------------------------
-            # 11. BACKEND HEALTH
-            # --------------------------------------------------
-
-            echo "Restarting backend..."
-
-            sudo systemctl restart billing.service
-
-            sleep 3
-
-            sudo systemctl is-active --quiet billing.service
-
-            curl -fsS http://127.0.0.1:8000/docs > /dev/null
-
-            echo "Backend is healthy."
-
-            # --------------------------------------------------
-            # 12. BUILD FRONTEND
-            # --------------------------------------------------
-
-            echo "Building frontend..."
-
-            cd "$APP_DIR/frontend"
-
-            npm ci
-            npm run build
-
-            # --------------------------------------------------
-            # 13. ATOMIC FRONTEND DEPLOYMENT
-            # --------------------------------------------------
-
-            echo "Deploying frontend..."
-
-            NEW_FRONTEND="$APP_DIR/frontend/current_new_$TIMESTAMP"
-            OLD_FRONTEND="$APP_DIR/frontend/current_previous_$TIMESTAMP"
-
-            sudo rm -rf "$NEW_FRONTEND"
-            sudo mkdir -p "$NEW_FRONTEND"
-
-            sudo cp -a dist/. "$NEW_FRONTEND/"
-
-            sudo chown -R www-data:www-data "$NEW_FRONTEND"
-            sudo chmod -R 755 "$NEW_FRONTEND"
-
-            if [ -d "$APP_DIR/frontend/current" ]; then
-              sudo mv "$APP_DIR/frontend/current" "$OLD_FRONTEND"
-            fi
-
-            sudo mv "$NEW_FRONTEND" "$APP_DIR/frontend/current"
-
-            # --------------------------------------------------
-            # 14. RELOAD NGINX
-            # --------------------------------------------------
-
-            echo "Reloading nginx..."
-
-            sudo nginx -t
-            sudo systemctl reload nginx
-
-            # --------------------------------------------------
-            # 15. FRONTEND HEALTH
-            # --------------------------------------------------
-
-            curl -fsS http://127.0.0.1/ > /dev/null
-
-            echo "Frontend is healthy."
-
-            # --------------------------------------------------
-            # 16. CLEAN TEMPORARY WORKTREE
-            # --------------------------------------------------
+            echo "Cleaning temporary worktree..."
 
             cd "$APP_DIR"
 
             git worktree remove --force "$RELEASE_DIR" || true
 
             echo "======================================"
-            echo "Aequm Billing deployment successful"
+            echo "Aequm Billing v4.2 deployment successful"
             echo "======================================"
