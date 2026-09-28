@@ -211,14 +211,14 @@ jobs:
           echo "9. Rebuilding Billing containers"
           echo "======================================"
 
-          docker compose build billing-api billing-ui
+          docker compose build api ui
 
           echo ""
           echo "======================================"
           echo "10. Restarting Billing application"
           echo "======================================"
 
-          docker compose up -d billing-api billing-ui
+          docker compose up -d api ui
 
           echo ""
           echo "======================================"
@@ -257,7 +257,7 @@ jobs:
 
             echo ""
             echo "Billing API logs:"
-            docker compose logs --tail=100 billing-api || true
+            docker compose logs --tail=100 api
 
             exit 1
 
