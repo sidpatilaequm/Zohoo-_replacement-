@@ -107,6 +107,7 @@ jobs:
       - name: Deploy to Host iCare
         env:
           DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
+          DEPLOY_COMMIT: ${{ github.sha }}
         run: |
           set -e
           set -o pipefail
@@ -119,30 +120,31 @@ jobs:
             -p 3052 \
             -o StrictHostKeyChecking=no \
             -o IdentitiesOnly=yes \
-            root@103.17.193.174 <<REMOTE_SCRIPT
+            root@103.17.193.174 \
+            "DEPLOY_COMMIT='$DEPLOY_COMMIT' bash -s" <<'REMOTE_SCRIPT'
 
           set -e
           set -o pipefail
 
           APP_DIR="/opt/aequm-billing"
-          BACKUP_DIR="\$APP_DIR/backups"
-          TIMESTAMP="\$(date +%Y%m%d_%H%M%S)"
-          RELEASE_DIR="/tmp/aequm-release-\$TIMESTAMP"
+          BACKUP_DIR="$APP_DIR/backups"
+          TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+          RELEASE_DIR="/tmp/aequm-release-$TIMESTAMP"
 
           echo "======================================"
           echo "Aequm Billing v4.2 deployment"
           echo "======================================"
 
-          cd "\$APP_DIR"
+          cd "$APP_DIR"
 
           echo "Checking production containers..."
           docker compose ps
 
           echo "Creating production database backup..."
 
-          mkdir -p "\$BACKUP_DIR"
+          mkdir -p "$BACKUP_DIR"
 
-          BACKUP_FILE="\$BACKUP_DIR/aequm_billing_\${TIMESTAMP}.sql.gz"
+          BACKUP_FILE="$BACKUP_DIR/aequm_billing_${TIMESTAMP}.sql.gz"
 
           docker exec billing-mysql \
             sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
@@ -152,26 +154,24 @@ jobs:
               aequm_billing' \
             | gzip > "$BACKUP_FILE"
 
-          test -s "\$BACKUP_FILE"
+          test -s "$BACKUP_FILE"
 
           echo "Database backup completed:"
-          echo "\$BACKUP_FILE"
+          echo "$BACKUP_FILE"
 
           echo "Fetching latest repository..."
 
           git fetch origin main
 
-          DEPLOY_COMMIT="${{ github.sha }}"
-
           echo "Deployment commit:"
-          echo "\$DEPLOY_COMMIT"
+          echo "$DEPLOY_COMMIT"
 
-          rm -rf "\$RELEASE_DIR"
+          rm -rf "$RELEASE_DIR"
 
-          git worktree add --detach "\$RELEASE_DIR" "\$DEPLOY_COMMIT"
+          git worktree add --detach "$RELEASE_DIR" "$DEPLOY_COMMIT"
 
           echo "Release created:"
-          git -C "\$RELEASE_DIR" log -1 --oneline
+          git -C "$RELEASE_DIR" log -1 --oneline
 
           echo "Updating backend source..."
 
@@ -180,27 +180,27 @@ jobs:
             --exclude='venv/' \
             --exclude='__pycache__/' \
             --exclude='run.sh' \
-            "\$RELEASE_DIR/backend/" \
-            "\$APP_DIR/backend/"
+            "$RELEASE_DIR/backend/" \
+            "$APP_DIR/backend/"
 
           echo "Updating frontend source..."
 
           rsync -a \
             --exclude='node_modules/' \
             --exclude='dist/' \
-            "\$RELEASE_DIR/frontend/" \
-            "\$APP_DIR/frontend/"
+            "$RELEASE_DIR/frontend/" \
+            "$APP_DIR/frontend/"
 
           echo "Updating database migration files..."
 
-          mkdir -p "\$APP_DIR/db"
+          mkdir -p "$APP_DIR/db"
 
-          cp "\$RELEASE_DIR/db/10_v42_employees_bank_links.sql" \
-            "\$APP_DIR/db/10_v42_employees_bank_links.sql"
+          cp "$RELEASE_DIR/db/10_v42_employees_bank_links.sql" \
+            "$APP_DIR/db/10_v42_employees_bank_links.sql"
 
           echo "Checking v4.2 database migration..."
 
-          EMPLOYEES_TABLE=\$(docker exec billing-mysql \
+          EMPLOYEES_TABLE=$(docker exec billing-mysql \
             mysql -N -s aequm_billing -e "
               SELECT COUNT(*)
               FROM INFORMATION_SCHEMA.TABLES
@@ -208,7 +208,7 @@ jobs:
                 AND TABLE_NAME = 'employees';
             ")
 
-          STMT_LINKS_TABLE=\$(docker exec billing-mysql \
+          STMT_LINKS_TABLE=$(docker exec billing-mysql \
             mysql -N -s aequm_billing -e "
               SELECT COUNT(*)
               FROM INFORMATION_SCHEMA.TABLES
@@ -216,16 +216,16 @@ jobs:
                 AND TABLE_NAME = 'stmt_txn_links';
             ")
 
-          echo "employees table = \$EMPLOYEES_TABLE"
-          echo "stmt_txn_links table = \$STMT_LINKS_TABLE"
+          echo "employees table = $EMPLOYEES_TABLE"
+          echo "stmt_txn_links table = $STMT_LINKS_TABLE"
 
-          if [ "\$EMPLOYEES_TABLE" = "0" ] || [ "\$STMT_LINKS_TABLE" = "0" ]; then
+          if [ "$EMPLOYEES_TABLE" = "0" ] || [ "$STMT_LINKS_TABLE" = "0" ]; then
 
             echo "Applying v4.2 database migration..."
 
             docker exec -i billing-mysql \
               mysql aequm_billing \
-              < "\$APP_DIR/db/10_v42_employees_bank_links.sql"
+              < "$APP_DIR/db/10_v42_employees_bank_links.sql"
 
             echo "v4.2 migration completed."
 
@@ -248,18 +248,18 @@ jobs:
 
           HEALTHY=0
 
-          for i in \$(seq 1 30); do
+          for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/api/health > /dev/null 2>&1; then
               echo "Billing API is healthy."
               HEALTHY=1
               break
             fi
 
-            echo "Waiting for API... attempt \$i/30"
+            echo "Waiting for API... attempt $i/30"
             sleep 2
           done
 
-          if [ "\$HEALTHY" != "1" ]; then
+          if [ "$HEALTHY" != "1" ]; then
             echo "ERROR: Billing API did not become healthy."
 
             echo "Container status:"
@@ -279,9 +279,9 @@ jobs:
 
           echo "Cleaning temporary worktree..."
 
-          cd "\$APP_DIR"
+          cd "$APP_DIR"
 
-          git worktree remove --force "\$RELEASE_DIR" || true
+          git worktree remove --force "$RELEASE_DIR" || true
 
           echo "======================================"
           echo "Aequm Billing v4.2 deployment successful"
