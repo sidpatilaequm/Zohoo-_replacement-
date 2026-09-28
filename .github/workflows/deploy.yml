@@ -72,10 +72,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Verify deployment SSH key
         env:
           DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
         run: |
+          set -e
+
           printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
           chmod 600 /tmp/deploy_key
 
@@ -86,12 +91,12 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
         run: |
+          set -e
+
           printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
           chmod 600 /tmp/deploy_key
 
-          ssh-keygen -y -f /tmp/deploy_key > /tmp/deploy_key.pub
-
-          ssh -vvv \
+          ssh \
             -i /tmp/deploy_key \
             -p 3052 \
             -o StrictHostKeyChecking=no \
@@ -100,160 +105,186 @@ jobs:
             "echo SSH_AUTH_OK"
 
       - name: Deploy to Host iCare
-        uses: appleboy/ssh-action@v1.2.2
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          port: 3052
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
+        env:
+          DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
+        run: |
+          set -e
+          set -o pipefail
 
-          script: |
-            set -e
-            set -o pipefail
+          printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
 
-            APP_DIR="/opt/aequm-billing"
-            BACKUP_DIR="$APP_DIR/backups"
-            TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-            RELEASE_DIR="/tmp/aequm-release-$TIMESTAMP"
+          ssh \
+            -i /tmp/deploy_key \
+            -p 3052 \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            root@103.17.193.174 <<REMOTE_SCRIPT
 
-            echo "======================================"
-            echo "Aequm Billing v4.2 deployment"
-            echo "======================================"
+          set -e
+          set -o pipefail
 
-            cd "$APP_DIR"
+          APP_DIR="/opt/aequm-billing"
+          BACKUP_DIR="\$APP_DIR/backups"
+          TIMESTAMP="\$(date +%Y%m%d_%H%M%S)"
+          RELEASE_DIR="/tmp/aequm-release-\$TIMESTAMP"
 
-            echo "Checking production containers..."
-            docker compose ps
+          echo "======================================"
+          echo "Aequm Billing v4.2 deployment"
+          echo "======================================"
 
-            echo "Creating production database backup..."
+          cd "\$APP_DIR"
 
-            mkdir -p "$BACKUP_DIR"
+          echo "Checking production containers..."
+          docker compose ps
 
-            BACKUP_FILE="$BACKUP_DIR/aequm_billing_${TIMESTAMP}.sql.gz"
+          echo "Creating production database backup..."
 
-            docker exec billing-mysql \
-              mysqldump \
-              --single-transaction \
-              --routines \
-              --triggers \
-              aequm_billing \
-              | gzip > "$BACKUP_FILE"
+          mkdir -p "\$BACKUP_DIR"
 
-            test -s "$BACKUP_FILE"
+          BACKUP_FILE="\$BACKUP_DIR/aequm_billing_\${TIMESTAMP}.sql.gz"
 
-            echo "Database backup completed:"
-            echo "$BACKUP_FILE"
+          docker exec billing-mysql \
+            mysqldump \
+            --single-transaction \
+            --routines \
+            --triggers \
+            aequm_billing \
+            | gzip > "\$BACKUP_FILE"
 
-            echo "Fetching latest repository..."
+          test -s "\$BACKUP_FILE"
 
-            git fetch origin main
+          echo "Database backup completed:"
+          echo "\$BACKUP_FILE"
 
-            DEPLOY_COMMIT="${{ github.sha }}"
+          echo "Fetching latest repository..."
 
-            echo "Deployment commit:"
-            echo "$DEPLOY_COMMIT"
+          git fetch origin main
 
-            rm -rf "$RELEASE_DIR"
+          DEPLOY_COMMIT="${{ github.sha }}"
 
-            git worktree add --detach "$RELEASE_DIR" "$DEPLOY_COMMIT"
+          echo "Deployment commit:"
+          echo "\$DEPLOY_COMMIT"
 
-            echo "Release created:"
-            git -C "$RELEASE_DIR" log -1 --oneline
+          rm -rf "\$RELEASE_DIR"
 
-            echo "Updating backend source..."
+          git worktree add --detach "\$RELEASE_DIR" "\$DEPLOY_COMMIT"
 
-            rsync -a \
-              --exclude='.venv/' \
-              --exclude='venv/' \
-              --exclude='__pycache__/' \
-              --exclude='run.sh' \
-              "$RELEASE_DIR/backend/" \
-              "$APP_DIR/backend/"
+          echo "Release created:"
+          git -C "\$RELEASE_DIR" log -1 --oneline
 
-            echo "Updating frontend source..."
+          echo "Updating backend source..."
 
-            rsync -a \
-              --exclude='node_modules/' \
-              --exclude='dist/' \
-              "$RELEASE_DIR/frontend/" \
-              "$APP_DIR/frontend/"
+          rsync -a \
+            --exclude='.venv/' \
+            --exclude='venv/' \
+            --exclude='__pycache__/' \
+            --exclude='run.sh' \
+            "\$RELEASE_DIR/backend/" \
+            "\$APP_DIR/backend/"
 
-            echo "Updating database migration files..."
+          echo "Updating frontend source..."
 
-            mkdir -p "$APP_DIR/db"
+          rsync -a \
+            --exclude='node_modules/' \
+            --exclude='dist/' \
+            "\$RELEASE_DIR/frontend/" \
+            "\$APP_DIR/frontend/"
 
-            cp "$RELEASE_DIR/db/10_v42_employees_bank_links.sql" \
-              "$APP_DIR/db/10_v42_employees_bank_links.sql"
+          echo "Updating database migration files..."
 
-            echo "Checking v4.2 database migration..."
+          mkdir -p "\$APP_DIR/db"
 
-            EMPLOYEES_TABLE=$(docker exec billing-mysql \
-              mysql -N -s aequm_billing -e "
-                SELECT COUNT(*)
-                FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_SCHEMA = 'aequm_billing'
-                  AND TABLE_NAME = 'employees';
-              ")
+          cp "\$RELEASE_DIR/db/10_v42_employees_bank_links.sql" \
+            "\$APP_DIR/db/10_v42_employees_bank_links.sql"
 
-            STMT_LINKS_TABLE=$(docker exec billing-mysql \
-              mysql -N -s aequm_billing -e "
-                SELECT COUNT(*)
-                FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_SCHEMA = 'aequm_billing'
-                  AND TABLE_NAME = 'stmt_txn_links';
-              ")
+          echo "Checking v4.2 database migration..."
 
-            echo "employees table = $EMPLOYEES_TABLE"
-            echo "stmt_txn_links table = $STMT_LINKS_TABLE"
+          EMPLOYEES_TABLE=\$(docker exec billing-mysql \
+            mysql -N -s aequm_billing -e "
+              SELECT COUNT(*)
+              FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = 'aequm_billing'
+                AND TABLE_NAME = 'employees';
+            ")
 
-            if [ "$EMPLOYEES_TABLE" = "0" ] || [ "$STMT_LINKS_TABLE" = "0" ]; then
+          STMT_LINKS_TABLE=\$(docker exec billing-mysql \
+            mysql -N -s aequm_billing -e "
+              SELECT COUNT(*)
+              FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = 'aequm_billing'
+                AND TABLE_NAME = 'stmt_txn_links';
+            ")
 
-              echo "Applying v4.2 database migration..."
+          echo "employees table = \$EMPLOYEES_TABLE"
+          echo "stmt_txn_links table = \$STMT_LINKS_TABLE"
 
-              docker exec -i billing-mysql \
-                mysql aequm_billing \
-                < "$APP_DIR/db/10_v42_employees_bank_links.sql"
+          if [ "\$EMPLOYEES_TABLE" = "0" ] || [ "\$STMT_LINKS_TABLE" = "0" ]; then
 
-              echo "v4.2 migration completed."
+            echo "Applying v4.2 database migration..."
 
-            else
+            docker exec -i billing-mysql \
+              mysql aequm_billing \
+              < "\$APP_DIR/db/10_v42_employees_bank_links.sql"
 
-              echo "v4.2 migration already present."
-              echo "No database migration required."
+            echo "v4.2 migration completed."
 
+          else
+
+            echo "v4.2 migration already present."
+            echo "No database migration required."
+
+          fi
+
+          echo "Rebuilding Billing containers..."
+
+          docker compose build billing-api billing-ui
+
+          echo "Restarting Billing application..."
+
+          docker compose up -d billing-api billing-ui
+
+          echo "Waiting for Billing API..."
+
+          HEALTHY=0
+
+          for i in \$(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/health > /dev/null 2>&1; then
+              echo "Billing API is healthy."
+              HEALTHY=1
+              break
             fi
 
-            echo "Rebuilding Billing containers..."
+            echo "Waiting for API... attempt \$i/30"
+            sleep 2
+          done
 
-            docker compose build billing-api billing-ui
+          if [ "\$HEALTHY" != "1" ]; then
+            echo "ERROR: Billing API did not become healthy."
 
-            echo "Restarting Billing application..."
-
-            docker compose up -d billing-api billing-ui
-
-            echo "Waiting for Billing API..."
-
-            for i in $(seq 1 30); do
-              if curl -fsS http://127.0.0.1:8000/api/health > /dev/null 2>&1; then
-                echo "Billing API is healthy."
-                break
-              fi
-
-              sleep 2
-            done
-
-            curl -fsS http://127.0.0.1:8000/api/health > /dev/null
-
-            echo "Checking Billing containers..."
-
+            echo "Container status:"
             docker compose ps
 
-            echo "Cleaning temporary worktree..."
+            echo "Billing API logs:"
+            docker compose logs --tail=100 billing-api || true
 
-            cd "$APP_DIR"
+            exit 1
+          fi
 
-            git worktree remove --force "$RELEASE_DIR" || true
+          curl -fsS http://127.0.0.1:8000/api/health > /dev/null
 
-            echo "======================================"
-            echo "Aequm Billing v4.2 deployment successful"
-            echo "======================================"
+          echo "Checking Billing containers..."
+
+          docker compose ps
+
+          echo "Cleaning temporary worktree..."
+
+          cd "\$APP_DIR"
+
+          git worktree remove --force "\$RELEASE_DIR" || true
+
+          echo "======================================"
+          echo "Aequm Billing v4.2 deployment successful"
+          echo "======================================"
+
+          REMOTE_SCRIPT
