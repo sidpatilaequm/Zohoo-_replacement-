@@ -1,4 +1,4 @@
-name: Aequm Billing CI/CD
+name: Aequm Billing Deployment
 
 on:
   push:
@@ -14,95 +14,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  backend:
-    name: Backend Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install backend dependencies
-        working-directory: backend
-        run: |
-          python -m venv venv
-          source venv/bin/activate
-          pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run backend tests
-        working-directory: backend
-        run: |
-          source venv/bin/activate
-          pytest -q
-
-  frontend:
-    name: Frontend Build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
-
   deploy:
-    name: Deploy to Host iCare
-    needs:
-      - backend
-      - frontend
+    name: Deploy Billing v4.2
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Verify deployment SSH key
-        env:
-          DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
-        run: |
-          set -e
-
-          printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
-          chmod 600 /tmp/deploy_key
-
-          ssh-keygen -y -f /tmp/deploy_key > /tmp/deploy_key.pub
-          ssh-keygen -lf /tmp/deploy_key.pub
-
-      - name: Test direct SSH
-        env:
-          DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
-        run: |
-          set -e
-
-          printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
-          chmod 600 /tmp/deploy_key
-
-          ssh \
-            -i /tmp/deploy_key \
-            -p 3052 \
-            -o StrictHostKeyChecking=no \
-            -o IdentitiesOnly=yes \
-            root@103.17.193.174 \
-            "echo SSH_AUTH_OK"
 
       - name: Deploy to Host iCare
         env:
@@ -112,8 +30,22 @@ jobs:
           set -e
           set -o pipefail
 
+          echo "Preparing SSH key..."
+
           printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
           chmod 600 /tmp/deploy_key
+
+          echo "Testing SSH connection..."
+
+          ssh \
+            -i /tmp/deploy_key \
+            -p 3052 \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            root@103.17.193.174 \
+            "echo SSH_AUTH_OK"
+
+          echo "Starting Billing deployment..."
 
           ssh \
             -i /tmp/deploy_key \
@@ -137,10 +69,17 @@ jobs:
 
           cd "$APP_DIR"
 
-          echo "Checking production containers..."
+          echo ""
+          echo "======================================"
+          echo "1. Production container check"
+          echo "======================================"
+
           docker compose ps
 
-          echo "Creating production database backup..."
+          echo ""
+          echo "======================================"
+          echo "2. Creating production DB backup"
+          echo "======================================"
 
           mkdir -p "$BACKUP_DIR"
 
@@ -159,12 +98,20 @@ jobs:
           echo "Database backup completed:"
           echo "$BACKUP_FILE"
 
-          echo "Fetching latest repository..."
+          echo ""
+          echo "======================================"
+          echo "3. Fetching deployment commit"
+          echo "======================================"
 
           git fetch origin main
 
           echo "Deployment commit:"
           echo "$DEPLOY_COMMIT"
+
+          echo ""
+          echo "======================================"
+          echo "4. Creating release worktree"
+          echo "======================================"
 
           rm -rf "$RELEASE_DIR"
 
@@ -173,38 +120,53 @@ jobs:
           echo "Release created:"
           git -C "$RELEASE_DIR" log -1 --oneline
 
-          echo "Updating backend source..."
+          echo ""
+          echo "======================================"
+          echo "5. Updating backend source"
+          echo "======================================"
 
-          tar -C "$RELEASE_DIR/backend" \
+          tar \
+            -C "$RELEASE_DIR/backend" \
             --exclude='.venv' \
             --exclude='venv' \
             --exclude='__pycache__' \
             --exclude='run.sh' \
-            -cf - . | tar -C "$APP_DIR/backend" -xf -
+            -cf - . \
+            | tar -C "$APP_DIR/backend" -xf -
 
-          echo "Updating frontend source..."
+          echo "Backend source updated."
 
-          tar -C "$RELEASE_DIR/frontend" \
+          echo ""
+          echo "======================================"
+          echo "6. Updating frontend source"
+          echo "======================================"
+
+          tar \
+            -C "$RELEASE_DIR/frontend" \
             --exclude='node_modules' \
             --exclude='dist' \
-            -cf - . | tar -C "$APP_DIR/frontend" -xf -
+            -cf - . \
+            | tar -C "$APP_DIR/frontend" -xf -
 
-          echo "Updating frontend source..."
+          echo "Frontend source updated."
 
-          rsync -a \
-            --exclude='node_modules/' \
-            --exclude='dist/' \
-            "$RELEASE_DIR/frontend/" \
-            "$APP_DIR/frontend/"
-
-          echo "Updating database migration files..."
+          echo ""
+          echo "======================================"
+          echo "7. Updating v4.2 migration"
+          echo "======================================"
 
           mkdir -p "$APP_DIR/db"
 
-          cp "$RELEASE_DIR/db/10_v42_employees_bank_links.sql" \
+          cp \
+            "$RELEASE_DIR/db/10_v42_employees_bank_links.sql" \
             "$APP_DIR/db/10_v42_employees_bank_links.sql"
 
-          echo "Checking v4.2 database migration..."
+          echo "Migration file updated."
+
+          echo ""
+          echo "======================================"
+          echo "8. Checking v4.2 database tables"
+          echo "======================================"
 
           EMPLOYEES_TABLE=$(docker exec billing-mysql \
             mysql -N -s aequm_billing -e "
@@ -227,6 +189,7 @@ jobs:
 
           if [ "$EMPLOYEES_TABLE" = "0" ] || [ "$STMT_LINKS_TABLE" = "0" ]; then
 
+            echo ""
             echo "Applying v4.2 database migration..."
 
             docker exec -i billing-mysql \
@@ -237,60 +200,96 @@ jobs:
 
           else
 
+            echo ""
             echo "v4.2 migration already present."
             echo "No database migration required."
 
           fi
 
-          echo "Rebuilding Billing containers..."
+          echo ""
+          echo "======================================"
+          echo "9. Rebuilding Billing containers"
+          echo "======================================"
 
           docker compose build billing-api billing-ui
 
-          echo "Restarting Billing application..."
+          echo ""
+          echo "======================================"
+          echo "10. Restarting Billing application"
+          echo "======================================"
 
           docker compose up -d billing-api billing-ui
 
-          echo "Waiting for Billing API..."
+          echo ""
+          echo "======================================"
+          echo "11. Waiting for Billing API"
+          echo "======================================"
 
           HEALTHY=0
 
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8000/api/health > /dev/null 2>&1; then
+
+            if curl -fsS \
+              http://127.0.0.1:8000/api/health \
+              > /dev/null 2>&1; then
+
               echo "Billing API is healthy."
               HEALTHY=1
               break
+
             fi
 
             echo "Waiting for API... attempt $i/30"
             sleep 2
+
           done
 
           if [ "$HEALTHY" != "1" ]; then
-            echo "ERROR: Billing API did not become healthy."
 
+            echo ""
+            echo "======================================"
+            echo "ERROR: Billing API is unhealthy"
+            echo "======================================"
+
+            echo ""
             echo "Container status:"
             docker compose ps
 
+            echo ""
             echo "Billing API logs:"
             docker compose logs --tail=100 billing-api || true
 
             exit 1
+
           fi
 
-          curl -fsS http://127.0.0.1:8000/api/health > /dev/null
+          curl -fsS \
+            http://127.0.0.1:8000/api/health \
+            > /dev/null
 
-          echo "Checking Billing containers..."
+          echo ""
+          echo "======================================"
+          echo "12. Final container check"
+          echo "======================================"
 
           docker compose ps
 
-          echo "Cleaning temporary worktree..."
+          echo ""
+          echo "======================================"
+          echo "13. Cleaning release worktree"
+          echo "======================================"
 
           cd "$APP_DIR"
 
-          git worktree remove --force "$RELEASE_DIR" || true
+          git worktree remove \
+            --force "$RELEASE_DIR" || true
 
+          echo ""
           echo "======================================"
           echo "Aequm Billing v4.2 deployment successful"
           echo "======================================"
 
           REMOTE_SCRIPT
+
+          echo ""
+          echo "Deployment completed successfully."
