@@ -78,7 +78,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           port: 3052
           username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
+          key: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
 
           script: |
             set -e
