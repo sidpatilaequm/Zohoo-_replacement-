@@ -145,12 +145,12 @@ jobs:
           BACKUP_FILE="\$BACKUP_DIR/aequm_billing_\${TIMESTAMP}.sql.gz"
 
           docker exec billing-mysql \
-            mysqldump \
-            --single-transaction \
-            --routines \
-            --triggers \
-            aequm_billing \
-            | gzip > "\$BACKUP_FILE"
+            sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
+              --single-transaction \
+              --routines \
+              --triggers \
+              aequm_billing' \
+            | gzip > "$BACKUP_FILE"
 
           test -s "\$BACKUP_FILE"
 
