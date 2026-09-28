@@ -169,20 +169,20 @@ jobs:
           echo "======================================"
 
           EMPLOYEES_TABLE=$(docker exec billing-mysql \
-            mysql -N -s aequm_billing -e "
+            sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -s aequm_billing -e "
               SELECT COUNT(*)
               FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = 'aequm_billing'
-                AND TABLE_NAME = 'employees';
-            ")
+              WHERE TABLE_SCHEMA = '\''aequm_billing'\''
+                AND TABLE_NAME = '\''employees'\'';
+            "')
 
           STMT_LINKS_TABLE=$(docker exec billing-mysql \
-            mysql -N -s aequm_billing -e "
+            sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -s aequm_billing -e "
               SELECT COUNT(*)
               FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = 'aequm_billing'
-                AND TABLE_NAME = 'stmt_txn_links';
-            ")
+              WHERE TABLE_SCHEMA = '\''aequm_billing'\''
+                AND TABLE_NAME = '\''stmt_txn_links'\'';
+            "')
 
           echo "employees table = $EMPLOYEES_TABLE"
           echo "stmt_txn_links table = $STMT_LINKS_TABLE"
@@ -193,7 +193,7 @@ jobs:
             echo "Applying v4.2 database migration..."
 
             docker exec -i billing-mysql \
-              mysql aequm_billing \
+              sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" aequm_billing' \
               < "$APP_DIR/db/10_v42_employees_bank_links.sql"
 
             echo "v4.2 migration completed."
