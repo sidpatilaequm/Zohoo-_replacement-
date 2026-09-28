@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
 PERMS = ["invoice","saved","po","vinv","so","del","grn","disc","phys","stock",
-         "audit","bankstmt","cardstmt",
+         "audit","bankstmt","cardstmt","employees",
          "crec","vpay","reports","registers","gstr","customers","vendors",
          "materials","attrs","hsn","org","users","data"]
 
@@ -674,3 +674,60 @@ class StmtTxn(Base):
     notes: Mapped[str|None]=mapped_column(String(200),nullable=True)
     allocated_by: Mapped[str|None]=mapped_column(String(120),nullable=True)
     allocated_at: Mapped[datetime|None]=mapped_column(DateTime,nullable=True)
+
+
+# ------------------------------------------------ employees (v4.2)
+class Employee(Base):
+    """A person on the payroll. Bank debits for salary or reimbursed expenses
+    are attached to the employee on the Bank Statements screen."""
+    __tablename__="employees"
+    __table_args__=(UniqueConstraint("tenant_id","emp_code",name="uq_emp_code"),
+                    UniqueConstraint("tenant_id","email",name="uq_emp_email"))
+
+    id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    tenant_id: Mapped[int]=mapped_column(
+        ForeignKey("tenants.id",ondelete="CASCADE")
+    )
+    emp_code: Mapped[str]=mapped_column(String(20))
+    first_name: Mapped[str]=mapped_column(String(60))
+    last_name: Mapped[str]=mapped_column(String(60))
+    email: Mapped[str]=mapped_column(String(160))
+    active: Mapped[bool]=mapped_column(Boolean,default=True)
+    created_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
+
+
+class StmtTxnLink(Base):
+    """What a bank transaction is for (v4.2).
+
+    A credit can carry one or more customer invoices it settles; a debit can
+    carry vendor invoices it pays, or an employee's salary or expense. The
+    amounts attached to one transaction never exceed the transaction itself.
+    """
+    __tablename__="stmt_txn_links"
+
+    id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    tenant_id: Mapped[int]=mapped_column(
+        ForeignKey("tenants.id",ondelete="CASCADE")
+    )
+    txn_id: Mapped[int]=mapped_column(
+        ForeignKey("stmt_txns.id",ondelete="CASCADE")
+    )
+    link_type: Mapped[str]=mapped_column(
+        Enum("CUST_INV","VEND_INV","EMPLOYEE",name="sltype")
+    )
+    invoice_id: Mapped[int|None]=mapped_column(
+        ForeignKey("invoices.id",ondelete="CASCADE"),nullable=True
+    )
+    vinv_id: Mapped[int|None]=mapped_column(
+        ForeignKey("vendor_invoices.id",ondelete="CASCADE"),nullable=True
+    )
+    employee_id: Mapped[int|None]=mapped_column(
+        ForeignKey("employees.id"),nullable=True
+    )
+    purpose: Mapped[str|None]=mapped_column(
+        Enum("SALARY","EXPENSE",name="slpurpose"),nullable=True
+    )
+    amount: Mapped[Decimal]=mapped_column(Numeric(14,2))
+    notes: Mapped[str|None]=mapped_column(String(200),nullable=True)
+    linked_by: Mapped[str|None]=mapped_column(String(120),nullable=True)
+    linked_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
