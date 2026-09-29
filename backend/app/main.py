@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .routers import (auth, masters, docs, returns, admin, inventory, ordering,
+from .routers import (auth, masters, docs, documents, returns, admin, inventory, ordering,
                       registers, templates, printing, extraction, audit, statements,
                       employees, expenses)
 
@@ -11,8 +11,10 @@ app.add_middleware(CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-for r in (auth, masters, docs, returns, admin, inventory, ordering,
-          registers, templates, printing, extraction, audit, statements, employees, expenses):
+for r in (auth, masters, docs, documents, returns, admin, inventory, ordering,
+          registers, templates, printing, extraction, audit, statements,
+          employees, expenses):
+    app.include_router(r.router, prefix="/api")
     app.include_router(r.router, prefix="/api")
 
 

@@ -31,7 +31,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from .. import models as M
 from ..deps import Ctx, need, need_any
 from .. import extract as X
@@ -429,37 +429,164 @@ async def upload_statement(aid: int, period: str = Query(...),
 def uploads(aid: int, ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))):
     a = ctx.get(M.StmtAccount, aid)
     if not a:
-        raise HTTPException(404, "No such account")
+        raise HTTPException(404, "No such statement account")
     ctx.require(_perm_for(a.kind))
-    rows = ctx.db.execute(select(M.StmtUpload).where(
-        M.StmtUpload.tenant_id == ctx.tenant.id, M.StmtUpload.account_id == aid)
-        .order_by(M.StmtUpload.created_at.desc())).scalars().all()
-    return [{"id": u.id, "period": u.period, "filename": u.filename,
-             "uploaded_by": u.uploaded_by, "found": u.txns_found, "saved": u.txns_new,
-             "at": u.created_at.isoformat()} for u in rows]
+
+    rows = ctx.db.execute(
+        select(M.StmtUpload).where(
+            M.StmtUpload.tenant_id == ctx.tenant.id,
+            M.StmtUpload.account_id == aid
+        ).order_by(
+            M.StmtUpload.created_at.desc(),
+            M.StmtUpload.id.desc()
+        )
+    ).scalars().all()
+
+    out = []
+    for u in rows:
+        held, allocated, links = _upload_impact(ctx, u.id)
+
+        out.append({
+            "id": u.id,
+            "period": u.period,
+            "filename": u.filename,
+            "uploaded_by": u.uploaded_by,
+            "found": u.txns_found,
+            "saved": u.txns_new,
+            "at": u.created_at.isoformat() if u.created_at else None,
+            "held": held,
+            "allocated": allocated,
+            "attachments": links
+        })
+
+    return out
+
+
+def _upload_impact(ctx, uid):
+    """What deleting an upload would take with it: the transactions it first
+    saved, how many of those are allocated company or personal, and how many
+    invoice or employee attachments sit on them."""
+    held = ctx.db.execute(
+        select(func.count())
+        .select_from(M.StmtTxn)
+        .where(
+            M.StmtTxn.tenant_id == ctx.tenant.id,
+            M.StmtTxn.upload_id == uid
+        )
+    ).scalar_one()
+
+    allocated = ctx.db.execute(
+        select(func.count())
+        .select_from(M.StmtTxn)
+        .where(
+            M.StmtTxn.tenant_id == ctx.tenant.id,
+            M.StmtTxn.upload_id == uid,
+            M.StmtTxn.allocation.in_(("COMPANY", "PERSONAL"))
+        )
+    ).scalar_one()
+
+    links = ctx.db.execute(
+        select(func.count())
+        .select_from(M.StmtTxnLink)
+        .join(
+            M.StmtTxn,
+            M.StmtTxn.id == M.StmtTxnLink.txn_id
+        )
+        .where(
+            M.StmtTxnLink.tenant_id == ctx.tenant.id,
+            M.StmtTxn.upload_id == uid
+        )
+    ).scalar_one()
+
+    return held, allocated, links
 
 
 @router.delete("/uploads/{uid}")
-def delete_upload(uid: int, ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))):
+def delete_upload(
+    uid: int,
+    force: bool = Query(False),
+    ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))
+):
+    """Delete an uploaded statement and the transactions it first saved.
+
+    Rows that an earlier upload had already saved belong to that earlier
+    upload and stay. Without force, an upload whose transactions are
+    allocated or attached is refused with the counts, so nothing decided by
+    hand disappears by accident; with force=true they are removed with it.
+    Re-uploading the same file afterwards saves its transactions afresh.
+    """
     u = ctx.get(M.StmtUpload, uid)
+
     if not u:
         raise HTTPException(404, "No such upload")
+
     ctx.require(_perm_for(u.account.kind))
-    n = ctx.db.execute(select(func.count()).select_from(M.StmtTxn).where(
-        M.StmtTxn.upload_id == uid,
-        M.StmtTxn.allocation.in_(("COMPANY", "PERSONAL")))).scalar()
-    if n:
-        raise HTTPException(409, f"{n} transaction(s) from this upload are already allocated. "
-                            "Remove the allocations first if you really mean to delete it.")
-    k = ctx.db.execute(select(func.count()).select_from(M.StmtTxnLink)
-                       .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
-                       .where(M.StmtTxn.upload_id == uid)).scalar()
-    if k:
-        raise HTTPException(409, f"{k} invoice or employee attachment(s) are on transactions "
-                            "from this upload. Remove them first if you really mean to delete it.")
-    ctx.db.delete(u)  # cascades to its transactions
+
+    held, allocated, links = _upload_impact(ctx, uid)
+
+    if (allocated or links) and not force:
+        what = []
+
+        if allocated:
+            what.append(
+                f"{allocated} transaction(s) already allocated company or personal"
+            )
+
+        if links:
+            what.append(
+                f"{links} invoice or employee attachment(s)"
+            )
+
+        raise HTTPException(
+            409,
+            "This statement has " + " and ".join(what) +
+            ". Confirm the delete to remove them with it."
+        )
+
+    # Children first and in plain SQL, so the result is the same whether or
+    # not the database enforces the ON DELETE CASCADE foreign keys.
+    txn_ids = (
+        select(M.StmtTxn.id)
+        .where(
+            M.StmtTxn.tenant_id == ctx.tenant.id,
+            M.StmtTxn.upload_id == uid
+        )
+        .scalar_subquery()
+    )
+
+    ctx.db.execute(
+        delete(M.StmtTxnLink)
+        .where(
+            M.StmtTxnLink.tenant_id == ctx.tenant.id,
+            M.StmtTxnLink.txn_id.in_(txn_ids)
+        )
+        .execution_options(synchronize_session=False)
+    )
+
+    ctx.db.execute(
+        delete(M.StmtTxn)
+        .where(
+            M.StmtTxn.tenant_id == ctx.tenant.id,
+            M.StmtTxn.upload_id == uid
+        )
+        .execution_options(synchronize_session=False)
+    )
+
+    ctx.db.execute(
+        delete(M.StmtUpload)
+        .where(M.StmtUpload.id == uid)
+    )
+
     ctx.db.commit()
-    return {"deleted": uid}
+
+    return {
+        "deleted": uid,
+        "period": u.period,
+        "filename": u.filename,
+        "transactions_removed": held,
+        "allocations_removed": allocated,
+        "attachments_removed": links
+    }
 
 
 # --------------------------------------------------------------- transactions
@@ -512,6 +639,13 @@ def allocate(tid: int, body: AllocateIn, ctx: Ctx = Depends(need("cardstmt"))):
                             "it has nothing to allocate.")
     if body.allocation == "COMPANY" and not (body.category or "").strip():
         raise HTTPException(422, "Pick an expense category for a company expense")
+    if body.allocation != "COMPANY" and _attached_sum(ctx, txn_id=t.id) > 0:
+        raise HTTPException(
+            409,
+            "A vendor invoice is attached to this spend, so it was paid for "
+            "the company. Remove the invoice first to mark it "
+            f"{body.allocation.lower()}."
+        )
     t.allocation = body.allocation
     t.category = (body.category or "").strip() or None if body.allocation == "COMPANY" else None
     t.notes = (body.notes or "").strip() or None
@@ -604,7 +738,25 @@ def _link_out(ctx, l):
             d.update(ref_id=e.id, ref=e.emp_code, party=f"{e.first_name} {e.last_name}")
     return d
 
+def _vinv_attached(ctx, txn_ids) -> dict[int, float]:
+    """{txn id: amount attached to vendor invoices} for the given rows."""
+    if not txn_ids:
+        return {}
 
+    rows = ctx.db.execute(
+        select(
+            M.StmtTxnLink.txn_id,
+            func.sum(M.StmtTxnLink.amount)
+        )
+        .where(
+            M.StmtTxnLink.tenant_id == ctx.tenant.id,
+            M.StmtTxnLink.link_type == "VEND_INV",
+            M.StmtTxnLink.txn_id.in_(txn_ids)
+        )
+        .group_by(M.StmtTxnLink.txn_id)
+    ).all()
+
+    return {k: float(v or 0) for k, v in rows}
 def _attached_sum(ctx, **where) -> Decimal:
     q = select(func.coalesce(func.sum(M.StmtTxnLink.amount), 0)).where(
         M.StmtTxnLink.tenant_id == ctx.tenant.id)
@@ -613,30 +765,60 @@ def _attached_sum(ctx, **where) -> Decimal:
     return Decimal(str(ctx.db.execute(q).scalar_one()))
 
 
-def _bank_txn(ctx, tid):
+def _link_txn(ctx, tid):
+    """The transaction to attach to, and its account, checking the caller
+    holds the screen for that kind of account. On a card only a spend can
+    carry an invoice, and not one marked personal."""
     t = ctx.get(M.StmtTxn, tid)
+
     if not t:
         raise HTTPException(404, "No such transaction")
+
     a = ctx.get(M.StmtAccount, t.account_id)
-    if a.kind != "BANK":
-        raise HTTPException(422, "Invoices and employees are attached to bank transactions. "
-                            "Card spends are allocated company or personal instead.")
-    return t
+
+    ctx.require(_perm_for(a.kind))
+
+    if a.kind == "CARD":
+        if t.debit <= 0:
+            raise HTTPException(
+                422,
+                "This is a payment or refund on the card, not a spend — "
+                "vendor invoices are attached to card spends."
+            )
+
+        if t.allocation == "PERSONAL":
+            raise HTTPException(
+                422,
+                "This spend is marked personal. Mark it company before "
+                "attaching the vendor invoice it paid."
+            )
+
+    return t, a
 
 
 @router.get("/txns/{tid}/attachables")
-def attachables(tid: int, ctx: Ctx = Depends(need("bankstmt"))):
+def attachables(
+    tid: int,
+    ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))
+):
     """What this transaction can be attached to. A credit lists customer tax
     invoices; a debit lists vendor invoices and employees. Each invoice shows
     its total, the receipts or payments recorded against it on the Money
     screens, and what is already attached from bank transactions, so the open
     amount is plain. An invoice matching the transaction exactly comes first."""
     from ..service import invoice_tax, vinv_tax, settled
-    t = _bank_txn(ctx, tid)
+    t, a = _link_txn(ctx, tid)
+    card = a.kind == "CARD"
     remaining = (t.credit or t.debit) - _attached_sum(ctx, txn_id=t.id)
-    out = {"side": "CREDIT" if t.credit > 0 else "DEBIT",
-           "amount": float(t.credit or t.debit), "remaining": float(remaining),
-           "customer_invoices": [], "vendor_invoices": [], "employees": []}
+    out = {
+        "side": "CREDIT" if t.credit > 0 else "DEBIT",
+        "account_kind": a.kind,
+        "amount": float(t.credit or t.debit),
+        "remaining": float(remaining),
+        "customer_invoices": [],
+        "vendor_invoices": [],
+        "employees": []
+    }
 
     def _row(doc, total, booked, party):
         attached = float(_attached_sum(ctx, **booked))
@@ -665,6 +847,9 @@ def attachables(tid: int, ctx: Ctx = Depends(need("bankstmt"))):
             if r["open"] > 0:
                 out["vendor_invoices"].append(r)
         out["vendor_invoices"].sort(key=lambda r: not r["exact"])
+        if card:
+            out["expense_heads"] = []
+            return out
         emps = ctx.db.execute(ctx.scope(select(M.Employee), M.Employee)
                               .where(M.Employee.active.is_(True))
                               .order_by(M.Employee.emp_code)).scalars().all()
@@ -687,12 +872,23 @@ class LinkIn(BaseModel):
 
 
 @router.post("/txns/{tid}/links", status_code=201)
-def add_link(tid: int, body: LinkIn, ctx: Ctx = Depends(need("bankstmt"))):
+def add_link(
+    tid: int,
+    body: LinkIn,
+    ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))
+):
     """Attach a customer invoice to a credit, or a vendor invoice or an
     employee to a debit. With no amount, the smaller of what is left on the
     transaction and what is open on the invoice is attached."""
     from ..service import invoice_tax, vinv_tax
-    t = _bank_txn(ctx, tid)
+    t, a = _link_txn(ctx, tid)
+
+    if a.kind == "CARD" and body.link_type != "VEND_INV":
+        raise HTTPException(
+            422,
+            "A card spend is attached to the vendor invoice it paid. "
+            "Customer invoices and employees are attached on Bank Statements."
+        )
     is_credit = t.credit > 0
     remaining = (t.credit or t.debit) - _attached_sum(ctx, txn_id=t.id)
     if remaining <= 0:
@@ -728,7 +924,10 @@ def add_link(tid: int, body: LinkIn, ctx: Ctx = Depends(need("bankstmt"))):
             raise HTTPException(409, f"{vi.doc_no} is already attached to this transaction")
         open_amt = vinv_tax(ctx, vi).rounded - _attached_sum(ctx, vinv_id=vi.id)
         if open_amt <= 0:
-            raise HTTPException(409, f"{vi.doc_no} is already fully attached to bank debits")
+            raise HTTPException(
+                409,
+                f"{vi.doc_no} is already fully attached to bank debits or card spends"
+            )
         link.vinv_id, cap = vi.id, min(remaining, open_amt)
     else:
         if is_credit:
@@ -760,15 +959,35 @@ def add_link(tid: int, body: LinkIn, ctx: Ctx = Depends(need("bankstmt"))):
         raise HTTPException(422, f"Only {cap:.2f} is open on that invoice")
     link.amount = amount
     ctx.db.add(link)
+
+    if a.kind == "CARD" and t.allocation != "COMPANY":
+        # Paying a vendor's invoice is spending for the company.
+        t.allocation = "COMPANY"
+        t.allocated_by = ctx.user.name
+        t.allocated_at = datetime.utcnow()
+
     ctx.db.commit()
     return _link_out(ctx, link)
 
 
 @router.delete("/links/{lid}", status_code=204)
-def del_link(lid: int, ctx: Ctx = Depends(need("bankstmt"))):
+def del_link(
+    lid: int,
+    ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))
+):
     l = ctx.get(M.StmtTxnLink, lid)
+
     if not l:
         raise HTTPException(404, "No such attachment")
+
+    t = ctx.get(M.StmtTxn, l.txn_id)
+
+    ctx.require(
+        _perm_for(
+            ctx.get(M.StmtAccount, t.account_id).kind
+        )
+    )
+
     ctx.db.delete(l)
     ctx.db.commit()
 
@@ -807,6 +1026,8 @@ def reconcile(period: str | None = None, ctx: Ctx = Depends(need("cardstmt"))):
         if period:
             q = _in_period(q, a, period)
         rows = ctx.db.execute(q).scalars().all()
+        inv_paid = _vinv_attached(ctx, [t.id for t in rows])
+
         company = sum(t.debit for t in rows if t.allocation == "COMPANY")
         personal = sum(t.debit for t in rows if t.allocation == "PERSONAL")
         unalloc = sum(t.debit for t in rows if t.allocation == "UNALLOCATED")
@@ -814,11 +1035,18 @@ def reconcile(period: str | None = None, ctx: Ctx = Depends(need("cardstmt"))):
         by_cat = {}
         for t in rows:
             if t.allocation == "COMPANY":
-                by_cat[t.category or "Other"] = by_cat.get(t.category or "Other", 0) + float(t.debit)
+                rest = float(t.debit) - inv_paid.get(t.id, 0.0)
+                if rest > 0.005:
+                    by_cat[t.category or "Other"] = (
+                        by_cat.get(t.category or "Other", 0) + rest
+                    )
+
+        vendor_paid = round(sum(inv_paid.values()), 2)
         out.append({"account": _acct_out(a),
                     "company": float(company), "personal": float(personal),
                     "unallocated": float(unalloc), "payments": float(paid),
                     "owed_to_director": float(company),
+                    "vendor_invoices": vendor_paid,
                     "by_category": [{"category": k, "amount": v}
                                     for k, v in sorted(by_cat.items())],
                     "txn_count": len(rows)})
@@ -848,7 +1076,7 @@ def expense_ledger(period: str = Query(...), ctx: Ctx = Depends(
                                  M.Payment.pay_date < hi)).scalars().all()
     pay_total = sum(float(p.amount or 0) for p in pays)
 
-    bank_rows, card_company, card_unalloc = [], 0.0, 0.0
+    bank_rows, card_company, card_unalloc, card_vinv = [], 0.0, 0.0, 0.0
     accts = ctx.db.execute(ctx.scope(select(M.StmtAccount), M.StmtAccount)).scalars().all()
     for a in accts:
         rows = ctx.db.execute(select(M.StmtTxn).where(
@@ -860,9 +1088,22 @@ def expense_ledger(period: str = Query(...), ctx: Ctx = Depends(
                               "credits": float(sum(t.credit for t in rows)),
                               "txns": len(rows)})
         if a.kind == "CARD" and "cardstmt" in ctx.perms:
-            card_company += float(sum(t.debit for t in rows if t.allocation == "COMPANY"))
-            card_unalloc += float(sum(t.debit for t in rows if t.allocation == "UNALLOCATED"))
+              paid = _vinv_attached(
+                  ctx,
+                  [t.id for t in rows if t.allocation == "COMPANY"]
+              )
 
+              card_vinv += sum(paid.values())
+
+              card_company += (
+                  float(sum(t.debit for t in rows if t.allocation == "COMPANY"))
+                  - sum(paid.values())
+              )
+
+              card_unalloc += float(
+                  sum(t.debit for t in rows if t.allocation == "UNALLOCATED")
+              )
+    
     bank_debits = sum(b["debits"] for b in bank_rows)
 
     # Salary and expenses attached to employees on bank debits this month.
@@ -892,7 +1133,8 @@ def expense_ledger(period: str = Query(...), ctx: Ctx = Depends(
         "vendor_payments": {"count": len(pays), "total": pay_total},
         "bank": bank_rows,
         "bank_debits_total": bank_debits,
-        "card_company_expense": card_company,
+        "card_company_expense": round(card_company, 2),
+        "card_vendor_invoices": round(card_vinv, 2),
         "card_unallocated": card_unalloc,
         "employee_salary": emp["SALARY"],
         "employee_expense": emp["EXPENSE"],

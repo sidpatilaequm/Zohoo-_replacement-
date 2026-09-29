@@ -3,15 +3,15 @@ import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, useLoad, Loading, ErrorBox, useFlash,
   usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
 import { inr, gd } from '../lib/fmt'
-
+import DocFiles from '../components/DocFiles'
 export default function Invoices() {
   const { api, me } = useAuth()
   const list = useLoad(() => api.invoices())
   const [filter, setFilter] = useState('ALL')
   const [flash, showFlash] = useFlash()
   const [variant, setVariant] = usePrintVariant()
-  const [printAs, setPrintAs] = useState('')   // '' = as the document is, 'PRO' = proforma layout
-
+  const [printAs, setPrintAs] = useState('')   // '' = as the document is, 'PRO' = proforma layout\
+  const [documentsFor, setDocumentsFor] = useState(null)
   if (list.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
 
@@ -99,6 +99,15 @@ export default function Invoices() {
             <td className="c" style={{ whiteSpace: 'nowrap' }}>
               <PrintButtons kind="invoices" id={v.id} variant={variant}
                 extra={printAs ? `&as=${printAs}` : ''} onError={m => showFlash(m, 'bad')} />
+              <button
+                  className="btn btn-sm"
+                  style={{ marginLeft: 5 }}
+                  onClick={() => setDocumentsFor(
+                    documentsFor === v.id ? null : v.id
+                  )}
+                >
+                  Docs
+                </button>
               <button className="btn btn-sm" style={{ marginLeft: 5 }} onClick={() => mail(v)}>Email</button>
               {pro && !dead && <button className="btn btn-sm btn-a" style={{ marginLeft: 5 }}
                 onClick={() => convert(v.id)}>Convert</button>}
@@ -109,6 +118,13 @@ export default function Invoices() {
               onClick={() => remove(v.id)}>×</button>}</td>
           </tr>)})}
       </Table>
-    </Panel>
+        </Panel>
+
+    {documentsFor && (
+      <DocFiles
+        kind="invoice"
+        id={documentsFor}
+      />
+    )}
   </>)
 }

@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr, money, gd, today } from '../lib/fmt'
+import DocFiles from '../components/DocFiles'
 
 const Conf = ({ v, how }) => v >= 0.9 ? <Tag kind="ok">{how || 'matched'}</Tag>
   : v >= 0.6 ? <Tag kind="warn">check · {how}</Tag> : <Tag kind="bad">not matched</Tag>
@@ -19,6 +20,7 @@ export default function VendorInvoices() {
   const [flash, showFlash] = useFlash()
   const [reading, setReading] = useState(false)
   const [prop, setProp] = useState(null)   // last extraction proposal
+  const [documentsFor, setDocumentsFor] = useState(null)
   const fileRef = useRef(null)
   const set = (k, v) => setH(s => ({ ...s, [k]: v }))
 
@@ -224,10 +226,28 @@ export default function VendorInvoices() {
             <td className="r mono">{inr(v.tax)}</td>
             <td className="r mono"><b>{inr(v.total)}</b></td>
             <td className="r mono">{inr(v.paid)}</td>
-            <td className="c">{v.outstanding <= 0.5 ? <Tag kind="ok">Settled</Tag>
-              : v.paid > 0.5 ? <Tag kind="warn">Part paid</Tag> : <Tag>Unpaid</Tag>}</td>
+            <td className="c" style={{ whiteSpace: 'nowrap' }}>
+              {v.outstanding <= 0.5 ? <Tag kind="ok">Settled</Tag>
+                : v.paid > 0.5 ? <Tag kind="warn">Part paid</Tag> : <Tag>Unpaid</Tag>}
+
+              <button
+                className="btn btn-sm"
+                style={{ marginLeft: 5 }}
+                onClick={() => setDocumentsFor(
+                  documentsFor === v.id ? null : v.id
+                )}
+              >
+                Docs
+              </button>
+            </td>
           </tr>))}
       </Table>
     </Panel>
+        {documentsFor && (
+      <DocFiles
+        kind="vinv"
+        id={documentsFor}
+      />
+    )}
   </>)
 }

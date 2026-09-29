@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 from sqlalchemy import (String, Integer, BigInteger, SmallInteger, Numeric, Date, DateTime, Boolean,
-                        ForeignKey, Enum, Text, UniqueConstraint, func)
+                        ForeignKey, Enum, Text, UniqueConstraint, LargeBinary, func)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
@@ -766,3 +766,40 @@ class StmtTxnLink(Base):
     notes: Mapped[str|None]=mapped_column(String(200),nullable=True)
     linked_by: Mapped[str|None]=mapped_column(String(120),nullable=True)
     linked_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
+# ------------------------------------------------ documents (v4.4)
+class DocFile(Base):
+    """A document attached to either a customer invoice or vendor invoice."""
+    __tablename__="doc_files"
+
+    id: Mapped[int]=mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True
+    )
+    tenant_id: Mapped[int]=mapped_column(
+        ForeignKey("tenants.id",ondelete="CASCADE")
+    )
+    invoice_id: Mapped[int|None]=mapped_column(
+        ForeignKey("invoices.id",ondelete="CASCADE"),
+        nullable=True
+    )
+    vinv_id: Mapped[int|None]=mapped_column(
+        ForeignKey("vendor_invoices.id",ondelete="CASCADE"),
+        nullable=True
+    )
+    filename: Mapped[str]=mapped_column(String(200))
+    content_type: Mapped[str]=mapped_column(String(100))
+    size_bytes: Mapped[int]=mapped_column(Integer)
+    content: Mapped[bytes]=mapped_column(LargeBinary)
+    notes: Mapped[str|None]=mapped_column(
+        String(200),
+        nullable=True
+    )
+    uploaded_by: Mapped[str|None]=mapped_column(
+        String(120),
+        nullable=True
+    )
+    created_at: Mapped[datetime]=mapped_column(
+        DateTime,
+        server_default=func.now()
+    )

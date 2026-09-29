@@ -61,6 +61,28 @@ export function makeApi(token, tenantId) {
     cancelInvoice: (id, reason) => call(`/invoices/${id}/cancel`, { method: 'POST', body: { reason } }),
     delInvoice:    (id) => call(`/invoices/${id}`, { method: 'DELETE' }),
 
+        invoiceDocuments: (id) =>
+      call(`/invoices/${id}/documents`),
+
+    addInvoiceDocument: (id, file) =>
+      upload(`/invoices/${id}/documents`, file, { token, tenantId }),
+
+    vinvDocuments: (id) =>
+      call(`/vendor-invoices/${id}/documents`),
+
+    addVinvDocument: (id, file) =>
+      upload(`/vendor-invoices/${id}/documents`, file, { token, tenantId }),
+
+    delDocument: (id) =>
+      call(`/documents/${id}`, { method: 'DELETE' }),
+
+    openDocument: (id, inline = false) =>
+      download(
+        `/documents/${id}/file?inline=${inline ? 'true' : 'false'}`,
+        { token, tenantId },
+        inline
+      ),
+
     pos:           ()   => call('/purchase-orders'),
     addPo:         (b)  => call('/purchase-orders', { method: 'POST', body: b }),
 
