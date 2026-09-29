@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy Billing v4.2
+    name: Deploy Billing v4.3
     runs-on: ubuntu-latest
 
     steps:
@@ -64,7 +64,7 @@ jobs:
           RELEASE_DIR="/tmp/aequm-release-$TIMESTAMP"
 
           echo "======================================"
-          echo "Aequm Billing v4.2 deployment"
+          echo "Aequm Billing v4.3 deployment"
           echo "======================================"
 
           cd "$APP_DIR"
@@ -85,7 +85,7 @@ jobs:
 
           BACKUP_FILE="$BACKUP_DIR/aequm_billing_${TIMESTAMP}.sql.gz"
 
-          docker exec billing-mysql \
+          docker compose exec -T db \
             sh -c 'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" \
               --single-transaction \
               --routines \
@@ -94,6 +94,8 @@ jobs:
             | gzip > "$BACKUP_FILE"
 
           test -s "$BACKUP_FILE"
+
+          gzip -t "$BACKUP_FILE"
 
           echo "Database backup completed:"
           echo "$BACKUP_FILE"
@@ -152,56 +154,49 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "7. Updating v4.2 migration"
+          echo "7. Updating v4.3 migration"
           echo "======================================"
 
           mkdir -p "$APP_DIR/db"
 
-          cp \
-            "$RELEASE_DIR/db/10_v42_employees_bank_links.sql" \
-            "$APP_DIR/db/10_v42_employees_bank_links.sql"
+          test -f "$RELEASE_DIR/db/11_v43_expense_heads.sql"
 
-          echo "Migration file updated."
+          cp \
+            "$RELEASE_DIR/db/11_v43_expense_heads.sql" \
+            "$APP_DIR/db/11_v43_expense_heads.sql"
+
+          echo "v4.3 migration file updated."
 
           echo ""
           echo "======================================"
-          echo "8. Checking v4.2 database tables"
+          echo "8. Checking v4.3 database migration"
           echo "======================================"
 
-          EMPLOYEES_TABLE=$(docker exec billing-mysql \
+          EXPENSE_HEADS_TABLE=$(docker compose exec -T db \
             sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -s aequm_billing -e "
               SELECT COUNT(*)
               FROM INFORMATION_SCHEMA.TABLES
               WHERE TABLE_SCHEMA = '\''aequm_billing'\''
-                AND TABLE_NAME = '\''employees'\'';
+                AND TABLE_NAME = '\''expense_heads'\'';
             "')
 
-          STMT_LINKS_TABLE=$(docker exec billing-mysql \
-            sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -s aequm_billing -e "
-              SELECT COUNT(*)
-              FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = '\''aequm_billing'\''
-                AND TABLE_NAME = '\''stmt_txn_links'\'';
-            "')
+          echo "expense_heads table = $EXPENSE_HEADS_TABLE"
 
-          echo "employees table = $EMPLOYEES_TABLE"
-          echo "stmt_txn_links table = $STMT_LINKS_TABLE"
-
-          if [ "$EMPLOYEES_TABLE" = "0" ] || [ "$STMT_LINKS_TABLE" = "0" ]; then
+          if [ "$EXPENSE_HEADS_TABLE" = "0" ]; then
 
             echo ""
-            echo "Applying v4.2 database migration..."
+            echo "Applying v4.3 database migration..."
 
-            docker exec -i billing-mysql \
+            docker compose exec -T db \
               sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" aequm_billing' \
-              < "$APP_DIR/db/10_v42_employees_bank_links.sql"
+              < "$APP_DIR/db/11_v43_expense_heads.sql"
 
-            echo "v4.2 migration completed."
+            echo "v4.3 migration completed."
 
           else
 
             echo ""
-            echo "v4.2 migration already present."
+            echo "v4.3 migration already present."
             echo "No database migration required."
 
           fi
@@ -286,7 +281,7 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "Aequm Billing v4.2 deployment successful"
+          echo "Aequm Billing v4.3 deployment successful"
           echo "======================================"
 
           REMOTE_SCRIPT
