@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Alert, Tag, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr, money, gd } from '../lib/fmt'
@@ -17,6 +17,17 @@ export default function CardStatements() {
   const [flash, showFlash] = useFlash()
   const [na, setNa] = useState({ label: '', holder: '', number_hint: '' })
   const [only, setOnly] = useState('ALL')   // ALL | UNALLOCATED
+  // How the spends in the file being uploaded are marked as they are saved.
+  const [mark, setMark] = useState('UNALLOCATED')   // UNALLOCATED | COMPANY | PERSONAL
+  const [markCat, setMarkCat] = useState('Other')
+  const [bulkCat, setBulkCat] = useState('Other')
+  // Heads come from the Expense master; default to its first one.
+  const firstCat = cats.data?.[0] || 'Other'
+  useEffect(() => {
+    if (!cats.data?.length) return
+    if (!cats.data.includes(markCat)) setMarkCat(cats.data[0])
+    if (!cats.data.includes(bulkCat)) setBulkCat(cats.data[0])
+  }, [cats.data]) // eslint-disable-line
 
   const cards = (accounts.data || []).filter(a => a.kind === 'CARD')
   const aid = Number(acct) || cards[0]?.id
@@ -39,10 +50,17 @@ export default function CardStatements() {
     if (!file) return showFlash('Choose the card statement first.', 'bad')
     setBusy(true)
     try {
-      const r = await api.uploadStmt(aid, period, file)
+      const r = await api.uploadStmt(aid, period, file, { allocation: mark, category: markCat })
+      const how = mark === 'COMPANY' ? `Spends are marked company expense (${markCat}) — change any single one below.`
+        : mark === 'PERSONAL' ? 'Spends are marked personal — change any single one below.'
+        : 'Spends start as unallocated — decide company or personal below.'
+      const cycle = r.statement_period
+        ? ` Statement period ${gd(r.statement_period[0])} to ${gd(r.statement_period[1])}.` : ''
+      const skipped = r.outside_period_ignored
+        ? ` ${r.outside_period_ignored} line(s) dated outside it (illustrations, not transactions) were ignored.` : ''
       showFlash(r.saved
-        ? `${r.saved} transaction(s) saved${r.duplicates_skipped ? `, ${r.duplicates_skipped} already on record` : ''}. Debits start as Unallocated — decide company or personal below.`
-        : r.note || 'Nothing new in this file.')
+        ? `${r.saved} transaction(s) saved${r.duplicates_skipped ? `, ${r.duplicates_skipped} already on record` : ''}.${cycle}${skipped} ${how}`
+        : (r.note || 'Nothing new in this file.') + cycle)
       setFile(null); txns.reload(); recon.reload()
     } catch (x) { showFlash(x.message, 'bad') }
     finally { setBusy(false) }
@@ -51,7 +69,18 @@ export default function CardStatements() {
   async function setAlloc(t, allocation, category) {
     try {
       await api.allocateTxn(t.id, { allocation,
-        category: allocation === 'COMPANY' ? (category || 'Other') : null, notes: t.notes || null })
+        category: allocation === 'COMPANY' ? (category || firstCat) : null, notes: t.notes || null })
+      txns.reload(); recon.reload()
+    } catch (x) { showFlash(x.message, 'bad') }
+  }
+
+  async function markAll(allocation) {
+    const what = allocation === 'COMPANY' ? `company expense (${bulkCat})` : 'personal'
+    if (!window.confirm(`Mark every unallocated spend on this card for ${period} as ${what}?`)) return
+    try {
+      const r = await api.allocateAll(aid, period, { allocation,
+        category: allocation === 'COMPANY' ? bulkCat : null })
+      showFlash(r.updated ? `${r.updated} spend(s) marked ${what}.` : 'No unallocated spends left.')
       txns.reload(); recon.reload()
     } catch (x) { showFlash(x.message, 'bad') }
   }
@@ -62,6 +91,7 @@ export default function CardStatements() {
   const rows = (txns.data || []).filter(t =>
     only === 'ALL' || (t.allocation === 'UNALLOCATED' && t.debit > 0))
   const mine = (recon.data || []).find(r => r.account.id === aid)
+  const unallocCount = (txns.data || []).filter(t => t.allocation === 'UNALLOCATED' && t.debit > 0).length
 
   return (<>
     {flash}
@@ -98,26 +128,49 @@ export default function CardStatements() {
               {cards.map(a => <option key={a.id} value={a.id}>
                 {a.label} — {a.holder}{a.number_hint ? ` ··${a.number_hint}` : ''}</option>)}
             </select></Field>
-          <Field label="Statement month">
+          <Field label="Statement month" hint="The month the bill is dated; its rows are listed under it">
             <input type="month" value={period} onChange={e => setPeriod(e.target.value)} required /></Field>
           <Field label="Statement file" hint="PDF or CSV">
             <input type="file" accept=".pdf,.csv,.txt"
               onChange={e => setFile(e.target.files[0] || null)} /></Field>
+        </div>
+        <div className="row" style={{ marginTop: 13 }}>
+          <Field label="Spends in this statement are"
+            hint="Applied as the file is saved. Any single spend can still be changed below.">
+            <select value={mark} onChange={e => setMark(e.target.value)}>
+              <option value="UNALLOCATED">Undecided — I will mark each one</option>
+              <option value="COMPANY">Company expense</option>
+              <option value="PERSONAL">Personal expense</option>
+            </select></Field>
+          {mark === 'COMPANY' && <Field label="Expense head" hint="From the Expenses master">
+            <select value={markCat} onChange={e => setMarkCat(e.target.value)}>
+              {(cats.data || ['Other']).map(c => <option key={c}>{c}</option>)}
+            </select></Field>}
           <Field label=" "><button className="btn btn-a" disabled={busy || !file}>
             {busy ? 'Reading…' : 'Upload and save'}</button></Field>
         </div></form>
       </Panel>
 
-      <Panel title={`Allocate — ${card?.label || ''} · ${period}`} right={
+      <Panel title={`Allocate — ${card?.label || ''} · ${period}`} right={<>
+        {unallocCount > 0 && <span style={{ fontSize: 12, display: 'flex', gap: 5, alignItems: 'center' }}>
+          <span className="fine">Mark {unallocCount} undecided as</span>
+          <select value={bulkCat} onChange={e => setBulkCat(e.target.value)} style={{ width: 150 }}
+            title="Expense head used for company">
+            {(cats.data || ['Other']).map(c => <option key={c}>{c}</option>)}
+          </select>
+          <button type="button" className="btn btn-sm" onClick={() => markAll('COMPANY')}>
+            Company</button>
+          <button type="button" className="btn btn-sm" onClick={() => markAll('PERSONAL')}>
+            Personal</button></span>}
         <label style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
           <span className="fine">Show</span>
           <select value={only} onChange={e => setOnly(e.target.value)}>
             <option value="ALL">Everything</option>
             <option value="UNALLOCATED">Only unallocated spends</option>
-          </select></label>}>
+          </select></label></>}>
         {txns.loading ? <Loading /> : txns.error ? <ErrorBox>{txns.error}</ErrorBox> :
           <Table head={['Date', 'Description', { label: 'Amount', align: 'r' }, 'Status',
-            'Allocate to', 'Expense category']}
+            'Allocate to', 'Expense head']}
             empty="No transactions saved for this card and month yet.">
             {rows.map(t => {
               const isPayment = t.debit === 0
@@ -134,7 +187,7 @@ export default function CardStatements() {
                     disabled={t.allocation === 'PERSONAL'}
                     onClick={() => setAlloc(t, 'PERSONAL')}>Personal</button></span>}</td>
                 <td>{!isPayment && t.allocation === 'COMPANY' &&
-                  <select value={t.category || 'Other'}
+                  <select value={t.category || firstCat}
                     onChange={e => setAlloc(t, 'COMPANY', e.target.value)}>
                     {(cats.data || ['Other']).map(c => <option key={c}>{c}</option>)}
                   </select>}</td>

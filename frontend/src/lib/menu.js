@@ -28,6 +28,8 @@ export const MENU = [
     { key: 'customers', label: 'Customers', path: '/customers' },
     { key: 'vendors',   label: 'Vendors',   path: '/vendors' },
     { key: 'materials', label: 'Materials', path: '/materials' },
+    { key: 'employees', label: 'Employees', path: '/employees' },
+    { key: 'expenses',  label: 'Expenses',  path: '/expenses' },
     { key: 'attrs',     label: 'Attributes', path: '/attributes' },
     { key: 'hsn',       label: 'HSN and SAC', path: '/hsn' } ] },
   { group: 'Setup', items: [

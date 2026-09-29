@@ -139,8 +139,10 @@ def test_salary_and_expense_attach_to_an_employee_and_reach_the_ledger(org):
     assert r.status_code == 422 and "salary or an expense" in r.text
     assert a.post(f"/api/statements/txns/{sal['id']}/links", json={
         "link_type": "EMPLOYEE", "ref_id": e, "purpose": "SALARY"}).status_code == 201
+    h = a.post("/api/expense-heads", json={"exp_code": "EXP001", "name": "Travel"}).json()["id"]
     assert a.post(f"/api/statements/txns/{reimb['id']}/links", json={
-        "link_type": "EMPLOYEE", "ref_id": e, "purpose": "EXPENSE"}).status_code == 201
+        "link_type": "EMPLOYEE", "ref_id": e, "purpose": "EXPENSE",
+        "expense_id": h}).status_code == 201
     L = a.get("/api/statements/ledger?period=2026-08").json()
     assert L["employee_salary"] == 55000.0 and L["employee_expense"] == 2500.0
     # an employee with bank history cannot be deleted, only made inactive

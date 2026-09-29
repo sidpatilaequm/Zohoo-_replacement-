@@ -125,3 +125,17 @@ tbody tr:hover td{background:#FAFAF7}
 .logobox img{width:76px;height:76px;object-fit:contain;background:#fff;border:1px solid var(--line);
   border-radius:9px;padding:5px}
 .spinner{padding:40px;text-align:center;color:var(--muted)}
+
+/* v4.2 — bank transaction attachments */
+tr.row-open td{background:var(--accent-soft)}
+tr.row-attach td{background:#FBFBF8;padding:0 8px 12px}
+tr.row-attach:hover td{background:#FBFBF8}
+.attach{border:1px solid var(--accent-line);border-top:0;border-radius:0 0 8px 8px;
+  padding:12px 14px;background:#fff}
+.attach-hd{display:flex;align-items:center;justify-content:space-between;
+  font-size:12.5px;color:var(--muted);margin-bottom:10px}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);
+  border-radius:6px;padding:2px 4px 2px 7px;font-size:12px;background:#fff;
+  width:max-content;max-width:100%}
+.chip-k{font-size:10.5px;color:var(--muted)}
+.chip .rm{font-size:14px;padding:0 4px}

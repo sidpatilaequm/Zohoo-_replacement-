@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Alert, Tag, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
+import TxnAttach, { LinkChips } from '../components/TxnAttach'
 import { inr, money, gd } from '../lib/fmt'
 
 const thisMonth = () => new Date().toISOString().slice(0, 7)
@@ -14,6 +15,8 @@ export default function BankStatements() {
   const [busy, setBusy] = useState(false)
   const [flash, showFlash] = useFlash()
   const [na, setNa] = useState({ label: '', number_hint: '' })
+  const [open, setOpen] = useState(null)      // transaction whose attach form is showing
+  const [show, setShow] = useState('ALL')     // ALL | OPEN (not fully attached)
 
   const banks = (accounts.data || []).filter(a => a.kind === 'BANK')
   const aid = Number(acct) || banks[0]?.id
@@ -43,12 +46,20 @@ export default function BankStatements() {
     finally { setBusy(false) }
   }
 
+  async function removeLink(l) {
+    if (!window.confirm(`Remove ${l.ref} (${inr(l.amount)}) from this transaction?`)) return
+    try { await api.delTxnLink(l.id); txns.reload(); ledger.reload() }
+    catch (x) { showFlash(x.message, 'bad') }
+  }
+
   if (accounts.loading) return <Loading />
   if (accounts.error) return <ErrorBox>{accounts.error}</ErrorBox>
 
-  const rows = txns.data || []
-  const deb = rows.reduce((s, t) => s + t.debit, 0)
-  const cred = rows.reduce((s, t) => s + t.credit, 0)
+  const all = txns.data || []
+  const deb = all.reduce((s, t) => s + t.debit, 0)
+  const cred = all.reduce((s, t) => s + t.credit, 0)
+  const openCount = all.filter(t => t.unattached > 0.005).length
+  const rows = show === 'OPEN' ? all.filter(t => t.unattached > 0.005) : all
   const L = ledger.data
 
   return (<>
@@ -56,7 +67,8 @@ export default function BankStatements() {
     <Alert kind="ok"><b>Every transaction is saved, once.</b> Upload the account's monthly
       statement (the bank's PDF, or its CSV export) and each transaction in it is stored.
       Uploading the same statement again cannot double anything — rows already on record are
-      recognised and skipped.</Alert>
+      recognised and skipped. Then attach each credit to the customer invoice it settles, and
+      each debit to the vendor invoice it pays or the employee it was paid to.</Alert>
 
     {!banks.length && <Panel title="Add the company's bank account first">
       <form onSubmit={addAccount}><div className="row">
@@ -92,14 +104,36 @@ export default function BankStatements() {
       </Panel>
 
       <Panel title={`Saved transactions — ${period}`}
-        right={<span className="fine">Debits {money(deb)} · Credits {money(cred)}</span>}>
+        right={<>
+          <span className="fine">Debits {money(deb)} · Credits {money(cred)}</span>
+          <select value={show} onChange={e => setShow(e.target.value)} style={{ fontSize: 12 }}>
+            <option value="ALL">All transactions</option>
+            <option value="OPEN">Not yet attached ({openCount})</option>
+          </select></>}>
         {txns.loading ? <Loading /> : txns.error ? <ErrorBox>{txns.error}</ErrorBox> :
           <Table head={['Date', 'Description', { label: 'Debit', align: 'r' },
-            { label: 'Credit', align: 'r' }]} empty="No transactions saved for this month yet.">
-            {rows.map(t => <tr key={t.id}>
-              <td>{gd(t.date)}</td><td>{t.descr}</td>
-              <td className="r mono">{t.debit ? inr(t.debit) : ''}</td>
-              <td className="r mono">{t.credit ? inr(t.credit) : ''}</td></tr>)}
+            { label: 'Credit', align: 'r' }, 'Attached to', '']}
+            empty={show === 'OPEN' ? 'Every transaction this month is attached.'
+              : 'No transactions saved for this month yet.'}>
+            {rows.map(t => <Fragment key={t.id}>
+              <tr className={open === t.id ? 'row-open' : ''}>
+                <td>{gd(t.date)}</td><td>{t.descr}</td>
+                <td className="r mono">{t.debit ? inr(t.debit) : ''}</td>
+                <td className="r mono">{t.credit ? inr(t.credit) : ''}</td>
+                <td><LinkChips links={t.links} onRemove={removeLink} />
+                  {t.links.length > 0 && t.unattached > 0.005 &&
+                    <Tag kind="warn">{inr(t.unattached)} not attached</Tag>}</td>
+                <td className="r">{(t.unattached > 0.005 || open === t.id) &&
+                  <button type="button" className="btn btn-sm"
+                    onClick={() => setOpen(open === t.id ? null : t.id)}>
+                    {open === t.id ? 'Close' : t.credit ? 'Attach invoice' : 'Attach'}</button>}</td>
+              </tr>
+              {open === t.id && <tr className="row-attach"><td colSpan={6}>
+                <TxnAttach txn={t} onClose={() => setOpen(null)}
+                  onError={m => showFlash(m, 'bad')}
+                  onDone={() => { showFlash('Attached.'); setOpen(null); txns.reload(); ledger.reload() }} />
+              </td></tr>}
+            </Fragment>)}
           </Table>}
       </Panel>
     </>}
@@ -120,8 +154,16 @@ export default function BankStatements() {
             <td className="r mono">{inr(L.card_company_expense)}</td>
             <td>{L.card_unallocated > 0 &&
               <Tag kind="warn">{money(L.card_unallocated)} still unallocated</Tag>}</td></tr>
+          <tr><td>Salary paid to employees (attached bank debits)</td><td className="r" />
+            <td className="r mono">{inr(L.employee_salary)}</td><td /></tr>
+          <tr><td>Expenses reimbursed to employees (attached bank debits)</td><td className="r" />
+            <td className="r mono">{inr(L.employee_expense)}</td><td /></tr>
+          {(L.employee_expense_by_head || []).map(h => <tr key={h.exp_code}>
+            <td style={{ paddingLeft: 26, color: 'var(--muted)' }}>{h.exp_code} {h.name}</td>
+            <td className="r" /><td className="r mono" style={{ color: 'var(--muted)' }}>
+              {inr(h.amount)}</td><td /></tr>)}
           <tr style={{ fontWeight: 600 }}>
-            <td>Expense recognised this month (invoices + company card spend)</td>
+            <td>Expense recognised this month (invoices + company card spend + employees)</td>
             <td className="r" /><td className="r mono">{inr(L.expense_recognised)}</td><td /></tr>
         </Table>
         <div style={{ marginTop: 10 }}>

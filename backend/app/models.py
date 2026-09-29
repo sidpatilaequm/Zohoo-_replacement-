@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
 PERMS = ["invoice","saved","po","vinv","so","del","grn","disc","phys","stock",
-         "audit","bankstmt","cardstmt","employees",
+         "audit","bankstmt","cardstmt","employees","expenses",
          "crec","vpay","reports","registers","gstr","customers","vendors",
          "materials","attrs","hsn","org","users","data"]
 
@@ -696,6 +696,24 @@ class Employee(Base):
     created_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
 
 
+class ExpenseHead(Base):
+    """An expense head (v4.3): Expense ID and name, e.g. EXP001 Travel.
+    Employee expenses paid from the bank are booked to one, and its names
+    are the categories offered for company spends on director cards."""
+    __tablename__="expense_heads"
+    __table_args__=(UniqueConstraint("tenant_id","exp_code",name="uq_exph_code"),
+                    UniqueConstraint("tenant_id","name",name="uq_exph_name"))
+
+    id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    tenant_id: Mapped[int]=mapped_column(
+        ForeignKey("tenants.id",ondelete="CASCADE")
+    )
+    exp_code: Mapped[str]=mapped_column(String(20))
+    name: Mapped[str]=mapped_column(String(80))
+    active: Mapped[bool]=mapped_column(Boolean,default=True)
+    created_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
+
+
 class StmtTxnLink(Base):
     """What a bank transaction is for (v4.2).
 
@@ -726,6 +744,10 @@ class StmtTxnLink(Base):
     )
     purpose: Mapped[str|None]=mapped_column(
         Enum("SALARY","EXPENSE",name="slpurpose"),nullable=True
+    )
+    # v4.3 — the expense head an employee expense is booked to
+    expense_id: Mapped[int|None]=mapped_column(
+        ForeignKey("expense_heads.id"),nullable=True
     )
     amount: Mapped[Decimal]=mapped_column(Numeric(14,2))
     notes: Mapped[str|None]=mapped_column(String(200),nullable=True)

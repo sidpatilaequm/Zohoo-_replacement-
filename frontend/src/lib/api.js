@@ -163,8 +163,21 @@ export function makeApi(token, tenantId) {
     stmtAccounts:  () => call('/statements/accounts'),
     addStmtAccount: (b) => call('/statements/accounts', { method: 'POST', body: b }),
     editStmtAccount: (id, b) => call(`/statements/accounts/${id}`, { method: 'PUT', body: b }),
-    uploadStmt: (id, period, file) =>
-      upload(`/statements/accounts/${id}/upload?period=${encodeURIComponent(period)}`, file, { token, tenantId }),
+    // opts (card statements only): { allocation: 'UNALLOCATED'|'COMPANY'|'PERSONAL', category }
+    uploadStmt: (id, period, file, opts = {}) => {
+      const q = new URLSearchParams({ period })
+      if (opts.allocation && opts.allocation !== 'UNALLOCATED') {
+        q.set('default_allocation', opts.allocation)
+        if (opts.allocation === 'COMPANY' && opts.category) q.set('default_category', opts.category)
+      }
+      return upload(`/statements/accounts/${id}/upload?${q}`, file, { token, tenantId })
+    },
+    allocateAll: (id, period, b) =>
+      call(`/statements/accounts/${id}/allocate-all?period=${encodeURIComponent(period)}`,
+        { method: 'PUT', body: b }),
+    attachables: (txnId) => call(`/statements/txns/${txnId}/attachables`),
+    addTxnLink: (txnId, b) => call(`/statements/txns/${txnId}/links`, { method: 'POST', body: b }),
+    delTxnLink: (id) => call(`/statements/links/${id}`, { method: 'DELETE' }),
     stmtUploads: (id) => call(`/statements/accounts/${id}/uploads`),
     delStmtUpload: (id) => call(`/statements/uploads/${id}`, { method: 'DELETE' }),
     stmtTxns: (id, period) =>
@@ -176,6 +189,19 @@ export function makeApi(token, tenantId) {
       call(`/statements/reconcile?period=${encodeURIComponent(period)}`),
     expenseLedger: (period) =>
       call(`/statements/ledger?period=${encodeURIComponent(period)}`),
+
+    // ---- employees ----
+    employees:     ()   => call('/employees'),
+    addEmployee:   (b)  => call('/employees', { method: 'POST', body: b }),
+    editEmployee:  (id, b) => call(`/employees/${id}`, { method: 'PUT', body: b }),
+    delEmployee:   (id) => call(`/employees/${id}`, { method: 'DELETE' }),
+
+    // ---- expense heads ----
+    expenseHeads:  ()   => call('/expense-heads'),
+    addExpenseHead: (b) => call('/expense-heads', { method: 'POST', body: b }),
+    addStandardHeads: () => call('/expense-heads/standard', { method: 'POST' }),
+    editExpenseHead: (id, b) => call(`/expense-heads/${id}`, { method: 'PUT', body: b }),
+    delExpenseHead: (id) => call(`/expense-heads/${id}`, { method: 'DELETE' }),
 
     // ---- master data templates ----
     templates:     ()   => call('/templates'),

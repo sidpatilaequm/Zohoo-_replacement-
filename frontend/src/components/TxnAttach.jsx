@@ -14,6 +14,7 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
   const [kind, setKind] = useState(credit ? 'CUST_INV' : 'VEND_INV')
   const [ref, setRef] = useState('')
   const [purpose, setPurpose] = useState('SALARY')
+  const [head, setHead] = useState('')
   const [amount, setAmount] = useState('')
   const [notes, setNotes] = useState('')
   const [busy, setBusy] = useState(false)
@@ -25,6 +26,9 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
 
   // Preselect the first choice (an exact-amount invoice sorts first) and
   // suggest the amount: what is left on the transaction, capped by the invoice.
+  useEffect(() => {
+    if (O?.expense_heads?.length && !head) setHead(String(O.expense_heads[0].id))
+  }, [O]) // eslint-disable-line
   useEffect(() => {
     if (!O) return
     const first = list[0]
@@ -43,7 +47,9 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
     try {
       await api.addTxnLink(txn.id, { link_type: kind, ref_id: Number(ref),
         amount: amount ? Number(amount) : null,
-        purpose: kind === 'EMPLOYEE' ? purpose : null, notes: notes || null })
+        purpose: kind === 'EMPLOYEE' ? purpose : null,
+        expense_id: kind === 'EMPLOYEE' && purpose === 'EXPENSE' ? Number(head) || null : null,
+        notes: notes || null })
       setNotes(''); onDone && onDone()
     } catch (x) { onError && onError(x.message) }
     finally { setBusy(false) }
@@ -72,7 +78,7 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
           {!credit && <Field label="Attach to">
             <select value={kind} onChange={e => setKind(e.target.value)}>
               <option value="VEND_INV">Vendor invoice</option>
-              <option value="EMPLOYEE">Employee — salary or expense</option>
+              <option value="EMPLOYEE">Employee</option>
             </select></Field>}
           <Field label={kind === 'CUST_INV' ? 'Customer invoice'
             : kind === 'VEND_INV' ? 'Vendor invoice' : 'Employee'}
@@ -87,13 +93,21 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
               <option value="SALARY">Salary</option>
               <option value="EXPENSE">Expense reimbursement</option>
             </select></Field>}
+          {kind === 'EMPLOYEE' && purpose === 'EXPENSE' && <Field label="Expense head">
+            {O.expense_heads?.length
+              ? <select value={head} onChange={e => setHead(e.target.value)}>
+                  {O.expense_heads.map(h => <option key={h.id} value={h.id}>
+                    {h.exp_code} — {h.name}</option>)}</select>
+              : <div className="fine" style={{ paddingTop: 9 }}>No expense heads yet. Add them on
+                  the Expenses screen under Masters.</div>}</Field>}
           <Field label="Amount" hint={picked && picked.open != null
             ? `Invoice total ${inr(picked.total)}` : undefined}>
             <input className="mono" type="number" step="0.01" min="0.01" value={amount}
               onChange={e => setAmount(e.target.value)} /></Field>
           <Field label="Note" hint="Optional">
             <input maxLength={200} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
-          <Field label=" "><button className="btn btn-a" disabled={busy || !ref || !amount}>
+          <Field label=" "><button className="btn btn-a" disabled={busy || !ref || !amount ||
+            (kind === 'EMPLOYEE' && purpose === 'EXPENSE' && !head)}>
             {busy ? 'Attaching…' : 'Attach'}</button></Field>
         </div>}
     </form>)
@@ -108,7 +122,8 @@ export function LinkChips({ links, onRemove }) {
   return (<div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
     {links.map(l => <span key={l.id} className="chip" title={l.notes || ''}>
       <span className="chip-k">{TYPE_LABEL[l.link_type]}</span>
-      {l.ref}{l.link_type === 'EMPLOYEE' ? ` ${l.party} · ${PURPOSE_LABEL[l.purpose]}` : ` ${l.party}`}
+      {l.ref}{l.link_type === 'EMPLOYEE'
+        ? ` ${l.party} · ${l.expense ? l.expense : PURPOSE_LABEL[l.purpose]}` : ` ${l.party}`}
       <span className="mono">{inr(l.amount)}</span>
       {onRemove && <button type="button" className="rm" title="Remove this attachment"
         onClick={() => onRemove(l)}>×</button>}

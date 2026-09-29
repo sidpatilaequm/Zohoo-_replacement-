@@ -28,6 +28,71 @@ Sign in as `alok@aequm.in` (any password — the demo does not check them, and s
 so on screen).
 
 
+## Version 4.3 changes
+
+**Expense master.** Masters → Expenses holds an Expense ID and an Expense name
+per head (EXP001 Travel, say), each unique within the organisation. **Add the
+standard heads** fills in the usual list. An employee expense attached to a
+bank debit must name its head, and the expense ledger breaks employee
+expenses down by head. The active heads are also the categories offered for
+company spends on director cards; renaming a head carries those spends with
+it. A head in use cannot be deleted, only made inactive. New permission:
+`expenses`.
+
+**Card statements read as printed.** Statements such as RBL's print the
+transactions beside the account summary, so the date is mid-line; card rows
+are now found wherever the date sits. Where the file prints its statement
+period, rows dated outside it — the 2018-19 "sample transaction" illustration
+on page 2 — are ignored and the count reported. Two identical transactions in
+one file (the same merchant, date and amount) are both saved, and a
+re-upload still adds nothing. A card statement's rows are listed and
+reconciled under the statement month they were uploaded for, since a billing
+cycle (13 Aug – 12 Sep) spans two calendar months.
+
+**Bank narrations.** A value date repeated at the start of the narration
+("01/04/2026 BY TRANSFER- …") is dropped from the description. Fingerprints
+still use the narration as printed, so statements uploaded before this
+change are recognised and not doubled.
+
+**Database.** Run `db/11_v43_expense_heads.sql` after
+`db/10_v42_employees_bank_links.sql`; both are additive and safe to repeat,
+and the deploy workflow runs them in order. Tests:
+`tests/test_v43_expenses_cards.py` (the RBL sample is a scan, so its test
+needs Tesseract and is skipped where it is not installed).
+
+## Version 4.2 changes
+
+**Invoices and employees attached to bank transactions.** On Bank Statements
+each saved transaction has an **Attach** button. A credit is attached to the
+customer tax invoice(s) it settles; a debit to the vendor invoice(s) it pays,
+or to an employee as **salary** or an **expense reimbursement**. An invoice
+matching the amount exactly is listed first and the amount is suggested. The
+amounts attached to one transaction never exceed it, and an invoice is never
+attached for more than its total across all transactions. A filter shows the
+transactions not yet attached, and an upload carrying attachments cannot be
+deleted until they are removed. Attaching records what the money was for; it
+does not post a receipt or payment on the Money screens, so an invoice's
+*Payment Made* still comes only from Receipts. The monthly expense ledger
+now shows salary and expenses paid to employees and counts them in the
+expense recognised.
+
+**Employees.** A new master under Masters holds employee ID, first name, last
+name and e-mail, each ID and e-mail unique within the organisation. An
+employee with bank entries cannot be deleted, only marked inactive. The
+Employees screen is a new permission (`employees`); the migration grants it to
+groups that hold Company Information.
+
+**Company or personal on card upload.** The Director Cards upload now asks
+whether the spends in the file are undecided, a company expense (with a
+category) or personal, and marks them as they are saved. Any single spend can
+still be changed. The Allocate panel can also mark every undecided spend in
+the month as company or personal in one go.
+
+**Database.** `db/10_v42_employees_bank_links.sql` creates `employees` and
+`stmt_txn_links` and grants the permission. It only adds, and is safe to run
+again; the deploy workflow applies it after the v4.1 migration, and Docker
+picks it up from `db/` on a fresh volume. Tests: `tests/test_v42_bank_links.py`.
+
 ## Version 4.1 changes
 
 Three points raised against the tax invoice print-out, checked against the code

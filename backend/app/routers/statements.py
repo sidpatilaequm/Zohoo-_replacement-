@@ -65,6 +65,43 @@ DATE_START = [
     (re.compile(r"^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})\b"),
      lambda m: _mk(m.group(1), int(m.group(2)), m.group(3))),
 ]
+# The same date shapes found anywhere in a line. Card statements printed in
+# two columns (an account summary on the left, transactions on the right)
+# read as "Card Number XXXX97 13 Aug 2026 PAYMENT RECEIVED ... 3,07,068.00",
+# so the transaction date is not at the start of the line.
+DATE_ANY = [(re.compile(r"(?<![\w/.\-])" + pat.pattern[1:]), mk) for pat, mk in DATE_START]
+
+
+def _find_date(line: str, anywhere: bool):
+    """(date, text after it). With anywhere, the earliest valid date in the
+    line that still has text and an amount after it."""
+    for pat, mk in DATE_START:
+        m = pat.match(line)
+        if m and mk(m):
+            return mk(m), line[m.end():].strip()
+    if not anywhere:
+        return None, None
+    best = None
+    for pat, mk in DATE_ANY:
+        for m in pat.finditer(line):
+            d = mk(m)
+            rest = line[m.end():].strip()
+            if d and MONEY_TOKEN.search(rest) and (best is None or m.start() < best[0]):
+                best = (m.start(), d, rest)
+                break
+    return (best[1], best[2]) if best else (None, None)
+
+
+def _strip_value_date(desc: str) -> str:
+    """Bank PDFs often print a value date again at the start of the
+    narration ("01/04/2026 BY TRANSFER- ..."); it adds nothing."""
+    for pat, mk in DATE_START:
+        m = pat.match(desc)
+        if m and mk(m):
+            return desc[m.end():].strip() or desc
+    return desc
+
+
 MONEY_TOKEN = re.compile(r"(-?\d[\d,]*\.\d{2})\s*(Cr|CR|cr|Dr|DR|dr)?\.?(?=\s|$)")
 CREDIT_WORDS = re.compile(r"PAYMENT\s+RECEIVED|REVERSAL|REFUND|CASHBACK|NEFT[\s\-]*CR|IMPS[\s\-]*CR"
                           r"|UPI[\s\-]*CR|\bBY\s+TRANSFER|INTEREST\s+CREDIT|SALARY|DIVIDEND", re.I)
@@ -99,13 +136,7 @@ def parse_text(text: str, kind: str) -> list[dict]:
     out, prev_balance = [], None
     for raw in text.splitlines():
         line = re.sub(r"\s+", " ", raw).strip()
-        d, rest = None, None
-        for pat, mk in DATE_START:
-            m = pat.match(line)
-            if m:
-                d = mk(m)
-                rest = line[m.end():].strip()
-                break
+        d, rest = _find_date(line, anywhere=(kind == "CARD"))
         if not d:
             continue
         tokens = list(MONEY_TOKEN.finditer(rest))
@@ -134,7 +165,7 @@ def parse_text(text: str, kind: str) -> list[dict]:
         amount = abs(amount)
         if amount == 0:
             continue
-        out.append({"txn_date": d, "descr": desc[:240],
+        out.append({"txn_date": d, "descr": _strip_value_date(desc)[:240], "raw": desc[:240],
                     "debit": Decimal(0) if credit else amount,
                     "credit": amount if credit else Decimal(0)})
     return out
@@ -185,13 +216,68 @@ def parse_csv(data: bytes, kind: str) -> list[dict]:
             deb, cred = abs(deb or 0), abs(cred or 0)
             if not desc or (deb == 0 and cred == 0):
                 continue
-            out.append({"txn_date": d, "descr": desc, "debit": deb, "credit": cred})
+            out.append({"txn_date": d, "descr": _strip_value_date(desc), "raw": desc,
+                        "debit": deb, "credit": cred})
         return out
     return parse_text(text, kind)
 
 
+STMT_PERIOD_RE = re.compile(
+    r"(?:statement|billing)\s+(?:period|cycle)\s*:?\s*(\S.{5,30}?)\s+(?:to|-)\s+(\S.{5,30}?)(?:\s|$)",
+    re.I)
+
+
+def statement_window(text: str):
+    """The statement's own period, when the file prints one
+    ("Statement Period 13-08-2026 to 12-09-2026"). Rows dated outside it are
+    illustrations — a card statement's 'sample transaction' table, say —
+    not transactions."""
+    m = STMT_PERIOD_RE.search(text or "")
+    if not m:
+        return None
+    lo = hi = None
+    for pat, mk in DATE_START:
+        a = pat.match(m.group(1).strip())
+        if a and not lo:
+            lo = mk(a)
+        b = pat.match(m.group(2).strip())
+        if b and not hi:
+            hi = mk(b)
+    return (lo, hi) if lo and hi and lo <= hi else None
+
+
+def keep_in_window(txns, window, period):
+    """Drop rows that cannot belong to this statement: outside the period
+    the file prints, or — when it prints none — more than two months away
+    from the month chosen for the upload."""
+    from datetime import timedelta
+    if window:
+        lo, hi = window[0] - timedelta(days=3), window[1] + timedelta(days=3)
+    else:
+        m_lo, m_hi = _month_bounds(period)
+        lo, hi = m_lo - timedelta(days=62), m_hi + timedelta(days=62)
+    kept = [t for t in txns if lo <= t["txn_date"] <= hi]
+    return kept, len(txns) - len(kept)
+
+
+def with_occurrence(txns):
+    """Two genuine transactions can be identical — the same merchant, date
+    and amount twice. Number repeats within a file so both are saved, while
+    a re-upload of the same file still produces the same fingerprints."""
+    seen = {}
+    for t in txns:
+        k = (t["txn_date"], t.get("raw", t["descr"]).upper(), t["debit"], t["credit"])
+        seen[k] = seen.get(k, 0) + 1
+        t["occurrence"] = seen[k]
+    return txns
+
+
 def fingerprint(t: dict) -> str:
-    key = f"{t['txn_date'].isoformat()}|{t['descr'].upper()}|{t['debit']}|{t['credit']}"
+    # Keyed on the narration as printed, so tidying how it is displayed never
+    # makes a statement uploaded before the change look new.
+    key = f"{t['txn_date'].isoformat()}|{t.get('raw', t['descr']).upper()}|{t['debit']}|{t['credit']}"
+    if t.get("occurrence", 1) > 1:      # the first keeps the key used before v4.3
+        key += f"#{t['occurrence']}"
     return hashlib.sha1(key.encode()).hexdigest()
 
 
@@ -275,7 +361,7 @@ async def upload_statement(aid: int, period: str = Query(...),
     if default_allocation == "COMPANY":
         if not default_category:
             raise HTTPException(422, "Pick an expense category for a company expense")
-        if default_category not in CARD_CATEGORIES:
+        if default_category not in _categories(ctx):
             raise HTTPException(422, f"{default_category} is not an expense category")
     name = (file.filename or "statement").lower()
     data = await file.read()
@@ -283,6 +369,7 @@ async def upload_statement(aid: int, period: str = Query(...),
         raise HTTPException(413, f"File is larger than {MAX_BYTES // (1024*1024)} MB")
     if not data:
         raise HTTPException(422, "The file is empty")
+    window = None
     if name.endswith(SHEETS):
         txns = parse_csv(data, a.kind)
     elif name.endswith(PDFS) or data[:4] == b"%PDF":
@@ -293,8 +380,11 @@ async def upload_statement(aid: int, period: str = Query(...),
         except Exception as e:
             raise HTTPException(422, f"Could not read that file: {e.__class__.__name__}")
         txns = parse_text(text, a.kind)
+        window = statement_window(text)
     else:
         raise HTTPException(422, "Upload the statement as PDF or CSV")
+    txns, ignored = keep_in_window(txns, window, period)
+    txns = with_occurrence(txns)
     if not txns:
         raise HTTPException(422, "No transactions were recognised in the file. "
                             "If the PDF is a scan, upload the bank's CSV export instead.")
@@ -328,6 +418,9 @@ async def upload_statement(aid: int, period: str = Query(...),
     ctx.db.commit()
     return {"upload_id": up.id, "found": len(txns), "saved": new,
             "duplicates_skipped": len(txns) - new,
+            "outside_period_ignored": ignored,
+            "statement_period": ([window[0].isoformat(), window[1].isoformat()]
+                                 if window else None),
             "allocation": default_allocation if a.kind == "CARD" else None,
             "note": None if new else "Every transaction in this file was already saved earlier."}
 
@@ -383,9 +476,7 @@ def txns(aid: int, period: str | None = None,
     if period:
         if not PERIOD_RE.match(period):
             raise HTTPException(422, "Give the month as YYYY-MM")
-        y, m = int(period[:4]), int(period[5:])
-        nxt = date(y + (m == 12), (m % 12) + 1, 1)
-        q = q.where(M.StmtTxn.txn_date >= date(y, m, 1), M.StmtTxn.txn_date < nxt)
+        q = _in_period(q, a, period)
     rows = ctx.db.execute(q.order_by(M.StmtTxn.txn_date, M.StmtTxn.id)).scalars().all()
     links = _links_for(ctx, [t.id for t in rows])
     out = []
@@ -447,11 +538,9 @@ def allocate_all(aid: int, body: AllocateIn, period: str = Query(...),
             raise HTTPException(422, "Pick an expense category for a company expense")
     else:
         cat = None
-    lo, hi = _month_bounds(period)
-    rows = ctx.db.execute(select(M.StmtTxn).where(
+    rows = ctx.db.execute(_in_period(select(M.StmtTxn).where(
         M.StmtTxn.tenant_id == ctx.tenant.id, M.StmtTxn.account_id == aid,
-        M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi,
-        M.StmtTxn.allocation == "UNALLOCATED", M.StmtTxn.debit > 0)).scalars().all()
+        M.StmtTxn.allocation == "UNALLOCATED", M.StmtTxn.debit > 0), a, period)).scalars().all()
     now = datetime.utcnow()
     for t in rows:
         t.allocation, t.category = body.allocation, cat
@@ -460,9 +549,17 @@ def allocate_all(aid: int, body: AllocateIn, period: str = Query(...),
     return {"updated": len(rows), "allocation": body.allocation, "category": cat}
 
 
+def _categories(ctx):
+    """The expense heads in the Expense master, or the standard list while
+    the master is still empty."""
+    from .expenses import active_heads
+    heads = active_heads(ctx)
+    return [h.name for h in heads] if heads else list(CARD_CATEGORIES)
+
+
 @router.get("/categories")
 def categories(ctx: Ctx = Depends(need("cardstmt"))):
-    return CARD_CATEGORIES
+    return _categories(ctx)
 
 
 
@@ -487,7 +584,12 @@ def _links_for(ctx, txn_ids):
 def _link_out(ctx, l):
     d = {"id": l.id, "txn_id": l.txn_id, "link_type": l.link_type,
          "amount": float(l.amount), "notes": l.notes, "purpose": l.purpose,
-         "linked_by": l.linked_by, "ref_id": None, "ref": None, "party": None}
+         "linked_by": l.linked_by, "ref_id": None, "ref": None, "party": None,
+         "expense_id": l.expense_id, "expense": None}
+    if l.expense_id:
+        h = ctx.db.get(M.ExpenseHead, l.expense_id)
+        if h:
+            d["expense"] = f"{h.exp_code} {h.name}"
     if l.link_type == "CUST_INV" and l.invoice_id:
         inv = ctx.db.get(M.Invoice, l.invoice_id)
         if inv:
@@ -569,6 +671,9 @@ def attachables(tid: int, ctx: Ctx = Depends(need("bankstmt"))):
         out["employees"] = [{"id": e.id, "emp_code": e.emp_code,
                              "name": f"{e.first_name} {e.last_name}", "email": e.email}
                             for e in emps]
+        from .expenses import active_heads
+        out["expense_heads"] = [{"id": h.id, "exp_code": h.exp_code, "name": h.name}
+                                for h in active_heads(ctx)]
     return out
 
 
@@ -577,6 +682,7 @@ class LinkIn(BaseModel):
     ref_id: int
     amount: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
     purpose: str | None = Field(default=None, pattern="^(SALARY|EXPENSE)$")
+    expense_id: int | None = None
     notes: str | None = Field(default=None, max_length=200)
 
 
@@ -636,6 +742,16 @@ def add_link(tid: int, body: LinkIn, ctx: Ctx = Depends(need("bankstmt"))):
         if not body.purpose:
             raise HTTPException(422, "Say whether this is salary or an expense")
         link.employee_id, link.purpose = e.id, body.purpose
+        if body.purpose == "EXPENSE":
+            if not body.expense_id:
+                raise HTTPException(422, "Pick the expense head this employee expense "
+                                    "belongs to. Heads are kept on the Expenses screen.")
+            h = ctx.get(M.ExpenseHead, body.expense_id)
+            if not h:
+                raise HTTPException(404, "No such expense head")
+            if not h.active:
+                raise HTTPException(422, f"{h.name} is marked inactive")
+            link.expense_id = h.id
 
     amount = Decimal(str(body.amount)) if body.amount is not None else cap
     if amount > remaining:
@@ -658,6 +774,20 @@ def del_link(lid: int, ctx: Ctx = Depends(need("bankstmt"))):
 
 # --------------------------------------------------------------- reconciliation
 
+def _in_period(q, account, period):
+    """A bank statement follows the calendar month, so its rows are picked by
+    date. A card statement runs from one billing date to the next (13 Aug to
+    12 Sep, say), so its rows belong to the statement month they were
+    uploaded under, whatever their dates."""
+    if account.kind == "CARD":
+        ups = select(M.StmtUpload.id).where(M.StmtUpload.tenant_id == account.tenant_id,
+                                            M.StmtUpload.account_id == account.id,
+                                            M.StmtUpload.period == period)
+        return q.where(M.StmtTxn.upload_id.in_(ups))
+    lo, hi = _month_bounds(period)
+    return q.where(M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi)
+
+
 def _month_bounds(period):
     y, m = int(period[:4]), int(period[5:])
     return date(y, m, 1), date(y + (m == 12), (m % 12) + 1, 1)
@@ -675,8 +805,7 @@ def reconcile(period: str | None = None, ctx: Ctx = Depends(need("cardstmt"))):
         q = select(M.StmtTxn).where(M.StmtTxn.tenant_id == ctx.tenant.id,
                                     M.StmtTxn.account_id == a.id)
         if period:
-            lo, hi = _month_bounds(period)
-            q = q.where(M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi)
+            q = _in_period(q, a, period)
         rows = ctx.db.execute(q).scalars().all()
         company = sum(t.debit for t in rows if t.allocation == "COMPANY")
         personal = sum(t.debit for t in rows if t.allocation == "PERSONAL")
@@ -738,6 +867,7 @@ def expense_ledger(period: str = Query(...), ctx: Ctx = Depends(
 
     # Salary and expenses attached to employees on bank debits this month.
     emp = {"SALARY": 0.0, "EXPENSE": 0.0}
+    emp_heads = []
     if "bankstmt" in ctx.perms:
         for purpose, amt in ctx.db.execute(
                 select(M.StmtTxnLink.purpose, func.sum(M.StmtTxnLink.amount))
@@ -747,6 +877,15 @@ def expense_ledger(period: str = Query(...), ctx: Ctx = Depends(
                        M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi)
                 .group_by(M.StmtTxnLink.purpose)).all():
             emp[purpose] = float(amt or 0)
+        by_head = ctx.db.execute(
+            select(M.ExpenseHead.exp_code, M.ExpenseHead.name, func.sum(M.StmtTxnLink.amount))
+            .join(M.StmtTxnLink, M.StmtTxnLink.expense_id == M.ExpenseHead.id)
+            .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
+            .where(M.StmtTxnLink.tenant_id == ctx.tenant.id,
+                   M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi)
+            .group_by(M.ExpenseHead.exp_code, M.ExpenseHead.name)
+            .order_by(M.ExpenseHead.exp_code)).all()
+        emp_heads = [{"exp_code": c, "name": n, "amount": float(a or 0)} for c, n, a in by_head]
     return {
         "period": period,
         "vendor_invoices": {"count": len(vinvs), "total": inv_total},
@@ -757,6 +896,7 @@ def expense_ledger(period: str = Query(...), ctx: Ctx = Depends(
         "card_unallocated": card_unalloc,
         "employee_salary": emp["SALARY"],
         "employee_expense": emp["EXPENSE"],
+        "employee_expense_by_head": emp_heads,
         "expense_recognised": inv_total + card_company + emp["SALARY"] + emp["EXPENSE"],
         "cash_out": bank_debits,
         # Payments recorded in the books that the bank statement should contain.

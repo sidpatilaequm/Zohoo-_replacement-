@@ -30,6 +30,9 @@ import Registers from './pages/Registers'
 import Templates from './pages/Templates'
 import BankStatements from './pages/BankStatements'
 import CardStatements from './pages/CardStatements'
+import Employees from './pages/Employees'
+import Expenses from './pages/Expenses'
+
 
 const PAGES = {
   invoice: NewInvoice, saved: Invoices, po: PurchaseOrders, vinv: VendorInvoices,
@@ -39,7 +42,7 @@ const PAGES = {
   so: SalesOrders, del: Deliveries, grn: GoodsReceipt, disc: Discrepancies,
   phys: PhysicalInventory, stock: StockReport,
   hsn: HsnCodes, registers: Registers, data: Templates,
-  bankstmt: BankStatements, cardstmt: CardStatements,
+  bankstmt: BankStatements, cardstmt: CardStatements, employees: Employees, expenses: Expenses,
 }
 
 export default function App() {
