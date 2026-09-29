@@ -91,6 +91,7 @@ export function makeApi(token, tenantId) {
     addGroup:      (b)  => call('/groups', { method: 'POST', body: b }),
     editGroup:     (id, b) => call(`/groups/${id}`, { method: 'PUT', body: b }),
     delGroup:      (id) => call(`/groups/${id}`, { method: 'DELETE' }),
+    licence:       ()   => call('/licence'),
     users:         ()   => call('/users'),
     addUser:       (b)  => call('/users', { method: 'POST', body: b }),
     setRole:       (id, gid) => call(`/users/${id}/role`,
@@ -206,6 +207,7 @@ export function makeApi(token, tenantId) {
     // ---- master data templates ----
     templates:     ()   => call('/templates'),
     templateUrl:   (k)  => `${BASE}/templates/${k}.csv`,
+    templateDl:    (k)  => download(`/templates/${k}.csv`, { token, tenantId }),
     importCsv:  (k, text) => call(`/templates/${k}/import`,
                     { method: 'POST', body: { csv: text } }),
 
