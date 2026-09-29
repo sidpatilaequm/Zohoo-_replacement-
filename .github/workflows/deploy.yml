@@ -22,40 +22,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Deploy to Host iCare
+      - name: Prepare deployment script
         env:
-          DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
           DEPLOY_COMMIT: ${{ github.sha }}
         run: |
           set -Eeuo pipefail
 
-          echo "======================================"
-          echo "Aequm Billing v4.3 deployment"
-          echo "Commit: $DEPLOY_COMMIT"
-          echo "======================================"
-
-          printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
-          chmod 600 /tmp/deploy_key
-
-          echo "Testing SSH connection..."
-
-          ssh \
-            -i /tmp/deploy_key \
-            -p 3052 \
-            -o StrictHostKeyChecking=no \
-            -o IdentitiesOnly=yes \
-            root@103.17.193.174 \
-            "echo SSH_AUTH_OK"
-
-          echo "Starting remote deployment..."
-
-          ssh \
-            -i /tmp/deploy_key \
-            -p 3052 \
-            -o StrictHostKeyChecking=no \
-            -o IdentitiesOnly=yes \
-            root@103.17.193.174 \
-            "DEPLOY_COMMIT='$DEPLOY_COMMIT' bash -s" <<'REMOTE_SCRIPT'
+          cat > /tmp/aequm-remote-deploy.sh <<'REMOTE_SCRIPT'
+          #!/usr/bin/env bash
 
           set -Eeuo pipefail
 
@@ -64,6 +38,8 @@ jobs:
           TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
           RELEASE_DIR="/tmp/aequm-release-$TIMESTAMP"
 
+          DEPLOY_COMMIT="__DEPLOY_COMMIT__"
+
           cleanup() {
             if [ -d "$RELEASE_DIR" ]; then
               git -C "$APP_DIR" worktree remove --force "$RELEASE_DIR" 2>/dev/null || true
@@ -71,6 +47,11 @@ jobs:
           }
 
           trap cleanup EXIT
+
+          echo "======================================"
+          echo "Aequm Billing v4.3 deployment"
+          echo "Commit: $DEPLOY_COMMIT"
+          echo "======================================"
 
           cd "$APP_DIR"
 
@@ -96,12 +77,13 @@ jobs:
               --routines \
               --triggers \
               aequm_billing' \
+            </dev/null \
             | gzip > "$BACKUP_FILE"
 
           test -s "$BACKUP_FILE"
           gzip -t "$BACKUP_FILE"
 
-          echo "Backup verified:"
+          echo "Database backup verified:"
           ls -lh "$BACKUP_FILE"
 
           echo ""
@@ -111,10 +93,8 @@ jobs:
 
           git fetch origin main
 
-          echo "Requested commit:"
+          echo "Deployment commit:"
           echo "$DEPLOY_COMMIT"
-
-          echo "Checking commit..."
 
           git cat-file -e "$DEPLOY_COMMIT^{commit}"
 
@@ -129,10 +109,15 @@ jobs:
 
           git worktree add --detach "$RELEASE_DIR" "$DEPLOY_COMMIT"
 
-          echo "Release commit:"
-          git -C "$RELEASE_DIR" log -1 --oneline
+          RELEASE_HEAD="$(git -C "$RELEASE_DIR" rev-parse HEAD)"
 
-          test "$(git -C "$RELEASE_DIR" rev-parse HEAD)" = "$DEPLOY_COMMIT"
+          echo "Release HEAD:"
+          echo "$RELEASE_HEAD"
+
+          if [ "$RELEASE_HEAD" != "$DEPLOY_COMMIT" ]; then
+            echo "ERROR: Release commit does not match deployment commit."
+            exit 1
+          fi
 
           echo "Release commit verified."
 
@@ -144,9 +129,6 @@ jobs:
           test -f "$RELEASE_DIR/db/11_v43_expense_heads.sql"
           test -f "$RELEASE_DIR/frontend/src/pages/Expenses.jsx"
 
-          echo "v4.3 migration found."
-          echo "Expenses page found."
-
           grep -q "Expenses" \
             "$RELEASE_DIR/frontend/src/App.jsx"
 
@@ -156,11 +138,11 @@ jobs:
           grep -q "CardStatements" \
             "$RELEASE_DIR/frontend/src/App.jsx"
 
-          echo "v4.3 frontend references verified."
+          echo "v4.3 files verified."
 
           echo ""
           echo "======================================"
-          echo "6. Updating backend"
+          echo "6. Updating backend source"
           echo "======================================"
 
           tar \
@@ -172,11 +154,11 @@ jobs:
             -cf - . \
             | tar -C "$APP_DIR/backend" -xf -
 
-          echo "Backend updated."
+          echo "Backend source updated."
 
           echo ""
           echo "======================================"
-          echo "7. Updating frontend"
+          echo "7. Updating frontend source"
           echo "======================================"
 
           tar \
@@ -186,7 +168,7 @@ jobs:
             -cf - . \
             | tar -C "$APP_DIR/frontend" -xf -
 
-          echo "Frontend updated."
+          echo "Frontend source updated."
 
           echo ""
           echo "======================================"
@@ -199,7 +181,7 @@ jobs:
             "$RELEASE_DIR/db/11_v43_expense_heads.sql" \
             "$APP_DIR/db/11_v43_expense_heads.sql"
 
-          echo "Migration copied."
+          echo "v4.3 migration copied."
 
           echo ""
           echo "======================================"
@@ -210,40 +192,42 @@ jobs:
             sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" aequm_billing' \
             < "$APP_DIR/db/11_v43_expense_heads.sql"
 
-          echo "v4.3 migration executed."
+          echo "v4.3 migration completed."
 
           echo ""
           echo "======================================"
           echo "10. Verifying v4.3 database"
           echo "======================================"
 
-          EXPENSE_HEADS_TABLE=$(
+          EXPENSE_HEADS_TABLE="$(
             docker compose exec -T db \
               sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -s aequm_billing -e "
                 SELECT COUNT(*)
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_SCHEMA = '\''aequm_billing'\''
                   AND TABLE_NAME = '\''expense_heads'\'';
-              "'
-          )
+              "' \
+              </dev/null
+          )"
 
-          echo "expense_heads = $EXPENSE_HEADS_TABLE"
+          echo "expense_heads table = $EXPENSE_HEADS_TABLE"
 
           if [ "$EXPENSE_HEADS_TABLE" != "1" ]; then
             echo "ERROR: expense_heads table was not created."
             exit 1
           fi
 
-          EXPENSE_PERMISSION=$(
+          EXPENSE_PERMISSION="$(
             docker compose exec -T db \
               sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -s aequm_billing -e "
                 SELECT COUNT(*)
                 FROM group_perms
                 WHERE perm = '\''expenses'\'';
-              "'
-          )
+              "' \
+              </dev/null
+          )"
 
-          echo "expenses permissions = $EXPENSE_PERMISSION"
+          echo "expenses permission rows = $EXPENSE_PERMISSION"
 
           if [ "$EXPENSE_PERMISSION" = "0" ]; then
             echo "ERROR: expenses permission was not created."
@@ -254,33 +238,37 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "11. Rebuilding API and UI"
+          echo "11. Rebuilding Billing containers"
           echo "======================================"
 
           docker compose build api ui
 
           echo ""
           echo "======================================"
-          echo "12. Restarting API and UI"
+          echo "12. Restarting Billing application"
           echo "======================================"
 
           docker compose up -d api ui
 
           echo ""
           echo "======================================"
-          echo "13. Restoring billing-ui network"
+          echo "13. Restoring Billing UI network"
           echo "======================================"
 
-          docker network connect \
-            --alias billing-ui \
-            projectsystem_default \
-            aequm-billing-ui-1 2>/dev/null || true
+          if docker network inspect projectsystem_default >/dev/null 2>&1; then
+            docker network connect \
+              --alias billing-ui \
+              projectsystem_default \
+              aequm-billing-ui-1 2>/dev/null || true
 
-          echo "Billing UI network checked."
+            echo "Billing UI network checked."
+          else
+            echo "projectsystem_default network not found; skipping."
+          fi
 
           echo ""
           echo "======================================"
-          echo "14. Waiting for API"
+          echo "14. Waiting for Billing API"
           echo "======================================"
 
           HEALTHY=0
@@ -291,8 +279,8 @@ jobs:
               http://127.0.0.1:8000/api/health \
               > /dev/null 2>&1; then
 
-              HEALTHY=1
               echo "Billing API is healthy."
+              HEALTHY=1
               break
             fi
 
@@ -303,9 +291,14 @@ jobs:
           if [ "$HEALTHY" != "1" ]; then
 
             echo ""
-            echo "ERROR: Billing API failed health check."
+            echo "======================================"
+            echo "ERROR: Billing API is unhealthy"
+            echo "======================================"
 
             docker compose ps
+
+            echo ""
+            echo "Billing API logs:"
             docker compose logs --tail=100 api
 
             exit 1
@@ -313,10 +306,15 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "15. Final verification"
+          echo "15. Final container check"
           echo "======================================"
 
           docker compose ps
+
+          echo ""
+          echo "======================================"
+          echo "16. Final deployment verification"
+          echo "======================================"
 
           curl -fsS \
             http://127.0.0.1:8000/api/health
@@ -330,7 +328,62 @@ jobs:
 
           REMOTE_SCRIPT
 
-          echo ""
-          echo "======================================"
-          echo "Remote deployment completed successfully."
-          echo "======================================"
+          sed -i "s/__DEPLOY_COMMIT__/${DEPLOY_COMMIT}/g" \
+            /tmp/aequm-remote-deploy.sh
+
+          chmod 700 /tmp/aequm-remote-deploy.sh
+
+      - name: Upload deployment script
+        env:
+          DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
+        run: |
+          set -Eeuo pipefail
+
+          printf '%s\n' "$DEPLOY_KEY" > /tmp/deploy_key
+          chmod 600 /tmp/deploy_key
+
+          echo "Testing SSH connection..."
+
+          ssh \
+            -i /tmp/deploy_key \
+            -p 3052 \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            root@103.17.193.174 \
+            "echo SSH_AUTH_OK"
+
+          echo "Uploading deployment script..."
+
+          scp \
+            -i /tmp/deploy_key \
+            -P 3052 \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            /tmp/aequm-remote-deploy.sh \
+            root@103.17.193.174:/tmp/aequm-remote-deploy.sh
+
+          echo "Deployment script uploaded."
+
+      - name: Execute deployment
+        env:
+          DEPLOY_KEY: ${{ secrets.AEQUM_BILLING_SSH_KEY }}
+        run: |
+          set -Eeuo pipefail
+
+          echo "Executing remote deployment..."
+
+          ssh \
+            -i /tmp/deploy_key \
+            -p 3052 \
+            -o StrictHostKeyChecking=no \
+            -o IdentitiesOnly=yes \
+            root@103.17.193.174 \
+            "bash /tmp/aequm-remote-deploy.sh"
+
+          echo "Remote deployment finished successfully."
+
+      - name: Cleanup runner secrets
+        if: always()
+        run: |
+          rm -f /tmp/deploy_key
+          rm -f /tmp/aequm-remote-deploy.sh
