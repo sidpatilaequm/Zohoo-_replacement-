@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Alert, Tag, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import TxnAttach, { LinkChips } from '../components/TxnAttach'
@@ -17,9 +17,29 @@ export default function BankStatements() {
   const [na, setNa] = useState({ label: '', number_hint: '' })
   const [open, setOpen] = useState(null)      // transaction whose attach form is showing
   const [show, setShow] = useState('ALL')     // ALL | OPEN (not fully attached)
+  const [uploads, setUploads] = useState([])
+  const [uploadsLoading, setUploadsLoading] = useState(false)
 
   const banks = (accounts.data || []).filter(a => a.kind === 'BANK')
   const aid = Number(acct) || banks[0]?.id
+  async function loadUploads() {
+      if (!aid) {
+    setUploads([])
+    return
+  }
+
+  setUploadsLoading(true)
+  try {
+    setUploads(await api.stmtUploads(aid))
+  } catch (x) {
+    showFlash(x.message, 'bad')
+  } finally {
+    setUploadsLoading(false)
+  }
+}
+useEffect(() => {
+  loadUploads()
+}, [aid])
   const txns = useLoad(() => aid ? api.stmtTxns(aid, period) : [], [aid, period])
   const ledger = useLoad(() => api.expenseLedger(period), [period])
 
@@ -41,11 +61,28 @@ export default function BankStatements() {
       showFlash(r.saved
         ? `${r.saved} transaction(s) saved${r.duplicates_skipped ? `, ${r.duplicates_skipped} already on record` : ''}.`
         : r.note || 'Nothing new in this file.')
-      setFile(null); txns.reload(); ledger.reload()
+      setFile(null)
+      loadUploads()
+      txns.reload()
+      ledger.reload()
     } catch (x) { showFlash(x.message, 'bad') }
     finally { setBusy(false) }
   }
+  async function removeUpload(u) {
+  if (!window.confirm(
+    `Delete "${u.filename}" from ${u.period}? This removes the transactions first saved by this upload.`
+  )) return
 
+  try {
+    await api.delStmtUpload(u.id)
+    showFlash('Statement upload deleted.')
+    loadUploads()
+    txns.reload()
+    ledger.reload()
+  } catch (x) {
+    showFlash(x.message, 'bad')
+  }
+}
   async function removeLink(l) {
     if (!window.confirm(`Remove ${l.ref} (${inr(l.amount)}) from this transaction?`)) return
     try { await api.delTxnLink(l.id); txns.reload(); ledger.reload() }
@@ -102,7 +139,39 @@ export default function BankStatements() {
             {busy ? 'Reading…' : 'Upload and save'}</button></Field>
         </div></form>
       </Panel>
-
+    <Panel title={`Statement upload history — ${aid ? (banks.find(a => a.id === aid)?.label || '') : ''}`}>
+  {uploadsLoading ? <Loading /> : uploads.length === 0 ? (
+    <div className="fine">No statement uploads recorded for this account.</div>
+  ) : (
+    <Table head={[
+      'Month',
+      'File',
+      { label: 'Transactions', align: 'r' },
+      'Uploaded',
+      ''
+    ]}>
+      {uploads.map(u => (
+        <tr key={u.id}>
+          <td>{u.period}</td>
+          <td>{u.filename}</td>
+          <td className="r">
+            {u.saved} saved / {u.found} found
+          </td>
+          <td>{u.uploaded_by || '—'}</td>
+          <td className="r">
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => removeUpload(u)}
+            >
+              Delete
+            </button>
+          </td>
+        </tr>
+      ))}
+    </Table>
+  )}
+</Panel>
       <Panel title={`Saved transactions — ${period}`}
         right={<>
           <span className="fine">Debits {money(deb)} · Credits {money(cred)}</span>

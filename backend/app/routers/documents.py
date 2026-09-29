@@ -1,9 +1,8 @@
-"""Documents kept against invoices (v4.4).
+"""Documents kept against invoices and statement transactions (v4.4).
 
 Any number of supporting files can be uploaded against a customer (sales)
-invoice or a vendor (purchase) invoice — the vendor's own PDF, a signed
-delivery challan, a proof of payment, correspondence — and listed, opened,
-downloaded and deleted from the invoice registers.
+invoice, a vendor (purchase) invoice, or a bank/card statement transaction.
+They can be listed, opened, downloaded and deleted.
 
 Access follows the invoice: sales documents need the Invoice or Saved
 Invoices screen, purchase documents need Vendor Invoices. A view-only group
@@ -23,9 +22,10 @@ from ..deps import Ctx, need_any
 router = APIRouter(tags=["documents"])
 
 MAX_BYTES = 10 * 1024 * 1024
-MAX_PER_INVOICE = 25
+MAX_PER_OWNER = 25
 SALES = ("invoice", "saved")
 PURCHASE = ("vinv",)
+STATEMENT = ("bankstmt", "cardstmt")
 
 # What may be uploaded, by extension. The stored content type comes from
 # this table, never from the browser, so a file is always served as what its
@@ -143,7 +143,7 @@ async def _save(
     if not ctype:
         raise HTTPException(
             422,
-            "That type of file cannot be kept against an invoice. "
+            "That type of file cannot be kept as a supporting document. "
             "Use PDF, an image (JPG, PNG, WebP, GIF, TIFF, HEIC), "
             "Word, Excel, CSV, text, an e-mail (.eml, .msg) or a ZIP.",
         )
@@ -171,10 +171,10 @@ async def _save(
         )
     ).scalar_one()
 
-    if n >= MAX_PER_INVOICE:
+    if n >= MAX_PER_OWNER:
         raise HTTPException(
             409,
-            f"An invoice can hold {MAX_PER_INVOICE} documents. "
+            f"This item can hold {MAX_PER_OWNER} documents. "
             "Delete one before adding another.",
         )
 
@@ -243,7 +243,43 @@ def vinv_documents(
 ):
     _vinv(ctx, vid)
     return _list(ctx, vinv_id=vid)
+# ------------------------------------------------ statement transactions
+def _stmt_txn(ctx, tid):
+    txn = ctx.get(M.StmtTxn, tid)
 
+    if not txn:
+        raise HTTPException(404, "No such statement transaction")
+
+    account = ctx.get(M.StmtAccount, txn.account_id)
+
+    if not account:
+        raise HTTPException(404, "No such statement account")
+
+    permission = "cardstmt" if account.kind == "CARD" else "bankstmt"
+
+    _require_any(ctx, (permission,))
+
+    return txn
+
+
+@router.get("/statements/txns/{tid}/documents")
+def stmt_txn_documents(
+    tid: int,
+    ctx: Ctx = Depends(need_any(*STATEMENT)),
+):
+    _stmt_txn(ctx, tid)
+    return _list(ctx, stmt_txn_id=tid)
+
+
+@router.post("/statements/txns/{tid}/documents", status_code=201)
+async def add_stmt_txn_document(
+    tid: int,
+    file: UploadFile = File(...),
+    notes: str | None = Form(None),
+    ctx: Ctx = Depends(need_any(*STATEMENT)),
+):
+    _stmt_txn(ctx, tid)
+    return await _save(ctx, file, notes, stmt_txn_id=tid)
 
 @router.post("/vendor-invoices/{vid}/documents", status_code=201)
 async def add_vinv_document(
@@ -263,10 +299,25 @@ def _doc(ctx, did) -> M.DocFile:
     if not d:
         raise HTTPException(404, "No such document")
 
-    _require_any(
-        ctx,
-        SALES if d.invoice_id else PURCHASE,
-    )
+    if d.invoice_id:
+        _require_any(ctx, SALES)
+    elif d.vinv_id:
+        _require_any(ctx, PURCHASE)
+    elif d.stmt_txn_id:
+        txn = ctx.get(M.StmtTxn, d.stmt_txn_id)
+
+        if not txn:
+            raise HTTPException(404, "No such statement transaction")
+
+        account = ctx.get(M.StmtAccount, txn.account_id)
+
+        if not account:
+            raise HTTPException(404, "No such statement account")
+
+        permission = "cardstmt" if account.kind == "CARD" else "bankstmt"
+        _require_any(ctx, (permission,))
+    else:
+        raise HTTPException(500, "Document has no valid owner")
 
     return d
 

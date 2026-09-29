@@ -18,6 +18,9 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
   const [amount, setAmount] = useState('')
   const [notes, setNotes] = useState('')
   const [busy, setBusy] = useState(false)
+  const [docFile, setDocFile] = useState(null)
+  const [docBusy, setDocBusy] = useState(false)
+
 
   const O = opts.data
   const list = !O ? [] : kind === 'CUST_INV' ? O.customer_invoices
@@ -43,16 +46,44 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
   async function attach(e) {
     e.preventDefault()
     if (!ref) return
+
     setBusy(true)
+
     try {
-      await api.addTxnLink(txn.id, { link_type: kind, ref_id: Number(ref),
+      await api.addTxnLink(txn.id, {
+        link_type: kind,
+        ref_id: Number(ref),
         amount: amount ? Number(amount) : null,
         purpose: kind === 'EMPLOYEE' ? purpose : null,
-        expense_id: kind === 'EMPLOYEE' && purpose === 'EXPENSE' ? Number(head) || null : null,
-        notes: notes || null })
-      setNotes(''); onDone && onDone()
-    } catch (x) { onError && onError(x.message) }
-    finally { setBusy(false) }
+        expense_id: kind === 'EMPLOYEE' && purpose === 'EXPENSE'
+          ? Number(head) || null
+          : null,
+        notes: notes || null
+      })
+
+      if (docFile) {
+        setDocBusy(true)
+
+        try {
+          await api.addStmtDocument(txn.id, docFile)
+        } catch (x) {
+          onError && onError(
+            `Attachment saved, but document upload failed: ${x.message}`
+          )
+        } finally {
+          setDocBusy(false)
+        }
+      }
+
+      setNotes('')
+      setDocFile(null)
+
+      onDone && onDone()
+    } catch (x) {
+      onError && onError(x.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   if (opts.loading) return <Loading />
@@ -105,13 +136,42 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
             <input className="mono" type="number" step="0.01" min="0.01" value={amount}
               onChange={e => setAmount(e.target.value)} /></Field>
           <Field label="Note" hint="Optional">
-            <input maxLength={200} value={notes} onChange={e => setNotes(e.target.value)} /></Field>
-          <Field label=" "><button className="btn btn-a" disabled={busy || !ref || !amount ||
-            (kind === 'EMPLOYEE' && purpose === 'EXPENSE' && !head)}>
-            {busy ? 'Attaching…' : 'Attach'}</button></Field>
-        </div>}
-    </form>)
-}
+              <input
+                maxLength={200}
+                value={notes}
+                onChange={e => setNotes(e.target.value)}
+              />
+            </Field>
+
+            <Field
+              label="Supporting document"
+              hint="Optional · max 10 MB"
+            >
+              <input
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.tif,.tiff,.heic,.doc,.docx,.xls,.xlsx,.csv,.txt,.eml,.msg,.zip"
+                onChange={e => setDocFile(e.target.files[0] || null)}
+              />
+            </Field>
+
+
+            <Field label=" ">
+              <button
+                className="btn btn-a"
+                disabled={
+                  busy ||
+                  docBusy ||
+                  !ref ||
+                  !amount ||
+                  (kind === 'EMPLOYEE' && purpose === 'EXPENSE' && !head)
+                }
+              >
+                {busy || docBusy ? 'Saving…' : 'Attach'}
+              </button>
+            </Field>
+                    </div>}
+                </form>)
+            }
 
 const TYPE_LABEL = { CUST_INV: 'Invoice', VEND_INV: 'Vendor bill', EMPLOYEE: 'Employee' }
 const PURPOSE_LABEL = { SALARY: 'salary', EXPENSE: 'expense' }

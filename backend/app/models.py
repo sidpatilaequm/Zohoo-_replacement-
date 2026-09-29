@@ -768,7 +768,7 @@ class StmtTxnLink(Base):
     linked_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
 # ------------------------------------------------ documents (v4.4)
 class DocFile(Base):
-    """A document attached to either a customer invoice or vendor invoice."""
+    """A document attached to a customer invoice, vendor invoice, or statement transaction."""
     __tablename__="doc_files"
 
     id: Mapped[int]=mapped_column(
@@ -785,6 +785,10 @@ class DocFile(Base):
     )
     vinv_id: Mapped[int|None]=mapped_column(
         ForeignKey("vendor_invoices.id",ondelete="CASCADE"),
+        nullable=True
+    )
+    stmt_txn_id: Mapped[int|None]=mapped_column(
+        ForeignKey("stmt_txns.id",ondelete="CASCADE"),
         nullable=True
     )
     filename: Mapped[str]=mapped_column(String(200))

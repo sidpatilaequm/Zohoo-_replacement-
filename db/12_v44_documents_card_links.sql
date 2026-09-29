@@ -1,13 +1,12 @@
 -- =====================================================================
--- Aequm Billing v4.4 — documents on invoices
+-- Aequm Billing v4.4 — supporting documents
 --
--- Run after the existing v4.2 migrations.
--- Additive and safe to run more than once: it only creates doc_files
--- if it is missing.
+-- Supports documents on:
+--   1. Customer invoices
+--   2. Vendor invoices
+--   3. Bank/card statement transactions
 --
--- Card spends attached to vendor invoices use the existing
--- stmt_txn_links table, and deleting a statement needs no schema change,
--- so this is the only table v4.4 adds.
+-- Additive and safe for fresh installations.
 -- =====================================================================
 
 USE aequm_billing;
@@ -15,8 +14,11 @@ USE aequm_billing;
 CREATE TABLE IF NOT EXISTS doc_files (
   id INT AUTO_INCREMENT PRIMARY KEY,
   tenant_id INT NOT NULL,
+
   invoice_id INT NULL,
   vinv_id INT NULL,
+  stmt_txn_id INT NULL,
+
   filename VARCHAR(200) NOT NULL,
   content_type VARCHAR(100) NOT NULL,
   size_bytes INT NOT NULL,
@@ -40,9 +42,19 @@ CREATE TABLE IF NOT EXISTS doc_files (
     REFERENCES vendor_invoices(id)
     ON DELETE CASCADE,
 
+  CONSTRAINT fk_docf_s
+    FOREIGN KEY (stmt_txn_id)
+    REFERENCES stmt_txns(id)
+    ON DELETE CASCADE,
+
   CONSTRAINT ck_docf_one
-    CHECK ((invoice_id IS NULL) <> (vinv_id IS NULL)),
+    CHECK (
+      (invoice_id IS NOT NULL) +
+      (vinv_id IS NOT NULL) +
+      (stmt_txn_id IS NOT NULL) = 1
+    ),
 
   KEY ix_docf_inv (tenant_id, invoice_id),
-  KEY ix_docf_vinv (tenant_id, vinv_id)
+  KEY ix_docf_vinv (tenant_id, vinv_id),
+  KEY ix_docf_stmt (tenant_id, stmt_txn_id)
 ) ENGINE=InnoDB;

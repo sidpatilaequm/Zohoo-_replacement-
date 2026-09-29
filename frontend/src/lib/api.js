@@ -198,9 +198,23 @@ export function makeApi(token, tenantId) {
     allocateAll: (id, period, b) =>
       call(`/statements/accounts/${id}/allocate-all?period=${encodeURIComponent(period)}`,
         { method: 'PUT', body: b }),
-    attachables: (txnId) => call(`/statements/txns/${txnId}/attachables`),
-    addTxnLink: (txnId, b) => call(`/statements/txns/${txnId}/links`, { method: 'POST', body: b }),
+      attachables: (txnId) => call(`/statements/txns/${txnId}/attachables`),
+      addTxnLink: (txnId, b) => call(`/statements/txns/${txnId}/links`, {
+        method: 'POST',
+        body: b
+      }),
     delTxnLink: (id) => call(`/statements/links/${id}`, { method: 'DELETE' }),
+
+    // Supporting documents for a bank/card statement transaction
+    stmtDocuments: (txnId) =>
+      call(`/statements/txns/${txnId}/documents`),
+
+    addStmtDocument: (txnId, file) =>
+      upload(`/statements/txns/${txnId}/documents`, file, {
+        token,
+        tenantId
+      }),
+
     stmtUploads: (id) => call(`/statements/accounts/${id}/uploads`),
     delStmtUpload: (id) => call(`/statements/uploads/${id}`, { method: 'DELETE' }),
     stmtTxns: (id, period) =>

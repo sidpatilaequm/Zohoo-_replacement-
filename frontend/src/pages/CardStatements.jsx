@@ -21,6 +21,10 @@ export default function CardStatements() {
   const [mark, setMark] = useState('UNALLOCATED')   // UNALLOCATED | COMPANY | PERSONAL
   const [markCat, setMarkCat] = useState('Other')
   const [bulkCat, setBulkCat] = useState('Other')
+  const [uploads, setUploads] = useState([])
+  const [uploadsLoading, setUploadsLoading] = useState(false)
+  const [docFiles, setDocFiles] = useState({})
+  const [docBusy, setDocBusy] = useState({})
   // Heads come from the Expense master; default to its first one.
   const firstCat = cats.data?.[0] || 'Other'
   useEffect(() => {
@@ -32,6 +36,27 @@ export default function CardStatements() {
   const cards = (accounts.data || []).filter(a => a.kind === 'CARD')
   const aid = Number(acct) || cards[0]?.id
   const card = cards.find(c => c.id === aid)
+
+  async function loadUploads() {
+  if (!aid) {
+    setUploads([])
+    return
+  }
+
+  setUploadsLoading(true)
+  try {
+    setUploads(await api.stmtUploads(aid))
+  } catch (x) {
+    showFlash(x.message, 'bad')
+  } finally {
+    setUploadsLoading(false)
+  }
+}
+
+useEffect(() => {
+  loadUploads()
+}, [aid])
+
   const txns = useLoad(() => aid ? api.stmtTxns(aid, period) : [], [aid, period])
   const recon = useLoad(() => api.stmtReconcile(period), [period])
 
@@ -61,11 +86,53 @@ export default function CardStatements() {
       showFlash(r.saved
         ? `${r.saved} transaction(s) saved${r.duplicates_skipped ? `, ${r.duplicates_skipped} already on record` : ''}.${cycle}${skipped} ${how}`
         : (r.note || 'Nothing new in this file.') + cycle)
-      setFile(null); txns.reload(); recon.reload()
+      setFile(null)
+      loadUploads()
+      txns.reload()
+      recon.reload()
     } catch (x) { showFlash(x.message, 'bad') }
     finally { setBusy(false) }
   }
+    async function loadTxnDocuments(txnId) {
+    try {
+      const docs = await api.stmtDocuments(txnId)
+      setDocFiles(s => ({ ...s, [txnId]: docs }))
+    } catch (x) {
+      showFlash(x.message, 'bad')
+    }
+  }
 
+  async function uploadTxnDocument(txnId, file) {
+    if (!file) return
+
+    setDocBusy(s => ({ ...s, [txnId]: true }))
+
+    try {
+      await api.addStmtDocument(txnId, file)
+      await loadTxnDocuments(txnId)
+      showFlash('Supporting document uploaded.')
+    } catch (x) {
+      showFlash(x.message, 'bad')
+    } finally {
+      setDocBusy(s => ({ ...s, [txnId]: false }))
+    }
+  }
+
+async function uploadTxnDocument(txnId, file) {
+  if (!file) return
+
+  setDocBusy(s => ({ ...s, [txnId]: true }))
+
+  try {
+    await api.addStmtDocument(txnId, file)
+    await loadTxnDocuments(txnId)
+    showFlash('Supporting document uploaded.')
+  } catch (x) {
+    showFlash(x.message, 'bad')
+  } finally {
+    setDocBusy(s => ({ ...s, [txnId]: false }))
+  }
+}
   async function setAlloc(t, allocation, category) {
     try {
       await api.allocateTxn(t.id, { allocation,
@@ -169,9 +236,11 @@ export default function CardStatements() {
             <option value="UNALLOCATED">Only unallocated spends</option>
           </select></label></>}>
         {txns.loading ? <Loading /> : txns.error ? <ErrorBox>{txns.error}</ErrorBox> :
-          <Table head={['Date', 'Description', { label: 'Amount', align: 'r' }, 'Status',
-            'Allocate to', 'Expense head']}
-            empty="No transactions saved for this card and month yet.">
+          <Table
+            head={['Date', 'Description', { label: 'Amount', align: 'r' }, 'Status',
+              'Allocate to', 'Expense head', 'Supporting document']}
+            empty="No transactions saved for this card and month yet."
+          >
             {rows.map(t => {
               const isPayment = t.debit === 0
               return <tr key={t.id}>
@@ -191,6 +260,46 @@ export default function CardStatements() {
                     onChange={e => setAlloc(t, 'COMPANY', e.target.value)}>
                     {(cats.data || ['Other']).map(c => <option key={c}>{c}</option>)}
                   </select>}</td>
+                  <td>
+
+                    {!isPayment && (
+                      <div style={{ minWidth: 190 }}>
+                        {(docFiles[t.id] || []).map(d => (
+                          <div key={d.id} style={{ marginBottom: 5 }}>
+                            <a
+                              href={api.openDocument(d.id)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {d.filename}
+                            </a>
+                          </div>
+                        ))}
+
+                        <input
+                          type="file"
+                          accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.tif,.tiff,.heic,.doc,.docx,.xls,.xlsx,.csv,.txt,.eml,.msg,.zip"
+                          disabled={docBusy[t.id]}
+                          onChange={e => {
+                            const f = e.target.files[0]
+                            e.target.value = ''
+                            uploadTxnDocument(t.id, f)
+                          }}
+                        />
+
+                        {!docFiles[t.id] && (
+                          <button
+                            type="button"
+                            className="btn btn-sm"
+                            style={{ marginTop: 5 }}
+                            onClick={() => loadTxnDocuments(t.id)}
+                          >
+                            Load documents
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </td>
               </tr>})}
           </Table>}
       </Panel>
