@@ -425,6 +425,31 @@ class SmtpIn(BaseModel):
         return self
 
 
+class ForgotPasswordIn(BaseModel):
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, v):
+        import re
+        v = v.strip().lower()
+        if not re.match(EMAIL, v):
+            raise ValueError("Enter a valid email address")
+        return v
+
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    password: str
+
+    @field_validator("password")
+    @classmethod
+    def _password(cls, v):
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+
 class GroupIn(BaseModel):
     name: str
     perms: list[str]

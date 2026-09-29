@@ -218,6 +218,17 @@ export const signIn = (email, password) =>
   req('/auth/signin', { method: 'POST', body: { email, password } })
 export const signUp = (body) => req('/auth/signup', { method: 'POST', body })
 export const openTenants = () => req('/auth/tenants')
+export const forgotPassword = (email) =>
+  req('/auth/forgot-password', {
+    method: 'POST',
+    body: { email }
+  })
+
+export const resetPassword = (token, password) =>
+  req('/auth/reset-password', {
+    method: 'POST',
+    body: { token, password }
+  })
 
 /** Fetch a binary (PDF) with the auth headers and hand it to the browser:
  *  inline=true opens it in a new tab, otherwise it is downloaded with the

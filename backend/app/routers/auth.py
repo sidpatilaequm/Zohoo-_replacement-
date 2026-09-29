@@ -1,6 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from datetime import datetime, timedelta, timezone
+import hashlib
+import secrets
+import smtplib
+from email.message import EmailMessage
+
 from .. import models as M, schemas as S
 from ..db import get_db
 from ..deps import Ctx, current, seats_used
@@ -56,6 +62,83 @@ def seed_groups(db: Session, tenant_id: int) -> dict[str, M.Group]:
         made[name] = g
     return made
 
+RESET_TOKEN_MINUTES = 30
+
+
+def _hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _send_reset_email(user: M.User, tenant: M.Tenant, token: str) -> None:
+    if not tenant.smtp_host or not tenant.smtp_port or not tenant.smtp_from_email:
+        raise RuntimeError("SMTP is not configured for this organisation")
+
+    reset_url = (
+        "https://billing.nexdaequmsupport.com/"
+        f"reset-password?token={token}"
+    )
+
+    msg = EmailMessage()
+    msg["Subject"] = "Reset your Aequm Billing password"
+    msg["From"] = (
+        f"{tenant.smtp_from_name} <{tenant.smtp_from_email}>"
+        if tenant.smtp_from_name
+        else tenant.smtp_from_email
+    )
+    msg["To"] = user.email
+
+    if tenant.smtp_reply_to:
+        msg["Reply-To"] = tenant.smtp_reply_to
+
+    if tenant.smtp_bcc:
+        msg["Bcc"] = tenant.smtp_bcc
+
+    msg.set_content(
+        f"""Hello {user.name},
+
+We received a request to reset your Aequm Billing password.
+
+Use the link below to choose a new password:
+
+{reset_url}
+
+This link expires in {RESET_TOKEN_MINUTES} minutes and can only be used once.
+
+If you did not request a password reset, you can safely ignore this email.
+
+Regards,
+Aequm Billing
+"""
+    )
+
+    encryption = tenant.smtp_encryption or "STARTTLS"
+
+    if encryption == "SSL":
+        smtp = smtplib.SMTP_SSL(
+            tenant.smtp_host,
+            tenant.smtp_port,
+            timeout=20,
+        )
+    else:
+        smtp = smtplib.SMTP(
+            tenant.smtp_host,
+            tenant.smtp_port,
+            timeout=20,
+        )
+
+    try:
+        if encryption == "STARTTLS":
+            smtp.starttls()
+
+        if tenant.smtp_username:
+            smtp.login(
+                tenant.smtp_username,
+                tenant.smtp_password or "",
+            )
+
+        smtp.send_message(msg)
+    finally:
+        smtp.quit()
 
 @router.get("/tenants")
 def open_tenants(db: Session = Depends(get_db)):
@@ -120,6 +203,100 @@ def signin(body: S.SignIn, db: Session = Depends(get_db)):
                          "perms": sorted(p.perm for p in r.group.perms)} for r in roles],
             "tenant_id": first.tenant_id}
 
+@router.post("/forgot-password")
+def forgot_password(body: S.ForgotPasswordIn, db: Session = Depends(get_db)):
+    """
+    Always return the same response so the endpoint does not reveal
+    whether an email address belongs to an account.
+    """
+    generic = {
+        "message": "If an account exists for that email, a password reset link has been sent."
+    }
+
+    user = db.execute(
+        select(M.User).where(M.User.email == body.email.lower())
+    ).scalar_one_or_none()
+
+    if not user or user.status != "ACTIVE":
+        return generic
+
+    # Prefer an active organisation with working SMTP configuration.
+    tenant = None
+    for role in user.roles:
+        t = role.tenant
+        if (
+            t.smtp_host
+            and t.smtp_port
+            and t.smtp_from_email
+        ):
+            tenant = t
+            break
+
+    if tenant is None:
+        return generic
+
+    # Invalidate outstanding tokens for this user.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    for old in db.execute(
+        select(M.PasswordResetToken).where(
+            M.PasswordResetToken.user_id == user.id,
+            M.PasswordResetToken.used_at.is_(None),
+        )
+    ).scalars():
+        old.used_at = now
+
+    raw_token = secrets.token_urlsafe(48)
+
+    reset = M.PasswordResetToken(
+        user_id=user.id,
+        token_hash=_hash_reset_token(raw_token),
+        expires_at=now + timedelta(minutes=RESET_TOKEN_MINUTES),
+    )
+
+    db.add(reset)
+    db.commit()
+
+    try:
+        _send_reset_email(user, tenant, raw_token)
+    except Exception:
+        # Do not expose SMTP details to the caller.
+        db.delete(reset)
+        db.commit()
+        return generic
+
+    return generic
+
+
+@router.post("/reset-password")
+def reset_password(body: S.ResetPasswordIn, db: Session = Depends(get_db)):
+    token_hash = _hash_reset_token(body.token)
+
+    reset = db.execute(
+        select(M.PasswordResetToken).where(
+            M.PasswordResetToken.token_hash == token_hash
+        )
+    ).scalar_one_or_none()
+
+    if not reset:
+        raise HTTPException(400, "This password reset link is invalid or has expired")
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    if reset.used_at is not None or reset.expires_at <= now:
+        raise HTTPException(400, "This password reset link is invalid or has expired")
+
+    user = db.get(M.User, reset.user_id)
+
+    if not user or user.status != "ACTIVE":
+        raise HTTPException(400, "This password reset link is invalid or has expired")
+
+    user.pwd_hash = hash_password(body.password)
+    reset.used_at = now
+
+    db.commit()
+
+    return {"message": "Your password has been reset. You can now sign in."}
 
 @router.get("/me")
 def me(ctx: Ctx = Depends(current)):

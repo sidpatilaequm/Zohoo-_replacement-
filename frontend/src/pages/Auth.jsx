@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
-import { signUp, openTenants } from '../lib/api'
+import { signUp, openTenants, forgotPassword, resetPassword } from '../lib/api'
 import { Field, Alert } from '../components/ui'
 
 const INDIAN_STATES = [
@@ -46,14 +47,14 @@ const INDIAN_STATES = [
 
 export default function Auth() {
   const { login, adopt } = useAuth()
-  const [tab, setTab] = useState('in')
+  const [searchParams] = useSearchParams()
+  const resetToken = searchParams.get('token')
+
+  const [tab, setTab] = useState(resetToken ? 'reset' : 'in')
   const [err, setErr] = useState(null)
   const [ok, setOk] = useState(null)
   const [busy, setBusy] = useState(false)
   const [tenants, setTenants] = useState([])
-  const [f, setF] = useState({ email: '', password: '', name: '', password2: '',
-    mode: 'new', org_name: '', org_gstin: '', org_state: '', join_tenant_id: '' })
-  const set = (k, v) => setF(s => ({ ...s, [k]: v }))
 
   useEffect(() => { openTenants().then(setTenants).catch(() => {}) }, [])
 
@@ -74,18 +75,76 @@ export default function Auth() {
       else { setOk(d.message); setTab('in') }
     } catch (x) { setErr(x.message) } finally { setBusy(false) }
   }
+    async function doForgot(e) {
+    e.preventDefault()
+    setErr(null)
+    setOk(null)
+    setBusy(true)
 
+    try {
+      const d = await forgotPassword(f.email)
+      setOk(d.message)
+    } catch (x) {
+      setErr(x.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function doReset(e) {
+    e.preventDefault()
+    setErr(null)
+    setOk(null)
+
+    if (!resetToken) {
+      return setErr('This password reset link is invalid.')
+    }
+
+    if (f.password !== f.password2) {
+      return setErr('The two passwords do not match')
+    }
+
+    setBusy(true)
+
+    try {
+      const d = await resetPassword(resetToken, f.password)
+      setOk(d.message)
+      set('password', '')
+      set('password2', '')
+      setTab('in')
+      window.history.replaceState({}, '', '/')
+    } catch (x) {
+      setErr(x.message)
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <div className="center"><div className="authcard">
       <h2>Billing</h2>
       <p className="fine" style={{ margin: 0 }}>
-        {tab === 'in' ? 'Sign in to continue' : 'Set up an organisation, or ask to join one'}</p>
-      <div className="tabs2">
-        <button className={tab === 'in' ? 'on' : ''} onClick={() => { setTab('in'); setErr(null) }}>
-          Sign in</button>
-        <button className={tab === 'up' ? 'on' : ''} onClick={() => { setTab('up'); setErr(null) }}>
-          Create an account</button>
-      </div>
+        {tab === 'in' && 'Sign in to continue'}
+        {tab === 'up' && 'Set up an organisation, or ask to join one'}
+        {tab === 'forgot' && 'Recover access to your account'}
+        {tab === 'reset' && 'Choose a new password'}
+      </p>
+      {(tab === 'in' || tab === 'up') && (
+  <div className="tabs2">
+    <button
+      className={tab === 'in' ? 'on' : ''}
+      onClick={() => { setTab('in'); setErr(null); setOk(null) }}
+    >
+      Sign in
+    </button>
+
+    <button
+      className={tab === 'up' ? 'on' : ''}
+      onClick={() => { setTab('up'); setErr(null); setOk(null) }}
+    >
+      Create an account
+    </button>
+  </div>
+)}
 
       {tab === 'in' ? (
         <form onSubmit={doSignIn}>
@@ -93,12 +152,27 @@ export default function Auth() {
             <input value={f.email} onChange={e => set('email', e.target.value)}
               autoComplete="username" placeholder="name@company.com" /></Field>
           <div style={{ marginTop: 11 }}><Field label="Password">
-            <input type="password" value={f.password} autoComplete="current-password"
-              onChange={e => set('password', e.target.value)} /></Field></div>
-          <div className="ft"><button className="btn btn-a" style={{ width: '100%' }}
-            disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button></div>
+  <input type="password" value={f.password} autoComplete="current-password"
+    onChange={e => set('password', e.target.value)} /></Field></div>
+
+<div style={{ textAlign: 'right', marginTop: 8 }}>
+  <button
+    type="button"
+    className="link"
+    onClick={() => {
+      setTab('forgot')
+      setErr(null)
+      setOk(null)
+    }}
+  >
+    Forgot password?
+  </button>
+</div>
+
+<div className="ft"><button className="btn btn-a" style={{ width: '100%' }}
+  disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button></div>
         </form>
-      ) : (
+      ) : tab === 'up' ? (
         <form onSubmit={doSignUp}>
           <div className="row c2">
             <Field label="Full name">
@@ -174,7 +248,78 @@ export default function Auth() {
           <div className="ft"><button className="btn btn-a" style={{ width: '100%' }}
             disabled={busy}>{busy ? 'Working…' : 'Create account'}</button></div>
         </form>
-      )}
+      ) : tab === 'forgot' ? (
+  <form onSubmit={doForgot}>
+    <Field label="Email">
+      <input
+        type="email"
+        value={f.email}
+        onChange={e => set('email', e.target.value)}
+        autoComplete="email"
+        placeholder="name@company.com"
+        required
+      />
+    </Field>
+
+    <div className="ft">
+      <button
+        className="btn btn-a"
+        style={{ width: '100%' }}
+        disabled={busy}
+      >
+        {busy ? 'Sending…' : 'Send reset link'}
+      </button>
+    </div>
+
+    <div style={{ textAlign: 'center', marginTop: 12 }}>
+      <button
+        type="button"
+        className="link"
+        onClick={() => {
+          setTab('in')
+          setErr(null)
+          setOk(null)
+        }}
+      >
+        Back to sign in
+      </button>
+    </div>
+  </form>
+) : (
+  <form onSubmit={doReset}>
+    <Field label="New password" hint="At least 8 characters">
+      <input
+        type="password"
+        value={f.password}
+        autoComplete="new-password"
+        onChange={e => set('password', e.target.value)}
+        required
+      />
+    </Field>
+
+    <div style={{ marginTop: 11 }}>
+      <Field label="Confirm password">
+        <input
+          type="password"
+          value={f.password2}
+          autoComplete="new-password"
+          onChange={e => set('password2', e.target.value)}
+          required
+        />
+      </Field>
+    </div>
+
+    <div className="ft">
+      <button
+        className="btn btn-a"
+        style={{ width: '100%' }}
+        disabled={busy}
+      >
+        {busy ? 'Resetting…' : 'Reset password'}
+      </button>
+    </div>
+  </form>
+)}
 
       {err && <Alert kind="bad">{err}</Alert>}
       {ok && <Alert kind="ok">{ok}</Alert>}
