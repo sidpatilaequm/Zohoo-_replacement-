@@ -52,20 +52,24 @@ export default function Auth() {
 
   const [tab, setTab] = useState(resetToken ? 'reset' : 'in')
   const [err, setErr] = useState(null)
-  const [ok, setOk] = useState(null)
+    const [ok, setOk] = useState(null)
   const [busy, setBusy] = useState(false)
   const [tenants, setTenants] = useState([])
+
   const [f, setF] = useState({
-  email: '',
-  password: '',
-  name: '',
-  password2: '',
-  mode: 'new',
-  org_name: '',
-  org_gstin: '',
-  org_state: '',
-  join_tenant_id: ''
-})
+    email: '',
+    password: '',
+    name: '',
+    password2: '',
+    mode: 'new',
+    org_name: '',
+    org_gstin: '',
+    org_state: '',
+    join_tenant_id: ''
+  })
+
+  const set = (k, v) => setF(s => ({ ...s, [k]: v }))
+
   useEffect(() => { openTenants().then(setTenants).catch(() => {}) }, [])
 
   async function doSignIn(e) {  
