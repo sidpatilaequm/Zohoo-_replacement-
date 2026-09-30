@@ -86,7 +86,7 @@ def verify_flow(value: str) -> dict:
         raise RuntimeError(
             "Microsoft sign-in state is invalid or expired"
         ) from exc
-SCOPES = ["openid", "profile", "email"]
+SCOPES = ["User.Read"]
 
 
 def configured() -> bool:
