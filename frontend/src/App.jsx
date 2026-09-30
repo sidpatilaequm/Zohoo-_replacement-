@@ -47,6 +47,16 @@ const PAGES = {
 
 export default function App() {
   const { session, me, loading, can } = useAuth()
+
+  // Microsoft Entra redirects to the registered /callback URI.
+  // Forward the OAuth response to the existing backend callback handler.
+  if (window.location.pathname === '/callback') {
+    window.location.replace(
+      `/api/auth/microsoft/callback${window.location.search}`
+    )
+    return null
+  }
+
   if (!session) return <Auth />
   if (loading || !me) return <div className="center"><Loading /></div>
 

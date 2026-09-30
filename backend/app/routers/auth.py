@@ -115,7 +115,7 @@ def microsoft_login():
         httponly=True,
         secure=microsoft_auth.REDIRECT_URI.startswith("https://"),
         samesite="lax",
-        path="/api/auth/microsoft",
+        path="/",
     )
 
     return response
@@ -216,7 +216,7 @@ def microsoft_callback(
 
     response.delete_cookie(
         key="aequm_ms_flow",
-        path="/api/auth/microsoft",
+        path="/",
     )
 
     return response
