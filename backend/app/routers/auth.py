@@ -13,12 +13,60 @@ import json
 import hmac
 from .. import microsoft_auth
 from email.message import EmailMessage
-from app import microsoft_auth
 
 from .. import models as M, schemas as S
 from ..db import get_db
 from ..deps import Ctx, current, seats_used
 from ..security import hash_password, verify_password, make_token
+DEFAULT_GROUPS = {
+    "Administrator": M.PERMS,
+    "Accounts": ["invoice","saved","po","vinv","so","del","grn","disc","phys","stock",
+                 "crec","vpay","reports","registers","gstr","customers","vendors",
+                 "materials","attrs","hsn","data"],
+    "Sales": ["invoice","saved","so","del","customers","materials","stock","reports"],
+    # The auditor sees everything and changes nothing. Every permission here is
+    # a read-only screen; none of them can raise, alter or post a document.
+    "Auditor": ["saved","po","vinv","stock","crec","vpay","reports","registers",
+                "gstr","audit","customers","vendors","materials","hsn"],
+    "Read only": ["saved","stock","reports","registers","gstr"],
+}
+
+
+DESIGNATIONS = ["Proprietor","Director","Partner","Chief Executive Officer",
+    "Chief Financial Officer","General Manager","Accounts Manager","Accounts Executive",
+    "Purchase Manager","Sales Manager","Store Keeper","Logistics Coordinator",
+    "Quality Manager","Other"]
+BANKS = [("State Bank of India","SBI"),("HDFC Bank","HDFC"),("ICICI Bank","ICICI"),
+    ("Axis Bank","AXIS"),("Kotak Mahindra Bank","KOTAK"),("Punjab National Bank","PNB"),
+    ("Bank of Baroda","BOB"),("Canara Bank","CANARA"),("Union Bank of India","UBI"),
+    ("IndusInd Bank","INDUS"),("IDFC First Bank","IDFC"),("Yes Bank","YES"),
+    ("Bank of India","BOI"),("Indian Bank","INDIAN"),("Central Bank of India","CBI"),
+    ("Federal Bank","FED"),("South Indian Bank","SIB"),("Karnataka Bank","KARB"),
+    ("RBL Bank","RBL"),("Bandhan Bank","BANDHAN"),("Other","OTHER")]
+
+
+def seed_reference(db: Session) -> None:
+    """Designations and banks are shared, so they are seeded once."""
+    if not db.execute(select(M.Designation)).first():
+        db.add_all([M.Designation(name=n) for n in DESIGNATIONS])
+    if not db.execute(select(M.Bank)).first():
+        db.add_all([M.Bank(name=n, short_code=c) for n, c in BANKS])
+    db.flush()
+
+
+def seed_groups(db: Session, tenant_id: int) -> dict[str, M.Group]:
+    made = {}
+    for name, perms in DEFAULT_GROUPS.items():
+        g = M.Group(tenant_id=tenant_id, name=name,
+                    read_only=name in ("Auditor", "Read only"))
+        db.add(g)
+        db.flush()
+        for p in perms:
+            db.add(M.GroupPerm(group_id=g.id, perm=p))
+        made[name] = g
+    return made
+
+
 MICROSOFT_FLOW_COOKIE = "aequm.microsoft.flow"
 
 HANDOFF_MINUTES = 2
@@ -168,10 +216,27 @@ def microsoft_callback(
         claims.get("oid") or ""
     ).strip()
 
+    microsoft_email = str(
+        claims.get("preferred_username")
+        or claims.get("email")
+        or ""
+    ).strip().lower()
+
     if not entra_tenant_id or not entra_object_id:
         raise HTTPException(
             400,
             "Microsoft account identity information is missing.",
+        )
+
+    configured_tenant = microsoft_auth.TENANT_ID.strip()
+
+    if (
+        not configured_tenant
+        or entra_tenant_id != configured_tenant
+    ):
+        raise HTTPException(
+            403,
+            "This Microsoft account belongs to an unauthorized tenant.",
         )
 
     user = db.execute(
@@ -182,10 +247,34 @@ def microsoft_callback(
     ).scalar_one_or_none()
 
     if not user:
-        raise HTTPException(
-            403,
-            "This Microsoft account is not linked to an Aequm account.",
-        )
+        if not microsoft_email:
+            raise HTTPException(
+                403,
+                "Microsoft account email information is missing.",
+            )
+
+        user = db.execute(
+            select(M.User).where(
+                M.User.email == microsoft_email,
+            )
+        ).scalar_one_or_none()
+
+        if not user:
+            raise HTTPException(
+                403,
+                "This Microsoft account is not linked to an Aequm account.",
+            )
+
+        if user.status != "ACTIVE":
+            raise HTTPException(
+                403,
+                "That Aequm account is not active.",
+            )
+
+        user.entra_tenant_id = entra_tenant_id
+        user.entra_object_id = entra_object_id
+        db.commit()
+        db.refresh(user)
 
     if user.status != "ACTIVE":
         raise HTTPException(

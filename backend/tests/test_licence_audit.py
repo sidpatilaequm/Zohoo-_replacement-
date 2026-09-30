@@ -1,4 +1,4 @@
-"""Two licensed seats per company set, and what the auditor can do with one."""
+"""Five licensed seats per company set, and what the auditor can do with one."""
 
 
 def seats(c):
@@ -17,24 +17,36 @@ def signin(c, email):
 
 
 # --------------------------------------------------------- the licence
-def test_a_new_organisation_starts_with_one_seat_of_two(org):
+def test_a_new_organisation_starts_with_one_seat_of_five(org):
     c = org()
     s = seats(c)
-    assert s["limit"] == 2 and s["used"] == 1 and s["free"] == 1
+    assert s["limit"] == 5 and s["used"] == 1 and s["free"] == 4
 
 
 def test_the_second_seat_can_be_filled(org):
     c = org()
     assert make_user(c, "auditor@x.co", "Auditor").status_code == 201
-    assert seats(c)["used"] == 2 and seats(c)["free"] == 0
+    assert seats(c)["used"] == 2 and seats(c)["free"] == 3
 
 
-def test_the_third_user_is_refused(org):
+def test_the_sixth_user_is_refused(org):
     c = org()
-    make_user(c, "auditor@x.co", "Auditor")
-    r = make_user(c, "third@x.co", "Accounts")
+
+    for i in range(4):
+        assert make_user(
+            c,
+            f"user{i}@x.co",
+            "Accounts",
+        ).status_code == 201
+
+    assert seats(c)["used"] == 5
+    assert seats(c)["free"] == 0
+
+    r = make_user(c, "sixth@x.co", "Accounts")
+
     assert r.status_code == 409
-    assert "licensed for 2" in r.text and "2 are already assigned" in r.text
+    assert "licensed for 5" in r.text
+    assert "5 are already assigned" in r.text
 
 
 def test_the_auditor_occupies_a_seat_like_anyone_else(org):
@@ -42,18 +54,33 @@ def test_the_auditor_occupies_a_seat_like_anyone_else(org):
     c = org()
     make_user(c, "auditor@x.co", "Auditor")
     assert seats(c)["used"] == 2
-    assert "auditor counts as one" in seats(c)["note"]
+    assert seats(c)["free"] == 3
+    assert seats(c)["used"] == 2
+    assert seats(c)["free"] == 3
 
 
 def test_freeing_a_seat_lets_another_in(org):
     c = org()
-    make_user(c, "auditor@x.co", "Auditor")
-    assert make_user(c, "third@x.co", "Accounts").status_code == 409
+
+    for i in range(4):
+        assert make_user(
+            c,
+            f"user{i}@x.co",
+            "Accounts",
+        ).status_code == 201
+
+    assert seats(c)["used"] == 5
+
     uid = [u for u in c.get("/api/users").json()
-           if u["email"] == "auditor@x.co"][0]["id"]
-    c.put(f"/api/users/{uid}/role", json={"user_id": uid, "group_id": None})
-    assert seats(c)["used"] == 1
-    assert make_user(c, "third@x.co", "Accounts").status_code == 201
+           if u["email"] == "user0@x.co"][0]["id"]
+
+    c.put(
+        f"/api/users/{uid}/role",
+        json={"user_id": uid, "group_id": None},
+    )
+
+    assert seats(c)["used"] == 4
+    assert make_user(c, "fifth@x.co", "Accounts").status_code == 201
 
 
 def test_changing_someones_group_does_not_take_a_new_seat(org):
@@ -65,11 +92,17 @@ def test_changing_someones_group_does_not_take_a_new_seat(org):
     assert c.put(f"/api/users/{uid}/role",
                  json={"user_id": uid, "group_id": acc}).status_code == 200
     assert seats(c)["used"] == 2
+    assert seats(c)["free"] == 3
 
 
 def test_approving_a_join_request_needs_a_free_seat(api, org):
     c = org(name="Aequm", email="admin@aequm.in")
-    make_user(c, "auditor@x.co", "Auditor")           # both seats now taken
+    for i in range(4):
+        assert make_user(
+            c,
+            f"user{i}@x.co",
+            "Accounts",
+        ).status_code == 201
     tid = c.tid
     api.post("/api/auth/signup", json={"name": "New", "email": "new@aequm.in",
         "password": "correct horse", "mode": "join", "join_tenant_id": tid})
@@ -77,7 +110,7 @@ def test_approving_a_join_request_needs_a_free_seat(api, org):
     gid = [g for g in c.get("/api/groups").json() if g["name"] == "Sales"][0]["id"]
     r = c.put(f"/api/users/{pend['id']}/role",
               json={"user_id": pend["id"], "group_id": gid})
-    assert r.status_code == 409 and "licensed for 2" in r.text
+    assert r.status_code == 409 and "licensed for 5" in r.text
 
 
 # ---------------------------------------------------------- the auditor
