@@ -224,7 +224,33 @@ export default function Auth() {
 
 <div className="ft"><button className="btn btn-a" style={{ width: '100%' }}
   disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button></div>
+  <div
+  style={{
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    margin: '18px 0',
+  }}
+>
+  <div style={{ flex: 1, height: 1, background: '#ddd' }} />
+  <span className="fine">OR</span>
+  <div style={{ flex: 1, height: 1, background: '#ddd' }} />
+</div>
+
+<button
+  type="button"
+  className="btn"
+  style={{ width: '100%' }}
+  disabled={busy}
+  onClick={() => {
+    window.location.href = '/api/auth/microsoft/login'
+  }}
+>
+  Continue with Microsoft
+</button>
+
         </form>
+
       ) : tab === 'up' ? (
         <form onSubmit={doSignUp}>
           <div className="row c2">
@@ -323,30 +349,6 @@ export default function Auth() {
         {busy ? 'Sending…' : 'Send reset link'}
       </button>
     </div>
-      <div
-  style={{
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    margin: '18px 0',
-  }}
->
-  <div style={{ flex: 1, height: 1, background: '#ddd' }} />
-  <span className="fine">OR</span>
-  <div style={{ flex: 1, height: 1, background: '#ddd' }} />
-</div>
-
-<button
-  type="button"
-  className="btn"
-  style={{ width: '100%' }}
-  disabled={busy}
-  onClick={() => {
-    window.location.href = '/api/auth/microsoft/login'
-  }}
->
-  Continue with Microsoft
-</button>
     <div style={{ textAlign: 'center', marginTop: 12 }}>
       <button
         type="button"
