@@ -207,6 +207,16 @@ def microsoft_callback(
         )
 
     claims = result.get("id_token_claims") or {}
+    print(
+    "MICROSOFT IDENTITY:",
+    {
+        "tid": claims.get("tid"),
+        "oid": claims.get("oid"),
+        "preferred_username": claims.get("preferred_username"),
+        "email": claims.get("email"),
+    },
+    flush=True,
+)
 
     entra_tenant_id = str(
         claims.get("tid") or ""
