@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy Billing v4.3
+    name: Deploy Billing
     runs-on: ubuntu-latest
 
     steps:
@@ -49,7 +49,7 @@ jobs:
           trap cleanup EXIT
 
           echo "======================================"
-          echo "Aequm Billing v4.3 deployment"
+          echo "Aequm Billing deployment"
           echo "Commit: $DEPLOY_COMMIT"
           echo "======================================"
 
@@ -123,22 +123,15 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "5. Verifying v4.3 files"
+          echo "5. Verifying release files"
           echo "======================================"
 
-          test -f "$RELEASE_DIR/db/11_v43_expense_heads.sql"
-          test -f "$RELEASE_DIR/frontend/src/pages/Expenses.jsx"
+          test -d "$RELEASE_DIR/backend"
+          test -d "$RELEASE_DIR/frontend"
+          test -f "$RELEASE_DIR/backend/app/main.py"
+          test -f "$RELEASE_DIR/frontend/src/App.jsx"
 
-          grep -q "Expenses" \
-            "$RELEASE_DIR/frontend/src/App.jsx"
-
-          grep -q "Employees" \
-            "$RELEASE_DIR/frontend/src/App.jsx"
-
-          grep -q "CardStatements" \
-            "$RELEASE_DIR/frontend/src/App.jsx"
-
-          echo "v4.3 files verified."
+          echo "Release files verified."
 
           echo ""
           echo "======================================"
@@ -172,87 +165,21 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "8. Updating v4.3 migration"
-          echo "======================================"
-
-          mkdir -p "$APP_DIR/db"
-
-          cp \
-            "$RELEASE_DIR/db/11_v43_expense_heads.sql" \
-            "$APP_DIR/db/11_v43_expense_heads.sql"
-
-          echo "v4.3 migration copied."
-
-          echo ""
-          echo "======================================"
-          echo "9. Applying v4.3 database migration"
-          echo "======================================"
-
-          docker compose exec -T db \
-            sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" aequm_billing' \
-            < "$APP_DIR/db/11_v43_expense_heads.sql"
-
-          echo "v4.3 migration completed."
-
-          echo ""
-          echo "======================================"
-          echo "10. Verifying v4.3 database"
-          echo "======================================"
-
-          EXPENSE_HEADS_TABLE="$(
-            docker compose exec -T db \
-              sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -s aequm_billing -e "
-                SELECT COUNT(*)
-                FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_SCHEMA = '\''aequm_billing'\''
-                  AND TABLE_NAME = '\''expense_heads'\'';
-              "' \
-              </dev/null
-          )"
-
-          echo "expense_heads table = $EXPENSE_HEADS_TABLE"
-
-          if [ "$EXPENSE_HEADS_TABLE" != "1" ]; then
-            echo "ERROR: expense_heads table was not created."
-            exit 1
-          fi
-
-          EXPENSE_PERMISSION="$(
-            docker compose exec -T db \
-              sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -s aequm_billing -e "
-                SELECT COUNT(*)
-                FROM group_perms
-                WHERE perm = '\''expenses'\'';
-              "' \
-              </dev/null
-          )"
-
-          echo "expenses permission rows = $EXPENSE_PERMISSION"
-
-          if [ "$EXPENSE_PERMISSION" = "0" ]; then
-            echo "ERROR: expenses permission was not created."
-            exit 1
-          fi
-
-          echo "v4.3 database verified."
-
-          echo ""
-          echo "======================================"
-          echo "11. Rebuilding Billing containers"
+          echo "8. Rebuilding Billing containers"
           echo "======================================"
 
           docker compose build api ui
 
           echo ""
           echo "======================================"
-          echo "12. Restarting Billing application"
+          echo "9. Restarting Billing application"
           echo "======================================"
 
           docker compose up -d api ui
 
           echo ""
           echo "======================================"
-          echo "13. Restoring Billing UI network"
+          echo "10. Restoring Billing UI network"
           echo "======================================"
 
           if docker network inspect projectsystem_default >/dev/null 2>&1; then
@@ -268,7 +195,7 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "14. Waiting for Billing API"
+          echo "11. Waiting for Billing API"
           echo "======================================"
 
           HEALTHY=0
@@ -306,14 +233,14 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "15. Final container check"
+          echo "12. Final container check"
           echo "======================================"
 
           docker compose ps
 
           echo ""
           echo "======================================"
-          echo "16. Final deployment verification"
+          echo "13. Final deployment verification"
           echo "======================================"
 
           curl -fsS \
@@ -323,7 +250,7 @@ jobs:
 
           echo ""
           echo "======================================"
-          echo "Aequm Billing v4.3 deployment SUCCESS"
+          echo "Aequm Billing deployment SUCCESS"
           echo "======================================"
 
           REMOTE_SCRIPT
