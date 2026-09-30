@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
-import { signUp, openTenants, forgotPassword, resetPassword } from '../lib/api'
+import {
+  signUp,
+  openTenants,
+  forgotPassword,
+  resetPassword,
+  exchangeMicrosoftCode,
+} from '../lib/api'
 import { Field, Alert } from '../components/ui'
 
 const INDIAN_STATES = [
@@ -49,6 +55,7 @@ export default function Auth() {
   const { login, adopt } = useAuth()
   const [searchParams] = useSearchParams()
   const resetToken = searchParams.get('token')
+  const microsoftCode = searchParams.get('microsoft_code')
 
   const [tab, setTab] = useState(resetToken ? 'reset' : 'in')
   const [err, setErr] = useState(null)
@@ -71,6 +78,38 @@ export default function Auth() {
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
 
   useEffect(() => { openTenants().then(setTenants).catch(() => {}) }, [])
+
+  useEffect(() => {
+  if (!microsoftCode) return
+
+  let cancelled = false
+
+  async function finishMicrosoftSignIn() {
+    setErr(null)
+    setBusy(true)
+
+    try {
+      const d = await exchangeMicrosoftCode(microsoftCode)
+
+      if (cancelled) return
+
+      adopt(d.token, d.tenant_id)
+
+      window.history.replaceState({}, '', '/')
+    } catch (x) {
+      if (!cancelled) {
+        setErr(x.message)
+        setBusy(false)
+      }
+    }
+  }
+
+  finishMicrosoftSignIn()
+
+  return () => {
+    cancelled = true
+  }
+}, [microsoftCode, adopt])
 
   async function doSignIn(e) {  
     e.preventDefault(); setErr(null); setBusy(true)
@@ -284,7 +323,30 @@ export default function Auth() {
         {busy ? 'Sending…' : 'Send reset link'}
       </button>
     </div>
+      <div
+  style={{
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    margin: '18px 0',
+  }}
+>
+  <div style={{ flex: 1, height: 1, background: '#ddd' }} />
+  <span className="fine">OR</span>
+  <div style={{ flex: 1, height: 1, background: '#ddd' }} />
+</div>
 
+<button
+  type="button"
+  className="btn"
+  style={{ width: '100%' }}
+  disabled={busy}
+  onClick={() => {
+    window.location.href = '/api/auth/microsoft/login'
+  }}
+>
+  Continue with Microsoft
+</button>
     <div style={{ textAlign: 'center', marginTop: 12 }}>
       <button
         type="button"

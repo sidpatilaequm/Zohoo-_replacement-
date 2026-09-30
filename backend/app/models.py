@@ -82,6 +82,12 @@ class User(Base):
     name: Mapped[str]=mapped_column(String(120))
     email: Mapped[str]=mapped_column(String(160),unique=True)
     pwd_hash: Mapped[str]=mapped_column(String(255))
+    entra_tenant_id: Mapped[str|None]=mapped_column(
+    String(64), nullable=True
+    )
+    entra_object_id: Mapped[str|None]=mapped_column(
+        String(64), nullable=True
+    )
     status: Mapped[str]=mapped_column(Enum("ACTIVE","PENDING","DISABLED",name="ustatus"),default="PENDING")
     requested_tenant: Mapped[int|None]=mapped_column(ForeignKey("tenants.id"),nullable=True)
     roles: Mapped[list["UserRole"]]=relationship(back_populates="user",
@@ -111,6 +117,29 @@ class UserRole(Base):
     user: Mapped[User]=relationship(back_populates="roles")
     group: Mapped[Group]=relationship(lazy="selectin")
     tenant: Mapped[Tenant]=relationship(lazy="selectin")
+
+class AuthHandoff(Base):
+    __tablename__ = "auth_handoffs"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    code_hash: Mapped[str] = mapped_column(
+        String(64), unique=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE")
+    )
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )
+
 
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"

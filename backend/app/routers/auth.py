@@ -1,144 +1,271 @@
-from fastapi import APIRouter, Depends, HTTPException
+from urllib import response
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 import hashlib
 import secrets
 import smtplib
+import base64
+import json
+import hmac
+from .. import microsoft_auth
 from email.message import EmailMessage
+from app import microsoft_auth
 
 from .. import models as M, schemas as S
 from ..db import get_db
 from ..deps import Ctx, current, seats_used
 from ..security import hash_password, verify_password, make_token
+MICROSOFT_FLOW_COOKIE = "aequm.microsoft.flow"
+
+HANDOFF_MINUTES = 2
+
+def _create_microsoft_handoff(
+    db: Session,
+    user: M.User,
+    tenant_id: int,
+) -> str:
+    raw = secrets.token_urlsafe(48)
+    code_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    db.add(M.AuthHandoff(
+        code_hash=code_hash,
+        user_id=user.id,
+        tenant_id=tenant_id,
+        expires_at=now + timedelta(minutes=HANDOFF_MINUTES),
+    ))
+    db.commit()
+
+    return raw
+
+def _consume_microsoft_handoff(
+    db: Session,
+    raw_code: str,
+):
+    code_hash = hashlib.sha256(raw_code.encode("utf-8")).hexdigest()
+
+    handoff = db.execute(
+        select(M.AuthHandoff).where(
+            M.AuthHandoff.code_hash == code_hash
+        )
+    ).scalar_one_or_none()
+
+    if not handoff:
+        raise HTTPException(
+            400,
+            "This Microsoft sign-in code is invalid."
+        )
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    if handoff.used_at is not None:
+        raise HTTPException(
+            400,
+            "This Microsoft sign-in code has already been used."
+        )
+
+    if handoff.expires_at <= now:
+        raise HTTPException(
+            400,
+            "This Microsoft sign-in code has expired."
+        )
+
+    handoff.used_at = now
+    db.commit()
+
+    user = db.get(M.User, handoff.user_id)
+
+    if not user or user.status != "ACTIVE":
+        raise HTTPException(
+            403,
+            "That Aequm account is not active."
+        )
+
+    return user, handoff.tenant_id
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-DEFAULT_GROUPS = {
-    "Administrator": M.PERMS,
-    "Accounts": ["invoice","saved","po","vinv","so","del","grn","disc","phys","stock",
-                 "crec","vpay","reports","registers","gstr","customers","vendors",
-                 "materials","attrs","hsn","data"],
-    "Sales": ["invoice","saved","so","del","customers","materials","stock","reports"],
-    # The auditor sees everything and changes nothing. Every permission here is
-    # a read-only screen; none of them can raise, alter or post a document.
-    "Auditor": ["saved","po","vinv","stock","crec","vpay","reports","registers",
-                "gstr","audit","customers","vendors","materials","hsn"],
-    "Read only": ["saved","stock","reports","registers","gstr"],
-}
-
-
-DESIGNATIONS = ["Proprietor","Director","Partner","Chief Executive Officer",
-    "Chief Financial Officer","General Manager","Accounts Manager","Accounts Executive",
-    "Purchase Manager","Sales Manager","Store Keeper","Logistics Coordinator",
-    "Quality Manager","Other"]
-BANKS = [("State Bank of India","SBI"),("HDFC Bank","HDFC"),("ICICI Bank","ICICI"),
-    ("Axis Bank","AXIS"),("Kotak Mahindra Bank","KOTAK"),("Punjab National Bank","PNB"),
-    ("Bank of Baroda","BOB"),("Canara Bank","CANARA"),("Union Bank of India","UBI"),
-    ("IndusInd Bank","INDUS"),("IDFC First Bank","IDFC"),("Yes Bank","YES"),
-    ("Bank of India","BOI"),("Indian Bank","INDIAN"),("Central Bank of India","CBI"),
-    ("Federal Bank","FED"),("South Indian Bank","SIB"),("Karnataka Bank","KARB"),
-    ("RBL Bank","RBL"),("Bandhan Bank","BANDHAN"),("Other","OTHER")]
-
-
-def seed_reference(db: Session) -> None:
-    """Designations and banks are shared, so they are seeded once."""
-    if not db.execute(select(M.Designation)).first():
-        db.add_all([M.Designation(name=n) for n in DESIGNATIONS])
-    if not db.execute(select(M.Bank)).first():
-        db.add_all([M.Bank(name=n, short_code=c) for n, c in BANKS])
-    db.flush()
-
-
-def seed_groups(db: Session, tenant_id: int) -> dict[str, M.Group]:
-    made = {}
-    for name, perms in DEFAULT_GROUPS.items():
-        g = M.Group(tenant_id=tenant_id, name=name,
-                    read_only=name in ("Auditor", "Read only"))
-        db.add(g)
-        db.flush()
-        for p in perms:
-            db.add(M.GroupPerm(group_id=g.id, perm=p))
-        made[name] = g
-    return made
-
-RESET_TOKEN_MINUTES = 30
-
-
-def _hash_reset_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def _send_reset_email(user: M.User, tenant: M.Tenant, token: str) -> None:
-    if not tenant.smtp_host or not tenant.smtp_port or not tenant.smtp_from_email:
-        raise RuntimeError("SMTP is not configured for this organisation")
-
-    reset_url = (
-        "https://billing.nexdaequmsupport.com/"
-        f"reset-password?token={token}"
-    )
-
-    msg = EmailMessage()
-    msg["Subject"] = "Reset your Aequm Billing password"
-    msg["From"] = (
-        f"{tenant.smtp_from_name} <{tenant.smtp_from_email}>"
-        if tenant.smtp_from_name
-        else tenant.smtp_from_email
-    )
-    msg["To"] = user.email
-
-    if tenant.smtp_reply_to:
-        msg["Reply-To"] = tenant.smtp_reply_to
-
-    if tenant.smtp_bcc:
-        msg["Bcc"] = tenant.smtp_bcc
-
-    msg.set_content(
-        f"""Hello {user.name},
-
-We received a request to reset your Aequm Billing password.
-
-Use the link below to choose a new password:
-
-{reset_url}
-
-This link expires in {RESET_TOKEN_MINUTES} minutes and can only be used once.
-
-If you did not request a password reset, you can safely ignore this email.
-
-Regards,
-Aequm Billing
-"""
-    )
-
-    encryption = tenant.smtp_encryption or "STARTTLS"
-
-    if encryption == "SSL":
-        smtp = smtplib.SMTP_SSL(
-            tenant.smtp_host,
-            tenant.smtp_port,
-            timeout=20,
+@router.get("/microsoft/login")
+def microsoft_login():
+    if not microsoft_auth.configured():
+        raise HTTPException(
+            503,
+            "Microsoft sign-in is not configured.",
         )
-    else:
-        smtp = smtplib.SMTP(
-            tenant.smtp_host,
-            tenant.smtp_port,
-            timeout=20,
+
+    microsoft_auth.validate_redirect_uri()
+
+    flow = microsoft_auth.start_flow()
+    signed_flow = microsoft_auth.sign_flow(flow)
+
+    response = RedirectResponse(
+        url=flow["auth_uri"],
+        status_code=302,
+    )
+
+    response.set_cookie(
+        key="aequm_ms_flow",
+        value=signed_flow,
+        max_age=600,
+        httponly=True,
+        secure=microsoft_auth.REDIRECT_URI.startswith("https://"),
+        samesite="lax",
+        path="/api/auth/microsoft",
+    )
+
+    return response
+
+
+@router.get("/microsoft/callback")
+def microsoft_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    flow_cookie = request.cookies.get("aequm_ms_flow")
+
+    if not flow_cookie:
+        raise HTTPException(
+            400,
+            "Microsoft sign-in session is missing or expired.",
         )
 
     try:
-        if encryption == "STARTTLS":
-            smtp.starttls()
+        flow = microsoft_auth.verify_flow(flow_cookie)
+    except RuntimeError as exc:
+        raise HTTPException(
+            400,
+            str(exc),
+        ) from exc
 
-        if tenant.smtp_username:
-            smtp.login(
-                tenant.smtp_username,
-                tenant.smtp_password or "",
-            )
+    auth_response = dict(request.query_params)
 
-        smtp.send_message(msg)
-    finally:
-        smtp.quit()
+    result = microsoft_auth.finish_flow(
+        flow,
+        auth_response,
+    )
+
+    if "error" in result:
+        raise HTTPException(
+            400,
+            result.get(
+                "error_description",
+                "Microsoft sign-in failed.",
+            ),
+        )
+
+    claims = result.get("id_token_claims") or {}
+
+    entra_tenant_id = str(
+        claims.get("tid") or ""
+    ).strip()
+
+    entra_object_id = str(
+        claims.get("oid") or ""
+    ).strip()
+
+    if not entra_tenant_id or not entra_object_id:
+        raise HTTPException(
+            400,
+            "Microsoft account identity information is missing.",
+        )
+
+    user = db.execute(
+        select(M.User).where(
+            M.User.entra_tenant_id == entra_tenant_id,
+            M.User.entra_object_id == entra_object_id,
+        )
+    ).scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            403,
+            "This Microsoft account is not linked to an Aequm account.",
+        )
+
+    if user.status != "ACTIVE":
+        raise HTTPException(
+            403,
+            "That Aequm account is not active.",
+        )
+
+    roles = list(user.roles)
+
+    if not roles:
+        raise HTTPException(
+            403,
+            "That Aequm account has no tenant access.",
+        )
+
+    tenant_id = roles[0].tenant_id
+
+    code = _create_microsoft_handoff(
+        db,
+        user,
+        tenant_id,
+    )
+
+    response = RedirectResponse(
+        url=f"/auth?microsoft_code={code}",
+        status_code=302,
+    )
+
+    response.delete_cookie(
+        key="aequm_ms_flow",
+        path="/api/auth/microsoft",
+    )
+
+    return response
+
+
+@router.post("/microsoft/exchange")
+def microsoft_exchange(
+    payload: dict,
+    db: Session = Depends(get_db),
+):
+    code = str(
+        payload.get("code") or ""
+    ).strip()
+
+    if not code:
+        raise HTTPException(
+            400,
+            "Microsoft sign-in code is required.",
+        )
+
+    user, tenant_id = _consume_microsoft_handoff(
+        db,
+        code,
+    )
+
+    roles = list(user.roles)
+
+    tenants = [
+        {
+            "tenant_id": role.tenant_id,
+            "group_id": role.group_id,
+        }
+        for role in roles
+    ]
+
+    return {
+        "token": make_token(
+            user.id,
+            tenant_id,
+        ),
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+        },
+        "tenants": tenants,
+        "tenant_id": tenant_id,
+    }
+
 
 @router.get("/tenants")
 def open_tenants(db: Session = Depends(get_db)):

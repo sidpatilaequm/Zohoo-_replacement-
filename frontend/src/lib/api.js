@@ -28,7 +28,12 @@ export async function req(path, { method = 'GET', body, token, tenantId } = {}) 
   if (!res.ok) throw new ApiError(readDetail(data, res.statusText), res.status)
   return data
 }
-
+export function exchangeMicrosoftCode(code) {
+  return req('/auth/microsoft/exchange', {
+    method: 'POST',
+    body: { code },
+  })
+}
 export function makeApi(token, tenantId) {
   const call = (p, o = {}) => req(p, { ...o, token, tenantId })
   return {
