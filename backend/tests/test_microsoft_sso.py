@@ -24,10 +24,17 @@ def _create_user_with_access(email="user@aequm.in"):
     db.flush()
 
     group = M.Group(
-        tenant_id=tenant.id,
-        name="Administrators",
+    tenant_id=tenant.id,
+    name="Administrators",
     )
     db.add(group)
+
+    read_only = M.Group(
+        tenant_id=tenant.id,
+        name="Read only",
+    )
+    db.add(read_only)
+
     db.flush()
 
     role = M.UserRole(
@@ -119,18 +126,49 @@ def test_first_microsoft_login_links_existing_user(api):
     db.close()
 
 
-def test_unknown_microsoft_user_is_rejected(api):
+def test_unknown_microsoft_user_is_provisioned(api):
+    # Create an organisation so the new Microsoft user has somewhere to belong.
+    existing_user_id = _create_user_with_access(
+        "existing@aequm.in"
+    )
+
+    db = SessionLocal()
+    existing_user = db.get(M.User, existing_user_id)
+    tenant_id = existing_user.roles[0].tenant_id
+    db.close()
+
     response = _callback(
         api,
         {
             "tid": "test-tenant",
             "oid": "microsoft-object-999",
             "preferred_username": "unknown@aequm.in",
+            "name": "Unknown Microsoft User",
         },
     )
 
-    assert response.status_code == 403
-    assert "not linked" in response.json()["detail"].lower()
+    assert response.status_code == 302
+    assert "/auth?microsoft_code=" in response.headers["location"]
+
+    db = SessionLocal()
+
+    user = (
+        db.query(M.User)
+        .filter(M.User.email == "unknown@aequm.in")
+        .one()
+    )
+
+    assert user.name == "Unknown Microsoft User"
+    assert user.status == "ACTIVE"
+    assert user.entra_tenant_id == "test-tenant"
+    assert user.entra_object_id == "microsoft-object-999"
+
+    roles = list(user.roles)
+    assert len(roles) == 1
+    assert roles[0].tenant_id == tenant_id
+    assert roles[0].group.name == "Read only"
+
+    db.close()
 
 
 def test_wrong_microsoft_tenant_is_rejected(api):

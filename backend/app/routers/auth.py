@@ -2,7 +2,7 @@ from urllib import response
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -207,17 +207,6 @@ def microsoft_callback(
         )
 
     claims = result.get("id_token_claims") or {}
-    print(
-    "MICROSOFT IDENTITY:",
-    {
-        "tid": claims.get("tid"),
-        "oid": claims.get("oid"),
-        "preferred_username": claims.get("preferred_username"),
-        "email": claims.get("email"),
-    },
-    flush=True,
-)
-
     entra_tenant_id = str(
         claims.get("tid") or ""
     ).strip()
@@ -265,26 +254,79 @@ def microsoft_callback(
 
         user = db.execute(
             select(M.User).where(
-                M.User.email == microsoft_email,
+                func.lower(M.User.email) == microsoft_email.lower(),
             )
         ).scalar_one_or_none()
 
         if not user:
-            raise HTTPException(
-                403,
-                "This Microsoft account is not linked to an Aequm account.",
+            tenant = db.execute(
+                select(M.Tenant).order_by(M.Tenant.id)
+            ).scalars().first()
+
+            if not tenant:
+                raise HTTPException(
+                    403,
+                    "No Aequm organisation is available for Microsoft sign-in.",
+                )
+
+            limit = tenant.user_limit or 5
+
+            if seats_used(db, tenant.id) >= limit:
+                raise HTTPException(
+                    409,
+                    "This organisation has reached its licensed user limit.",
+                )
+
+            display_name = str(
+                claims.get("name") or microsoft_email.split("@")[0]
+            ).strip()
+
+            user = M.User(
+                name=display_name,
+                email=microsoft_email.lower(),
+                pwd_hash="!",
+                status="ACTIVE",
+                entra_tenant_id=entra_tenant_id,
+                entra_object_id=entra_object_id,
+            )
+            db.add(user)
+            db.flush()
+
+            read_only = db.execute(
+                select(M.Group).where(
+                    M.Group.tenant_id == tenant.id,
+                    M.Group.name == "Read only",
+                )
+            ).scalar_one_or_none()
+
+            if not read_only:
+                raise HTTPException(
+                    500,
+                    "Default Microsoft user group is not configured.",
+                )
+
+            db.add(
+                M.UserRole(
+                    user_id=user.id,
+                    tenant_id=tenant.id,
+                    group_id=read_only.id,
+                )
             )
 
-        if user.status != "ACTIVE":
-            raise HTTPException(
-                403,
-                "That Aequm account is not active.",
-            )
+            db.commit()
+            db.refresh(user)
 
-        user.entra_tenant_id = entra_tenant_id
-        user.entra_object_id = entra_object_id
-        db.commit()
-        db.refresh(user)
+        else:
+            if user.status != "ACTIVE":
+                raise HTTPException(
+                    403,
+                    "That Aequm account is not active.",
+                )
+
+            user.entra_tenant_id = entra_tenant_id
+            user.entra_object_id = entra_object_id
+            db.commit()
+            db.refresh(user)
 
     if user.status != "ACTIVE":
         raise HTTPException(

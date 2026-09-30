@@ -19,7 +19,7 @@ def api():
                 [("29", "Karnataka"), ("33", "Tamil Nadu"), ("27", "Maharashtra")]])
     db.add_all([M.Uom(code=c, name=c) for c in ["NOS", "LIC", "HRS", "BOX", "USR"]])
     db.commit(); db.close()
-    with TestClient(app) as c:
+    with TestClient(app, raise_server_exceptions=True) as c:
         yield c
 
 
