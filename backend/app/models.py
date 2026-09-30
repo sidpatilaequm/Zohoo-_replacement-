@@ -35,7 +35,7 @@ class Tenant(Base):
     city: Mapped[str|None]=mapped_column(String(80),nullable=True)
     state_code: Mapped[str]=mapped_column(String(2),ForeignKey("states.code"))
     pin: Mapped[str|None]=mapped_column(String(6),nullable=True)
-    user_limit: Mapped[int]=mapped_column(Integer,default=2)
+    user_limit: Mapped[int]=mapped_column(Integer,default=5)
     company_type: Mapped[str]=mapped_column(
         Enum("TRADING","NONTRADING",name="cotype"),default="NONTRADING")
     logo: Mapped[str|None]=mapped_column(Text,nullable=True)
