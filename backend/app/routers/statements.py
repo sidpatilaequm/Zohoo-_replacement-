@@ -502,21 +502,14 @@ def _upload_impact(ctx, uid):
 
 
 def _purge_txns(ctx, txn_ids):
-    """Delete transactions with their attachments, and the receipts or
-    payments those attachments recorded (v4.6) — so an invoice never shows
-    as paid by a bank entry that no longer exists. Plain SQL, children
-    first, so the result does not depend on the database enforcing the
-    ON DELETE CASCADE foreign keys. Returns how many payments went."""
+    """Delete statement transactions and their attachments.
+
+    Statement attachments describe what a transaction was for; they do not
+    post receipts or payments in the Money screens. Therefore deleting a
+    statement transaction must not delete Payment rows.
+    """
     if not txn_ids:
         return 0
-
-    pay_ids = [p for (p,) in ctx.db.execute(
-        select(M.StmtTxnLink.payment_id).where(
-            M.StmtTxnLink.tenant_id == ctx.tenant.id,
-            M.StmtTxnLink.txn_id.in_(txn_ids),
-            M.StmtTxnLink.payment_id.is_not(None)
-        )
-    ).all()]
 
     ctx.db.execute(
         delete(M.StmtTxnLink).where(
@@ -525,14 +518,6 @@ def _purge_txns(ctx, txn_ids):
         ).execution_options(synchronize_session=False)
     )
 
-    if pay_ids:
-        ctx.db.execute(
-            delete(M.Payment).where(
-                M.Payment.tenant_id == ctx.tenant.id,
-                M.Payment.id.in_(pay_ids)
-            ).execution_options(synchronize_session=False)
-        )
-
     ctx.db.execute(
         delete(M.StmtTxn).where(
             M.StmtTxn.tenant_id == ctx.tenant.id,
@@ -540,7 +525,7 @@ def _purge_txns(ctx, txn_ids):
         ).execution_options(synchronize_session=False)
     )
 
-    return len(pay_ids)
+    return 0
 
 
 @router.delete("/uploads/{uid}")
@@ -648,13 +633,6 @@ def _account_impact(ctx, aid) -> dict:
                 M.StmtTxnLink.txn_id.in_(txn_q)
             )
         ),
-        "recorded_payments": n(
-            select(func.count()).select_from(M.StmtTxnLink).where(
-                M.StmtTxnLink.tenant_id == ctx.tenant.id,
-                M.StmtTxnLink.txn_id.in_(txn_q),
-                M.StmtTxnLink.payment_id.is_not(None)
-            )
-        ),
     }
 
 
@@ -716,7 +694,7 @@ def delete_account(
         ).all()
     ]
 
-    pays = _purge_txns(ctx, txn_ids)
+    _purge_txns(ctx, txn_ids)
 
     ctx.db.execute(
         delete(M.StmtUpload).where(
@@ -740,8 +718,7 @@ def delete_account(
         "deleted": aid,
         "label": label,
         "kind": kind,
-        **imp,
-        "payments_removed": pays
+        **imp
     }
 
 
