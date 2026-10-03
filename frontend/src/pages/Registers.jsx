@@ -3,6 +3,7 @@ import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
   usePrintVariant, VariantPicker, PrintButtons, PeriodPicker, useDefaultFy } from '../components/ui'
 import { inr, money, gd } from '../lib/fmt'
+import { GstSales, GstPurchases, TdsReport } from '../components/TaxReports'
 
 const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 const label = p => { const [y, m] = p.split('-'); return `${MON[+m - 1]} ${y}` }
@@ -27,15 +28,22 @@ export default function Registers() {
   const anyErr = inv.error || gst.error || tds.error
   if (anyErr) return <ErrorBox>{anyErr}</ErrorBox>
 
+  const csv = w => api.registerCsv(w, p).catch(x => showFlash(x.message, 'bad'))
   const controls = (<>
     <select value={which} onChange={e => setWhich(e.target.value)}
       style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
       <option value="invoices">Invoice register</option>
       <option value="gst">GST register</option>
       <option value="tds">TDS register</option>
+      <option value="gst-sales">GST register — sales</option>
+      <option value="gst-purchases">GST register — purchases</option>
+      <option value="tds-report">TDS report — vendors and customers</option>
     </select>
     <PeriodPicker value={period} onChange={setPeriod} months={periods.data || []} years={fys.data || []} />
-    <a className="btn btn-sm" href={api.registerCsv(which, p)}>Export CSV</a></>)
+    {which === 'tds-report'
+      ? <><button type="button" className="btn btn-sm" onClick={() => csv('tds-vendors')}>CSV — vendors</button>
+          <button type="button" className="btn btn-sm" onClick={() => csv('tds-customers')}>CSV — customers</button></>
+      : <button type="button" className="btn btn-sm" onClick={() => csv(which)}>Export CSV</button>}</>)
 
   if (busy) return <><Panel title="Registers" right={controls} /><Loading /></>
 
@@ -141,6 +149,10 @@ export default function Registers() {
         </Table>
       </Panel>
     </>)}
+
+    {which === 'gst-sales' && <GstSales period={p} />}
+    {which === 'gst-purchases' && <GstPurchases period={p} />}
+    {which === 'tds-report' && <TdsReport period={p} />}
 
     {which === 'tds' && (
       <Panel title={`TDS register — ${money(tds.data.total_tds)} deducted`} bodyless>

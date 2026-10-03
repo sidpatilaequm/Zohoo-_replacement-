@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from .. import models as M, schemas as S
 from ..db import get_db
-from ..deps import Ctx, current, need
+from ..deps import Ctx, current, need, need_any
 from ..service import next_code
 from ..fy import current_fy
 from sqlalchemy.exc import IntegrityError
@@ -440,20 +440,43 @@ def add_vendor_address(
     ctx: Ctx = Depends(need("vendors")),
 ):
     return _add_address(ctx, "VENDOR", vid, body)
+
+
+def _own_address(ctx, aid):
+    a = ctx.db.execute(ctx.scope(select(M.PartyAddress), M.PartyAddress)
+                       .where(M.PartyAddress.id == aid)).scalar_one_or_none()
+    if not a:
+        raise HTTPException(404, "No such address")
+    ctx.require("customers" if a.party_kind == "CUSTOMER" else "vendors")
+    return a
+
+
+@router.put("/addresses/{aid}")
+def edit_address(aid: int, body: S.AddressIn, ctx: Ctx = Depends(need_any("customers", "vendors"))):
+    """Change an address. Documents already issued keep what they printed;
+    new ones use the change."""
+    a = _own_address(ctx, aid)
+    if body.is_default:
+        for old in _list_addresses(ctx, a.party_kind, a.party_id):
+            if old.id != a.id:
+                old.is_default = False
+    for k, v in body.model_dump().items():
+        setattr(a, k, v)
+    try:
+        ctx.db.commit()
+    except IntegrityError:
+        ctx.db.rollback()
+        raise HTTPException(409, "An address with this label already exists")
+    ctx.db.refresh(a)
+    return _address_out(a)
+
+
 @router.delete("/addresses/{aid}")
 def delete_address(
     aid: int,
-    ctx: Ctx = Depends(need("customers")),
+    ctx: Ctx = Depends(need_any("customers", "vendors")),
 ):
-    a = ctx.db.execute(
-        ctx.scope(
-            select(M.PartyAddress),
-            M.PartyAddress
-        ).where(M.PartyAddress.id == aid)
-    ).scalar_one_or_none()
-
-    if not a:
-        raise HTTPException(404, "No such address")
+    a = _own_address(ctx, aid)
 
     used = ctx.db.execute(
         select(M.Invoice.id).where(

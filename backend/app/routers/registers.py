@@ -4,11 +4,12 @@ from datetime import date
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, func
 from .. import models as M, schemas as S
 from ..deps import Ctx, need
-from ..service import invoice_tax, vinv_tax, settled, live_invoices
+from ..service import invoice_tax, vinv_tax, settled, live_invoices, resolve_reg
 from ..tax import q2
+from ..fy import in_period
 
 router = APIRouter(prefix="/registers", tags=["registers"])
 D0 = Decimal("0")
@@ -19,10 +20,6 @@ def gd(d):
     return f"{d.day:02d}-{MON[d.month - 1]}-{d.year}" if d else ""
 
 
-def _in_period(d, period):
-    return not period or str(d)[:7] == period
-
-
 # ==================================================== invoice register
 @router.get("/invoices")
 def invoice_register(period: str | None = None, ctx: Ctx = Depends(need("registers"))):
@@ -30,7 +27,7 @@ def invoice_register(period: str | None = None, ctx: Ctx = Depends(need("registe
     out = []
     for inv in ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
                               .order_by(M.Invoice.doc_date, M.Invoice.id)).scalars():
-        if not _in_period(inv.doc_date, period):
+        if not in_period(ctx.tenant, inv.doc_date, period):
             continue
         t = invoice_tax(ctx, inv)
         rec = settled(ctx, invoice_id=inv.id)
@@ -56,7 +53,7 @@ def gst_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
     """Outward and inward side by side — what is payable and what is claimable."""
     outward, inward = [], []
     for inv in ctx.db.execute(live_invoices(ctx).order_by(M.Invoice.doc_date)).scalars():
-        if not _in_period(inv.doc_date, period):
+        if not in_period(ctx.tenant, inv.doc_date, period):
             continue
         t = invoice_tax(ctx, inv)
         outward.append({"doc_no": inv.doc_no, "doc_date": inv.doc_date,
@@ -67,7 +64,7 @@ def gst_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
                         "total": float(t.rounded)})
     for vi in ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)
                              .order_by(M.VendorInvoice.doc_date)).scalars():
-        if not _in_period(vi.doc_date, period):
+        if not in_period(ctx.tenant, vi.doc_date, period):
             continue
         t = vinv_tax(ctx, vi)
         inward.append({"doc_no": vi.doc_no, "doc_date": vi.doc_date,
@@ -97,7 +94,7 @@ def tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
                             .where(M.Payment.pay_type == "PAY")
                             .order_by(M.Payment.pay_date)).scalars():
         tds = Decimal(str(p.tds or 0))
-        if not _in_period(p.pay_date, period) or tds <= 0:
+        if not in_period(ctx.tenant, p.pay_date, period) or tds <= 0:
             continue
         vi = ctx.db.get(M.VendorInvoice, p.vinv_id)
         if not vi:
@@ -123,6 +120,201 @@ def tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
                      "worked back from what was entered. It is not a section rate and does "
                      "not decide the correct rate. A vendor with no PAN on file attracts a "
                      "higher rate under section 206AA.")}
+
+
+# ===================================================== v4.7 — GST and TDS reports
+def _states(ctx) -> dict:
+    return {c: n for c, n in ctx.db.execute(select(M.State.code, M.State.name)).all()}
+
+
+def _rate_summary(rows_lines):
+    """[(rate, amount, cgst, sgst, igst)] -> one row per GST rate."""
+    by = {}
+    for rate, amt, c, s_, i in rows_lines:
+        k = float(q2(Decimal(str(rate))))
+        b = by.setdefault(k, {"rate": k, "taxable": D0, "cgst": D0, "sgst": D0, "igst": D0})
+        b["taxable"] += amt; b["cgst"] += c; b["sgst"] += s_; b["igst"] += i
+    return [{k: (float(q2(v)) if isinstance(v, Decimal) else v) for k, v in b.items()}
+            | {"tax": float(q2(b["cgst"] + b["sgst"] + b["igst"]))} for b in sorted(by.values(), key=lambda x: x["rate"])]
+
+
+def _month_summary(rows, date_key):
+    by = {}
+    for r in rows:
+        m = str(r[date_key])[:7]
+        b = by.setdefault(m, {"month": m, "count": 0, "taxable": D0, "cgst": D0, "sgst": D0, "igst": D0, "total": D0})
+        b["count"] += 1
+        for k in ("taxable", "cgst", "sgst", "igst", "total"):
+            b[k] += Decimal(str(r[k]))
+    return [{k: (float(q2(v)) if isinstance(v, Decimal) else v) for k, v in b.items()} for b in sorted(by.values(), key=lambda x: x["month"])]
+
+
+def _totals(rows, keys=("taxable", "cgst", "sgst", "igst", "tax", "total")):
+    return {k: float(q2(sum((Decimal(str(r[k])) for r in rows), D0))) for k in keys}
+
+
+@router.get("/gst-sales")
+def gst_sales(period: str | None = None, ctx: Ctx = Depends(need("registers"))):
+    """GST register for sales — every live tax invoice in the period with the
+    customer's GSTIN, B2B or B2C, place of supply and the tax split, plus
+    totals by month and by GST rate. Cancelled invoices are listed apart and
+    left out of the totals, as GST requires."""
+    st = _states(ctx)
+    rows, lines = [], []
+    for inv in ctx.db.execute(live_invoices(ctx).order_by(M.Invoice.doc_date, M.Invoice.id)).scalars():
+        if not in_period(ctx.tenant, inv.doc_date, period):
+            continue
+        t = invoice_tax(ctx, inv)
+        c = inv.customer
+        rows.append({"id": inv.id, "doc_no": inv.doc_no, "doc_date": inv.doc_date, "customer": c.name,
+                     "customer_code": c.code, "gstin": inv.gstin, "pan": c.pan,
+                     "kind": "B2B" if inv.gstin else "B2C",
+                     "pos": inv.pos_state, "pos_name": st.get(inv.pos_state, ""),
+                     "supply": "Intra-state" if t.intra else "Inter-state",
+                     "reverse_charge": inv.reverse_chg == "Y",
+                     "taxable": float(t.taxable), "cgst": float(t.cgst), "sgst": float(t.sgst),
+                     "igst": float(t.igst), "tax": float(t.tax), "total": float(t.rounded)})
+        lines += [(l.rate, l.amount, l.cgst, l.sgst, l.igst) for l in t.lines]
+    cancelled = [{"doc_no": inv.doc_no, "doc_date": inv.doc_date, "customer": inv.customer.name,
+                  "reason": inv.cancel_reason}
+                 for inv in ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice).where(
+                     M.Invoice.doc_type == "TAX", M.Invoice.status == "CANCELLED")
+                     .order_by(M.Invoice.doc_date)).scalars()
+                 if in_period(ctx.tenant, inv.doc_date, period)]
+    b2b = [r for r in rows if r["kind"] == "B2B"]
+    return {"period": period, "rows": rows, "totals": _totals(rows),
+            "b2b": _totals(b2b), "b2c": _totals([r for r in rows if r["kind"] == "B2C"]),
+            "by_month": _month_summary(rows, "doc_date"), "by_rate": _rate_summary(lines),
+            "cancelled": cancelled}
+
+
+@router.get("/gst-purchases")
+def gst_purchases(period: str | None = None, ctx: Ctx = Depends(need("registers"))):
+    """GST register for purchases — every vendor invoice in the period with
+    the vendor's GSTIN and the tax split, and whether input tax credit is
+    available (a registered vendor charging GST). Totals by month and rate."""
+    rows, lines = [], []
+    for vi in ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)
+                             .order_by(M.VendorInvoice.doc_date, M.VendorInvoice.id)).scalars():
+        if not in_period(ctx.tenant, vi.doc_date, period):
+            continue
+        t = vinv_tax(ctx, vi)
+        v = vi.vendor
+        reg = resolve_reg(v, vi.gstin)      # the vendor's registration this invoice was under
+        rows.append({"id": vi.id, "doc_no": vi.doc_no, "our_no": vi.our_no, "doc_date": vi.doc_date,
+                     "vendor": v.name, "vendor_code": v.code, "gstin": reg.gstin if reg else None, "pan": v.pan,
+                     "supply": "Intra-state" if t.intra else "Inter-state",
+                     "itc": reg is not None and t.tax > 0,
+                     "taxable": float(t.taxable), "cgst": float(t.cgst), "sgst": float(t.sgst),
+                     "igst": float(t.igst), "tax": float(t.tax), "total": float(t.rounded)})
+        lines += [(l.rate, l.amount, l.cgst, l.sgst, l.igst) for l in t.lines]
+    itc = [r for r in rows if r["itc"]]
+    return {"period": period, "rows": rows, "totals": _totals(rows), "itc": _totals(itc),
+            "no_itc_count": len(rows) - len(itc),
+            "by_month": _month_summary(rows, "doc_date"), "by_rate": _rate_summary(lines)}
+
+
+def _tds_due(month: str) -> date:
+    """TDS deducted in a month is deposited by the 7th of the next month;
+    for March, by 30 April (Rule 30)."""
+    y, m = int(month[:4]), int(month[5:7])
+    if m == 3:
+        return date(y, 4, 30)
+    return date(y + (m == 12), 1 if m == 12 else m + 1, 7)
+
+
+def _quarter(d) -> str:
+    """Indian TDS quarters: Q1 Apr–Jun … Q4 Jan–Mar, labelled by FY."""
+    y = d.year if d.month >= 4 else d.year - 1
+    q = (d.month - 4) // 3 + 1 if d.month >= 4 else 4
+    return f"Q{q} {y}-{str(y + 1)[-2:]}"
+
+
+@router.get("/tds-report")
+def tds_report(period: str | None = None, ctx: Ctx = Depends(need("registers"))):
+    """TDS both ways.
+
+    Vendors — tax we deducted when paying vendors. It is ours to deposit with
+    the government: totals by month and section with the deposit due date,
+    and invoices whose TDS has still to be deducted.
+
+    Customers — tax our customers deducted when paying us. It is credit we
+    claim against our own tax, once it shows in Form 26AS: by customer and
+    quarter."""
+    today = date.today()
+    vrows, crows = [], []
+    for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
+                            .where(M.Payment.tds != 0).order_by(M.Payment.pay_date, M.Payment.id)).scalars():
+        if not in_period(ctx.tenant, p.pay_date, period):
+            continue
+        tds = Decimal(str(p.tds))
+        if p.pay_type == "PAY" and p.vinv_id:
+            vi = ctx.db.get(M.VendorInvoice, p.vinv_id)
+            t = vinv_tax(ctx, vi)
+            v = vi.vendor
+            vrows.append({"pay_date": p.pay_date, "vendor": v.name, "vendor_code": v.code, "pan": v.pan,
+                          "section": v.tds_section or "", "rate": float(v.tds_rate or 0),
+                          "invoice": vi.doc_no, "invoice_date": vi.doc_date, "taxable": float(t.taxable),
+                          "tds": float(tds), "paid": float(p.amount), "batch_ref": p.batch_ref,
+                          "month": str(p.pay_date)[:7]})
+        elif p.pay_type == "REC" and p.invoice_id:
+            inv = ctx.db.get(M.Invoice, p.invoice_id)
+            t = invoice_tax(ctx, inv)
+            c = inv.customer
+            crows.append({"date": p.pay_date, "customer": c.name, "customer_code": c.code, "pan": c.pan,
+                          "invoice": inv.doc_no, "invoice_date": inv.doc_date, "taxable": float(t.taxable),
+                          "invoice_total": float(t.rounded), "received": float(p.amount), "tds": float(tds),
+                          "quarter": _quarter(p.pay_date), "reversal": bool(p.reverses_id)})
+    # vendors: by month (deposit) and by section
+    months = {}
+    for r in vrows:
+        m = months.setdefault(r["month"], {"month": r["month"], "tds": D0, "count": 0})
+        m["tds"] += Decimal(str(r["tds"])); m["count"] += 1
+    by_month = []
+    for m in sorted(months.values(), key=lambda x: x["month"]):
+        due = _tds_due(m["month"])
+        by_month.append({"month": m["month"], "count": m["count"], "tds": float(q2(m["tds"])),
+                         "due_date": due, "status": "Overdue" if due < today else "Due"})
+    sections = {}
+    for r in vrows:
+        k = r["section"] or "Not set"
+        sections[k] = sections.get(k, D0) + Decimal(str(r["tds"]))
+    # vendor invoices still awaiting their TDS (rate set, not fully deducted, unpaid)
+    pending = []
+    for vi in ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)
+                             .order_by(M.VendorInvoice.doc_date)).scalars():
+        rate = Decimal(str(vi.vendor.tds_rate or 0))
+        if rate <= 0 or not in_period(ctx.tenant, vi.doc_date, period):
+            continue
+        t = vinv_tax(ctx, vi)
+        expected = (t.taxable * rate / 100).quantize(Decimal("1"))
+        done = Decimal(str(ctx.db.execute(select(func.coalesce(func.sum(M.Payment.tds), 0)).where(
+            M.Payment.tenant_id == ctx.tenant.id, M.Payment.vinv_id == vi.id)).scalar_one()))
+        if expected - done > Decimal("0.5") and t.rounded - settled(ctx, vinv_id=vi.id) > Decimal("0.5"):
+            pending.append({"invoice": vi.doc_no, "invoice_date": vi.doc_date, "vendor": vi.vendor.name,
+                            "pan": vi.vendor.pan, "section": vi.vendor.tds_section or "",
+                            "rate": float(rate), "taxable": float(t.taxable),
+                            "expected": float(expected), "deducted": float(done),
+                            "to_deduct": float(expected - done)})
+    # customers: by customer and quarter
+    by_cust = {}
+    for r in crows:
+        k = (r["customer"], r["quarter"])
+        b = by_cust.setdefault(k, {"customer": r["customer"], "pan": r["pan"], "quarter": r["quarter"],
+                                   "tds": D0, "received": D0, "count": 0})
+        b["tds"] += Decimal(str(r["tds"])); b["received"] += Decimal(str(r["received"])); b["count"] += 1
+    cust_summary = [{**b, "tds": float(q2(b["tds"])), "received": float(q2(b["received"]))}
+                    for b in sorted(by_cust.values(), key=lambda x: (x["quarter"], x["customer"]))]
+    vt = float(q2(sum((Decimal(str(r["tds"])) for r in vrows), D0)))
+    ct = float(q2(sum((Decimal(str(r["tds"])) for r in crows), D0)))
+    return {"period": period,
+            "vendors": {"rows": vrows, "total": vt, "by_month": by_month,
+                        "by_section": [{"section": k, "tds": float(q2(v))} for k, v in sorted(sections.items())],
+                        "pending": pending, "pending_total": float(q2(sum((Decimal(str(r["to_deduct"])) for r in pending), D0))),
+                        "without_pan": sorted({r["vendor"] for r in vrows if not r["pan"]})},
+            "customers": {"rows": crows, "total": ct, "by_customer": cust_summary,
+                          "without_pan": sorted({r["customer"] for r in crows if not r["pan"]})}}
+
 
 
 def _csv(rows, filename):
@@ -167,8 +359,47 @@ def register_csv(which: str, period: str | None = None,
                 "Yes" if r["msme"] else "No", r["msme_number"] or "", r["vendor_invoice"],
                 gd(r["invoice_date"]), r["invoice_taxable"], r["gross"], r["tds"],
                 r["paid"], r["implied_rate_pct"], r["mode"], r["bank_ref"] or ""])
+    elif which == "gst-sales":
+        d = gst_sales(period, ctx)
+        rows = [["Invoice","Date","Customer code","Customer","GSTIN","PAN","B2B/B2C","Place of supply",
+                 "Supply","Reverse charge","Taxable","CGST","SGST","IGST","Total tax","Invoice value"]]
+        for r in d["rows"]:
+            rows.append([r["doc_no"], gd(r["doc_date"]), r["customer_code"], r["customer"], r["gstin"] or "",
+                         r["pan"] or "", r["kind"], f'{r["pos"]}-{r["pos_name"]}', r["supply"],
+                         "Y" if r["reverse_charge"] else "N", r["taxable"], r["cgst"], r["sgst"], r["igst"],
+                         r["tax"], r["total"]])
+        t = d["totals"]
+        rows.append(["Total", "", "", "", "", "", "", "", "", "", t["taxable"], t["cgst"], t["sgst"], t["igst"], t["tax"], t["total"]])
+    elif which == "gst-purchases":
+        d = gst_purchases(period, ctx)
+        rows = [["Vendor invoice","Our no.","Date","Vendor code","Vendor","GSTIN","PAN","Supply","ITC",
+                 "Taxable","CGST","SGST","IGST","Total tax","Invoice value"]]
+        for r in d["rows"]:
+            rows.append([r["doc_no"], r["our_no"] or "", gd(r["doc_date"]), r["vendor_code"], r["vendor"],
+                         r["gstin"] or "", r["pan"] or "", r["supply"], "Yes" if r["itc"] else "No",
+                         r["taxable"], r["cgst"], r["sgst"], r["igst"], r["tax"], r["total"]])
+        t = d["totals"]
+        rows.append(["Total", "", "", "", "", "", "", "", "", t["taxable"], t["cgst"], t["sgst"], t["igst"], t["tax"], t["total"]])
+    elif which == "tds-vendors":
+        d = tds_report(period, ctx)["vendors"]
+        rows = [["Payment date","Vendor code","Vendor","PAN","Section","Rate %","Vendor invoice","Invoice date",
+                 "Taxable","TDS deducted","Paid to vendor","Payment ref","Deposit due by"]]
+        for r in d["rows"]:
+            rows.append([gd(r["pay_date"]), r["vendor_code"], r["vendor"], r["pan"] or "", r["section"], r["rate"],
+                         r["invoice"], gd(r["invoice_date"]), r["taxable"], r["tds"], r["paid"],
+                         r["batch_ref"] or "", gd(_tds_due(r["month"]))])
+        rows.append(["Total", "", "", "", "", "", "", "", "", d["total"], "", "", ""])
+    elif which == "tds-customers":
+        d = tds_report(period, ctx)["customers"]
+        rows = [["Receipt date","Customer code","Customer","PAN","Invoice","Invoice date","Taxable",
+                 "Invoice value","Received","TDS deducted by customer","Quarter"]]
+        for r in d["rows"]:
+            rows.append([gd(r["date"]), r["customer_code"], r["customer"], r["pan"] or "", r["invoice"],
+                         gd(r["invoice_date"]), r["taxable"], r["invoice_total"], r["received"], r["tds"], r["quarter"]])
+        rows.append(["Total", "", "", "", "", "", "", "", "", d["total"], ""])
     else:
-        raise HTTPException(404, "Register must be invoices, gst or tds")
+        raise HTTPException(404, "Register must be invoices, gst, tds, gst-sales, gst-purchases, "
+                            "tds-vendors or tds-customers")
     return _csv(rows, f"{which}_register_{period or 'all'}.csv")
 
 
@@ -176,14 +407,14 @@ def register_csv(which: str, period: str | None = None,
 def _computed_3b(ctx, period):
     o = {"taxable": D0, "igst": D0, "cgst": D0, "sgst": D0}
     for inv in ctx.db.execute(live_invoices(ctx)).scalars():
-        if not _in_period(inv.doc_date, period):
+        if not in_period(ctx.tenant, inv.doc_date, period):
             continue
         t = invoice_tax(ctx, inv)
         for k in o:
             o[k] += getattr(t, k)
     i = {"igst": D0, "cgst": D0, "sgst": D0}
     for vi in ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)).scalars():
-        if not _in_period(vi.doc_date, period):
+        if not in_period(ctx.tenant, vi.doc_date, period):
             continue
         t = vinv_tax(ctx, vi)
         for k in i:

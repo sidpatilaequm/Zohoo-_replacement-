@@ -133,6 +133,82 @@ async function uploadTxnDocument(txnId, file) {
     setDocBusy(s => ({ ...s, [txnId]: false }))
   }
 }
+  async function removeCard() {
+    if (!aid) return
+
+    let imp
+    try {
+      imp = await api.stmtAccountImpact(aid)
+    } catch (x) {
+      return showFlash(x.message, 'bad')
+    }
+
+    const account = cards.find(a => a.id === aid)
+    if (!account) return
+
+    const lines = [
+      `Delete the card "${account.label}" completely?`,
+      '',
+      `• ${imp.statements} uploaded statement(s) and ${imp.transactions} transaction(s) will be deleted.`
+    ]
+
+    if (imp.allocated) {
+      lines.push(`• ${imp.allocated} transaction(s) marked company or personal — those decisions go too.`)
+    }
+    if (imp.attachments) {
+      lines.push(`• ${imp.attachments} attachment(s) to invoices, employees or loans will be removed.`)
+    }
+    if (imp.recorded_payments) {
+      lines.push(`• ${imp.recorded_payments} receipt(s) or payment(s) recorded from those attachments will be removed, so those invoices show as unpaid again.`)
+    }
+
+    lines.push(
+      '',
+      'Invoices, vendors, employees and loans themselves are not touched.',
+      'This cannot be undone.'
+    )
+
+    let confirm = null
+
+    if (imp.allocated || imp.attachments) {
+      confirm = window.prompt(
+        lines.join('\n') +
+        `\n\nType the card name to confirm: ${account.label}`
+      )
+
+      if (confirm === null) return
+
+      if (confirm.trim() !== account.label) {
+        return showFlash(`The name did not match "${account.label}" — nothing was deleted.`, 'bad')
+      }
+    } else {
+      if (!window.confirm(lines.join('\n'))) return
+    }
+
+    setBusy(true)
+
+    try {
+      const r = await api.delStmtAccount(aid, confirm)
+
+      showFlash(
+        `Deleted ${r.label} — ${r.statements} statement(s), ${r.transactions} transaction(s)` +
+        (r.attachments ? `, ${r.attachments} attachment(s)` : '') +
+        (r.payments_removed ? `, ${r.payments_removed} recorded receipt(s)/payment(s)` : '') +
+        '.'
+      )
+
+      setAcct('')
+      setUploads([])
+      accounts.reload()
+      txns.reload()
+      recon.reload()
+    } catch (x) {
+      showFlash(x.message, 'bad')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function setAlloc(t, allocation, category) {
     try {
       await api.allocateTxn(t.id, { allocation,
@@ -182,13 +258,24 @@ async function uploadTxnDocument(txnId, file) {
 
     {cards.length > 0 && <>
       <Panel title="Upload a card statement" right={
-        <form onSubmit={addCard} style={{ display: 'flex', gap: 6 }}>
-          <input placeholder="New card label" value={na.label} style={{ width: 130 }}
-            onChange={e => setNa(s => ({ ...s, label: e.target.value }))} />
-          <input placeholder="Director" value={na.holder} style={{ width: 110 }}
-            onChange={e => setNa(s => ({ ...s, holder: e.target.value }))} />
-          <button className="btn btn-sm" disabled={!na.label || !na.holder}>Add card</button>
-        </form>}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <form onSubmit={addCard} style={{ display: 'flex', gap: 6 }}>
+            <input placeholder="New card label" value={na.label} style={{ width: 130 }}
+              onChange={e => setNa(s => ({ ...s, label: e.target.value }))} />
+            <input placeholder="Director" value={na.holder} style={{ width: 110 }}
+              onChange={e => setNa(s => ({ ...s, holder: e.target.value }))} />
+            <button className="btn btn-sm" disabled={!na.label || !na.holder}>Add card</button>
+          </form>
+          {aid && <button
+            type="button"
+            className="btn btn-sm"
+            style={{ color: 'var(--red)' }}
+            disabled={busy}
+            onClick={removeCard}
+          >
+            {busy ? 'Deleting…' : 'Delete card'}
+          </button>}
+        </div>}>
         <form onSubmit={doUpload}><div className="row">
           <Field label="Card">
             <select value={aid} onChange={e => setAcct(e.target.value)}>

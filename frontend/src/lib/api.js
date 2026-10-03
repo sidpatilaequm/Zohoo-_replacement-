@@ -183,6 +183,14 @@ export function makeApi(token, tenantId) {
     gstRegister:     (p) => call('/registers/gst' + (p ? `?period=${p}` : '')),
     tdsRegister:     (p) => call('/registers/tds' + (p ? `?period=${p}` : '')),
     registerCsv:  (w, p) => `${BASE}/registers/${w}.csv` + (p ? `?period=${p}` : ''),
+    gstSales: (p) =>
+      call('/registers/gst-sales' + (p ? `?period=${encodeURIComponent(p)}` : '')),
+
+    gstPurchases: (p) =>
+      call('/registers/gst-purchases' + (p ? `?period=${encodeURIComponent(p)}` : '')),
+
+    tdsReport: (p) =>
+      call('/registers/tds-report' + (p ? `?period=${encodeURIComponent(p)}` : '')),
     upload3b:      (b)  => call('/registers/gstr3b', { method: 'POST', body: b }),
     compare3b:     (p)  => call(`/registers/gstr3b/compare?period=${p}`),
     template3bUrl: ()   => `${BASE}/registers/gstr3b/template.csv`,
@@ -191,6 +199,15 @@ export function makeApi(token, tenantId) {
     stmtAccounts:  () => call('/statements/accounts'),
     addStmtAccount: (b) => call('/statements/accounts', { method: 'POST', body: b }),
     editStmtAccount: (id, b) => call(`/statements/accounts/${id}`, { method: 'PUT', body: b }),
+    stmtAccountImpact: (id) =>
+      call(`/statements/accounts/${id}/impact`),
+
+    delStmtAccount: (id, confirm) =>
+      call(
+        `/statements/accounts/${id}` +
+          (confirm ? `?confirm=${encodeURIComponent(confirm)}` : ''),
+        { method: 'DELETE' }
+      ),
     // opts (card statements only): { allocation: 'UNALLOCATED'|'COMPANY'|'PERSONAL', category }
     uploadStmt: (id, period, file, opts = {}) => {
       const q = new URLSearchParams({ period })

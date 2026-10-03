@@ -501,12 +501,251 @@ def _upload_impact(ctx, uid):
     return held, allocated, links
 
 
+def _purge_txns(ctx, txn_ids):
+    """Delete transactions with their attachments, and the receipts or
+    payments those attachments recorded (v4.6) — so an invoice never shows
+    as paid by a bank entry that no longer exists. Plain SQL, children
+    first, so the result does not depend on the database enforcing the
+    ON DELETE CASCADE foreign keys. Returns how many payments went."""
+    if not txn_ids:
+        return 0
+
+    pay_ids = [p for (p,) in ctx.db.execute(
+        select(M.StmtTxnLink.payment_id).where(
+            M.StmtTxnLink.tenant_id == ctx.tenant.id,
+            M.StmtTxnLink.txn_id.in_(txn_ids),
+            M.StmtTxnLink.payment_id.is_not(None)
+        )
+    ).all()]
+
+    ctx.db.execute(
+        delete(M.StmtTxnLink).where(
+            M.StmtTxnLink.tenant_id == ctx.tenant.id,
+            M.StmtTxnLink.txn_id.in_(txn_ids)
+        ).execution_options(synchronize_session=False)
+    )
+
+    if pay_ids:
+        ctx.db.execute(
+            delete(M.Payment).where(
+                M.Payment.tenant_id == ctx.tenant.id,
+                M.Payment.id.in_(pay_ids)
+            ).execution_options(synchronize_session=False)
+        )
+
+    ctx.db.execute(
+        delete(M.StmtTxn).where(
+            M.StmtTxn.tenant_id == ctx.tenant.id,
+            M.StmtTxn.id.in_(txn_ids)
+        ).execution_options(synchronize_session=False)
+    )
+
+    return len(pay_ids)
+
+
 @router.delete("/uploads/{uid}")
 def delete_upload(
     uid: int,
     force: bool = Query(False),
     ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))
 ):
+    """Delete an uploaded statement and the transactions it first saved.
+
+    Rows that an earlier upload had already saved belong to that earlier
+    upload and stay. Without force, an upload whose transactions are
+    allocated or attached is refused with the counts, so nothing decided by
+    hand disappears by accident; with force=true they are removed with it.
+    Re-uploading the same file afterwards saves its transactions afresh.
+    """
+    u = ctx.get(M.StmtUpload, uid)
+
+    if not u:
+        raise HTTPException(404, "No such upload")
+
+    ctx.require(_perm_for(u.account.kind))
+
+    held, allocated, links = _upload_impact(ctx, uid)
+
+    if (allocated or links) and not force:
+        what = []
+
+        if allocated:
+            what.append(
+                f"{allocated} transaction(s) already allocated company or personal"
+            )
+
+        if links:
+            what.append(
+                f"{links} invoice or employee attachment(s)"
+            )
+
+        raise HTTPException(
+            409,
+            "This statement has " + " and ".join(what) +
+            ". Confirm the delete to remove them with it."
+        )
+
+    txn_ids = [
+        i for (i,) in ctx.db.execute(
+            select(M.StmtTxn.id).where(
+                M.StmtTxn.tenant_id == ctx.tenant.id,
+                M.StmtTxn.upload_id == uid
+            )
+        ).all()
+    ]
+
+    pays = _purge_txns(ctx, txn_ids)
+
+    ctx.db.execute(
+        delete(M.StmtUpload).where(M.StmtUpload.id == uid)
+    )
+
+    ctx.db.commit()
+
+    return {
+        "deleted": uid,
+        "period": u.period,
+        "filename": u.filename,
+        "transactions_removed": held,
+        "allocations_removed": allocated,
+        "attachments_removed": links,
+        "payments_removed": pays
+    }
+
+
+def _account_impact(ctx, aid) -> dict:
+    """What deleting a whole bank account or card would take with it."""
+    txn_q = select(M.StmtTxn.id).where(
+        M.StmtTxn.tenant_id == ctx.tenant.id,
+        M.StmtTxn.account_id == aid
+    )
+
+    n = lambda q: ctx.db.execute(q).scalar_one()
+
+    return {
+        "statements": n(
+            select(func.count()).select_from(M.StmtUpload).where(
+                M.StmtUpload.tenant_id == ctx.tenant.id,
+                M.StmtUpload.account_id == aid
+            )
+        ),
+        "transactions": n(
+            select(func.count()).select_from(M.StmtTxn).where(
+                M.StmtTxn.tenant_id == ctx.tenant.id,
+                M.StmtTxn.account_id == aid
+            )
+        ),
+        "allocated": n(
+            select(func.count()).select_from(M.StmtTxn).where(
+                M.StmtTxn.tenant_id == ctx.tenant.id,
+                M.StmtTxn.account_id == aid,
+                M.StmtTxn.allocation.in_(("COMPANY", "PERSONAL"))
+            )
+        ),
+        "attachments": n(
+            select(func.count()).select_from(M.StmtTxnLink).where(
+                M.StmtTxnLink.tenant_id == ctx.tenant.id,
+                M.StmtTxnLink.txn_id.in_(txn_q)
+            )
+        ),
+        "recorded_payments": n(
+            select(func.count()).select_from(M.StmtTxnLink).where(
+                M.StmtTxnLink.tenant_id == ctx.tenant.id,
+                M.StmtTxnLink.txn_id.in_(txn_q),
+                M.StmtTxnLink.payment_id.is_not(None)
+            )
+        ),
+    }
+
+
+@router.get("/accounts/{aid}/impact")
+def account_impact(
+    aid: int,
+    ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))
+):
+    a = ctx.get(M.StmtAccount, aid)
+
+    if not a:
+        raise HTTPException(404, "No such account")
+
+    ctx.require(_perm_for(a.kind))
+
+    return {
+        "id": a.id,
+        "kind": a.kind,
+        "label": a.label,
+        **_account_impact(ctx, aid)
+    }
+
+
+@router.delete("/accounts/{aid}")
+def delete_account(
+    aid: int,
+    confirm: str | None = Query(None),
+    ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))
+):
+    """Delete a bank account or director card completely: every statement
+    uploaded to it, every transaction, every allocation and attachment, and
+    the receipts or payments those attachments recorded. Invoices, vendors,
+    employees and loans themselves are untouched. When anything has been
+    allocated or attached, the account's label must be given as `confirm`."""
+    a = ctx.get(M.StmtAccount, aid)
+
+    if not a:
+        raise HTTPException(404, "No such account")
+
+    ctx.require(_perm_for(a.kind))
+
+    imp = _account_impact(ctx, aid)
+
+    if (imp["allocated"] or imp["attachments"]) and (
+        confirm or ""
+    ).strip() != a.label:
+        raise HTTPException(
+            409,
+            f"{a.label} has {imp['attachments']} attachment(s) and "
+            f"{imp['allocated']} allocation(s). Type the account name to confirm."
+        )
+
+    txn_ids = [
+        i for (i,) in ctx.db.execute(
+            select(M.StmtTxn.id).where(
+                M.StmtTxn.tenant_id == ctx.tenant.id,
+                M.StmtTxn.account_id == aid
+            )
+        ).all()
+    ]
+
+    pays = _purge_txns(ctx, txn_ids)
+
+    ctx.db.execute(
+        delete(M.StmtUpload).where(
+            M.StmtUpload.tenant_id == ctx.tenant.id,
+            M.StmtUpload.account_id == aid
+        ).execution_options(synchronize_session=False)
+    )
+
+    label, kind = a.label, a.kind
+
+    ctx.db.execute(
+        delete(M.StmtAccount).where(
+            M.StmtAccount.tenant_id == ctx.tenant.id,
+            M.StmtAccount.id == aid
+        ).execution_options(synchronize_session=False)
+    )
+
+    ctx.db.commit()
+
+    return {
+        "deleted": aid,
+        "label": label,
+        "kind": kind,
+        **imp,
+        "payments_removed": pays
+    }
+
+
+# --------------------------------------------------------------- transactions
     """Delete an uploaded statement and the transactions it first saved.
 
     Rows that an earlier upload had already saved belong to that earlier
