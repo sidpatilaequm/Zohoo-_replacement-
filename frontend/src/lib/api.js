@@ -47,6 +47,23 @@ export function makeApi(token, tenantId) {
     customerLogo:  (id, logo) => call(`/customers/${id}/logo`, { method: 'PUT', body: { logo } }),
     editCustomer:  (id, b) => call(`/customers/${id}`, { method: 'PUT', body: b }),
     delCustomer:   (id) => call(`/customers/${id}`, { method: 'DELETE' }),
+        // ---- additional customer/vendor addresses ----
+    addresses: (kind, partyId) => {
+      const party = kind === 'customer' ? 'customer' : 'vendor'
+      return call(`/parties/${party}/${partyId}/addresses`)
+    },
+    addAddress: (kind, partyId, body) => {
+      const party = kind === 'customer' ? 'customer' : 'vendor'
+      return call(`/parties/${party}/${partyId}/addresses`, {
+        method: 'POST',
+        body
+      })
+    },
+    editAddress: (id, body) =>
+      call(`/addresses/${id}`, { method: 'PUT', body }),
+    delAddress: (id) =>
+      call(`/addresses/${id}`, { method: 'DELETE' }),
+
 
     vendors:       ()   => call('/vendors'),
     addVendor:     (b)  => call('/vendors', { method: 'POST', body: b }),
