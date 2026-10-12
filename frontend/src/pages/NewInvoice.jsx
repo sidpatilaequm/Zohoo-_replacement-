@@ -145,6 +145,8 @@ export default function NewInvoice() {
   }
   if (customers.loading || materials.loading || states.loading) return <Loading />
   if (customers.error) return <ErrorBox>{customers.error}</ErrorBox>
+  if (materials.error) return <ErrorBox>{materials.error}</ErrorBox>
+  if (states.error) return <ErrorBox>{states.error}</ErrorBox>
   const stateName = c => states.data?.find(s => s.code === c)?.name || c
 
   return (<form onSubmit={save}>

@@ -75,6 +75,7 @@ export function makeApi(token, tenantId) {
     addMaterial:   (b)  => call('/materials', { method: 'POST', body: b }),
     editMaterial:  (id, b) => call(`/materials/${id}`, { method: 'PUT', body: b }),
     delMaterial:   (id) => call(`/materials/${id}`, { method: 'DELETE' }),
+    hsnRates:      (id) => call(`/hsn/${id}/rates`),
 
     invoices:      ()   => call('/invoices'),
     invoice:       (id) => call(`/invoices/${id}`),
