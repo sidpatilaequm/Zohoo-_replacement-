@@ -347,6 +347,13 @@ class TenantIn(BaseModel):
     vinv_prefix: str = "PINV/"
     vinv_seq: int = 1
     vinv_fy: bool = False
+    pro_prefix: str = Field("PI/", min_length=1, max_length=20)
+    pro_seq: int = Field(1, ge=1)
+    pro_fy: bool = False
+    inv_notes: str | None = None
+    inv_terms: str | None = None
+    sig_on_tax: bool = True
+    sig_on_pro: bool = True
 
     fy_start_month: int = Field(4, ge=1, le=12)
     fy_start_day: int = Field(1, ge=1, le=31)
@@ -394,6 +401,8 @@ class TenantIn(BaseModel):
     def _v(self):
         if self.company_type not in ("TRADING", "NONTRADING"):
             raise ValueError("company_type must be TRADING or NONTRADING")
+        if self.pro_prefix.strip() == self.inv_prefix.strip():
+            raise ValueError("Proforma prefix must differ from invoice prefix")
         if self.gstin:
             if len(self.gstin) != 15:
                 raise ValueError("A GSTIN is exactly 15 characters")
@@ -714,3 +723,26 @@ class HsnRateIn(BaseModel):
             if v < 0 or v > 100:
                 raise ValueError(f"{nm} must be between 0 and 100")
         return self
+
+
+class MailAttachmentIn(BaseModel):
+    filename: str
+    content_base64: str
+    content_type: str | None = None
+
+
+class DocMailIn(BaseModel):
+    kind: str
+    id: int
+    to: list[str]
+    cc: list[str] = Field(default_factory=list)
+    bcc: list[str] = Field(default_factory=list)
+    subject: str
+    body: str
+    attach_pdf: bool = True
+    variant: str | None = None
+    extra: list[MailAttachmentIn] = Field(default_factory=list)
+
+
+class SmtpTestIn(BaseModel):
+    to: str

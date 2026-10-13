@@ -39,6 +39,8 @@ def _org(ctx):
         "bank_account": o.bank_account,
         "logo": o.logo,
         "company_type": o.company_type,
+        "inv_notes": o.inv_notes,
+        "inv_terms": o.inv_terms,
     }
 
 
@@ -95,6 +97,7 @@ def print_invoice(iid: int, variant: str | None = None, disposition: str = "atta
             "pos_manual": inv.pos_manual,
             "reverse_chg": inv.reverse_chg,
            "converted_from": inv.converted_from,
+           "converted_to": getattr(inv, "converted_to", None),
            "customer": {"name": c.name, "email": c.email, "pan": c.pan,"logo": c.logo,
                         "party_type": c.party_type, "ship_same": c.ship_same,
                         "bill": {"addr": c.bill_addr, "city": c.bill_city,
@@ -104,6 +107,8 @@ def print_invoice(iid: int, variant: str | None = None, disposition: str = "atta
                                  "state": c.bill_state if c.ship_same else c.ship_state,
                                  "pin": c.bill_pin if c.ship_same else c.ship_pin}}}
     received = settled(ctx, invoice_id=inv.id) if dt == "TAX" and inv.status == "ACTIVE" else 0
+    from .signatories import printed_signatures
+    doc["signatures"] = printed_signatures(ctx, dt)
     pdf = render_invoice(_org(ctx), doc, tax_json(invoice_tax(ctx, inv)),
                          _variant(ctx, variant), received=received)
     suffix = "-proforma" if dt == "PRO" and inv.doc_type != "PRO" else ""
@@ -137,3 +142,100 @@ def print_receipt(pid: int, variant: str | None = None, disposition: str = "atta
                       "due_date": inv.due_date, "total": t.rounded}}
     pdf = render_receipt(_org(ctx), rc, _variant(ctx, variant))
     return _pdf(pdf, f"RCPT-{p.id:05d}.pdf", disposition)
+
+
+# Shared PDF builders used by the print and email workflows.
+# These return the same rendered PDF bytes and filename convention.
+def invoice_pdf(ctx, inv, variant=None):
+    c = inv.customer
+    pos_state = ctx.db.get(M.State, inv.pos_state)
+    dt = inv.doc_type
+
+    if dt not in ("TAX", "PRO"):
+        raise HTTPException(422, "Invoice type must be TAX or PRO")
+
+    doc = {
+        "doc_no": inv.doc_no,
+        "doc_type": dt,
+        "doc_date": inv.doc_date,
+        "subject": inv.subject,
+        "instructions": inv.instructions,
+        "cancelled": inv.status == "CANCELLED",
+        "cancel_reason": inv.cancel_reason,
+        "cancelled_on": inv.cancelled_on,
+        "due_date": inv.due_date,
+        "po_no": inv.po_no,
+        "po_date": inv.po_date,
+        "gstin": inv.gstin,
+        "pos_state_name": pos_state.name if pos_state else inv.pos_state,
+        "pos_state": inv.pos_state,
+        "pos_manual": inv.pos_manual,
+        "reverse_chg": inv.reverse_chg,
+        "converted_from": inv.converted_from,
+        "converted_to": getattr(inv, "converted_to", None),
+        "customer": {
+            "name": c.name,
+            "email": c.email,
+            "pan": c.pan,
+            "logo": c.logo,
+            "party_type": c.party_type,
+            "ship_same": c.ship_same,
+            "bill": {
+                "addr": c.bill_addr,
+                "city": c.bill_city,
+                "state": c.bill_state,
+                "pin": c.bill_pin,
+            },
+            "ship": {
+                "addr": c.bill_addr if c.ship_same else c.ship_addr,
+                "city": c.bill_city if c.ship_same else c.ship_city,
+                "state": c.bill_state if c.ship_same else c.ship_state,
+                "pin": c.bill_pin if c.ship_same else c.ship_pin,
+            },
+        },
+    }
+
+    received = (
+        settled(ctx, invoice_id=inv.id)
+        if dt == "TAX" and inv.status == "ACTIVE"
+        else 0
+    )
+    from .signatories import printed_signatures
+    doc["signatures"] = printed_signatures(ctx, dt)
+    pdf = render_invoice(
+        _org(ctx),
+        doc,
+        tax_json(invoice_tax(ctx, inv)),
+        _variant(ctx, variant),
+        received=received,
+    )
+    return pdf, f"{inv.doc_no.replace('/', '-')}.pdf"
+
+
+def po_pdf(ctx, po, variant=None):
+    v = po.vendor
+    doc = {
+        "doc_no": po.doc_no,
+        "doc_date": po.doc_date,
+        "req_date": po.req_date,
+        "status": po.status,
+        "gstin": po.gstin,
+        "bill_addr": po.bill_addr,
+        "ship_addr": po.ship_addr,
+        "vendor": {
+            "name": v.name,
+            "addr": v.addr,
+            "city": v.city,
+            "pin": v.pin,
+            "pan": v.pan,
+            "email": v.email,
+            "logo": v.logo,
+        },
+    }
+    pdf = render_po(
+        _org(ctx),
+        doc,
+        tax_json(po_tax(ctx, po)),
+        _variant(ctx, variant),
+    )
+    return pdf, f"{po.doc_no.replace('/', '-')}.pdf"

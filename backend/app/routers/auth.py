@@ -22,13 +22,13 @@ DEFAULT_GROUPS = {
     "Administrator": M.PERMS,
     "Accounts": ["invoice","saved","po","vinv","so","del","grn","disc","phys","stock",
                  "crec","vpay","reports","registers","gstr","customers","vendors",
-                 "materials","attrs","hsn","data"],
-    "Sales": ["invoice","saved","so","del","customers","materials","stock","reports"],
+                 "materials","attrs","hsn","data","proforma"],
+    "Sales": ["invoice","saved","so","del","customers","materials","stock","reports","proforma"],
     # The auditor sees everything and changes nothing. Every permission here is
     # a read-only screen; none of them can raise, alter or post a document.
     "Auditor": ["saved","po","vinv","stock","crec","vpay","reports","registers",
-                "gstr","audit","customers","vendors","materials","hsn"],
-    "Read only": ["saved","stock","reports","registers","gstr"],
+                "gstr","audit","customers","vendors","materials","hsn","proforma"],
+    "Read only": ["saved","stock","reports","registers","gstr","proforma"],
 }
 
 

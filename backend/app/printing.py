@@ -26,6 +26,8 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table,
                                 TableStyle, Image, KeepTogether)
+from reportlab.graphics.barcode.qr import QrCodeWidget
+from reportlab.graphics.shapes import Drawing
 from reportlab.lib.enums import TA_RIGHT, TA_CENTER
 from .tax import hsn_summary, in_words
 
@@ -408,6 +410,15 @@ def _terms_label(inv):
     except TypeError:
         return "As agreed"
 
+def _qr_flowable(payload, size=24 * mm):
+    qr = QrCodeWidget(payload)
+    x0, y0, x1, y1 = qr.getBounds()
+    w, h = x1 - x0, y1 - y0
+    drawing = Drawing(size, size, transform=[size / w, 0, 0, size / h, 0, 0])
+    drawing.add(qr)
+    return drawing
+
+
 def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0) -> bytes:
     """Render the standard organisation invoice layout."""
     variant = variant if variant in VARIANTS else "NONTRADING"
@@ -447,8 +458,8 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
             ParagraphStyle(
                 "invoice_title",
                 S["h1"],
-                fontSize=20,
-                leading=24,
+                fontSize=16,
+                leading=20,
                 alignment=TA_RIGHT,
                 textColor=INK,
             ),
@@ -478,7 +489,7 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
 
     meta_l = [
         kv("#", inv["doc_no"]),
-        kv("Invoice Date", _d(inv["doc_date"])),
+        kv("Proforma Date" if pro else "Invoice Date", _d(inv["doc_date"])),
         kv("Terms", _terms_label(inv)),
         kv(
             "Due Date",
@@ -511,6 +522,9 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
 
     if inv.get("converted_from"):
         meta_r.append(kv("Converted from", inv["converted_from"]))
+
+    if pro and inv.get("converted_to"):
+        meta_r.append(kv("Tax Invoice", inv["converted_to"]))
 
     def _kvt(rows, w):
         t = Table(
@@ -823,11 +837,34 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
         ])
     )
 
-    right_col = [
-        tt,
-        Spacer(1, 40),
-        _p("Authorized Signature", "center"),
-    ]
+    signatures = inv.get("signatures") or []
+    if not signatures:
+        right_col = [
+            tt,
+            Spacer(1, 40),
+            _p("Authorized Signature", "center"),
+        ]
+    else:
+        right_col = [tt, Spacer(1, 10),
+                     _p("For " + org.get("name", ""), "center")]
+        for sig in signatures[:2]:
+            raw = sig.get("image") or ""
+            if "," in raw:
+                raw = raw.split(",", 1)[1]
+            try:
+                image_bytes = base64.b64decode(raw, validate=True)
+                right_col.extend([
+                    Image(io.BytesIO(image_bytes), width=38*mm,
+                          height=12*mm, kind="proportional"),
+                    _p(sig.get("name", ""), "center"),
+                    _p(sig.get("designation", ""), "small"),
+                ])
+            except (ValueError, TypeError):
+                right_col.append(_p(sig.get("name", ""), "center"))
+        right_col.append(
+            _p("Authorized Signatories" if len(signatures) > 1
+               else "Authorized Signature", "center")
+        )
 
     left_col = [
         _p("Total In Words", "small"),
@@ -839,20 +876,29 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
         Spacer(1, 8),
     ]
 
-    if inv.get("instructions"):
-        left_col += [
-            _p("Notes", "small"),
-            _p(inv["instructions"]),
-            Spacer(1, 8),
-        ]
+    note_lines = []
+    for source in (org.get("inv_notes"), inv.get("instructions")):
+        if source:
+            note_lines.extend(
+                line.strip() for line in str(source).splitlines() if line.strip()
+            )
+    if note_lines:
+        left_col.append(_p("Notes", "small"))
+        left_col.extend(_p(line) for line in note_lines)
+        left_col.append(Spacer(1, 8))
 
-    terms = TERMS["INV"][variant][:1]
+    configured_terms = org.get("inv_terms")
+    terms = ["Thanks for your business. Pay immediately."]
+    if configured_terms is None:
+        terms.append("Pay immediately for license activation")
+    else:
+        terms.extend(
+            line.strip() for line in str(configured_terms).splitlines()
+            if line.strip()
+        )
 
-    left_col += [
-        _p("Terms & Conditions", "small")
-    ] + [
-        _p(t) for t in terms
-    ]
+    left_col += [_p("Terms & Conditions", "small")]
+    left_col.extend(_p(line) for line in terms)
 
     bank = _bank_line(org)
 
@@ -861,6 +907,17 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
             Spacer(1, 6),
             _p(bank),
         ]
+
+    qr_bank = bank.replace("Account No:", "A/c") if bank else ""
+    qr_payload = "\\n".join([
+        title,
+        f"Document: {inv['doc_no']}",
+        f"Company: {org.get('name', '')}",
+        f"Buyer GSTIN: {inv.get('gstin') or 'Unregistered'}",
+        f"Total: INR {_inr(totals['rounded'])}",
+        qr_bank,
+    ])
+    left_col += [Spacer(1, 5), _qr_flowable(qr_payload)]
 
     if pro:
         left_col += [

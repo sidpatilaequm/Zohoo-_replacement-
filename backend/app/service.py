@@ -7,6 +7,7 @@ from .fy import fy_label
 
 _RANGES = {
     "invoice": ("inv_prefix", "inv_seq", "inv_fy"),
+    "proforma": ("pro_prefix", "pro_seq", "pro_fy"),
     "po": ("po_prefix", "po_seq", "po_fy"),
     "vinv": ("vinv_prefix", "vinv_seq", "vinv_fy"),
 }

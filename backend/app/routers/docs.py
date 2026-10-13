@@ -55,25 +55,58 @@ def tax_json(t):
 
 # ============================================================== invoices
 @router.get("/invoices")
-def list_invoices(ctx: Ctx = Depends(need("saved"))):
+def list_invoices(doc_type: str | None = None, ctx: Ctx = Depends(need("saved"))):
+    if doc_type is not None:
+        doc_type = doc_type.upper()
+        if doc_type not in ("TAX", "PRO"):
+            raise HTTPException(422, "doc_type must be TAX or PRO")
+        if doc_type == "PRO":
+            ctx.require("proforma")
+
+    q = ctx.scope(select(M.Invoice), M.Invoice)
+    if doc_type:
+        q = q.where(M.Invoice.doc_type == doc_type)
+    elif "proforma" not in ctx.perms:
+        q = q.where(M.Invoice.doc_type == "TAX")
+
     out = []
-    for inv in ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
-                              .order_by(M.Invoice.doc_date.desc(), M.Invoice.id.desc())).scalars():
+    for inv in ctx.db.execute(
+        q.order_by(M.Invoice.doc_date.desc(), M.Invoice.id.desc())
+    ).scalars():
         t = invoice_tax(ctx, inv)
         rec = settled(ctx, invoice_id=inv.id)
-        out.append({"id": inv.id, "doc_no": inv.doc_no, "doc_type": inv.doc_type,
-                    "status": inv.status, "cancelled_on": inv.cancelled_on,
-                    "cancel_reason": inv.cancel_reason,
-                    "doc_date": inv.doc_date, "due_date": inv.due_date,
-                    "customer": inv.customer.name, "customer_id": inv.customer_id,
-                    "customer_email": inv.customer.email,
-                    "gstin": inv.gstin, "pos_state": inv.pos_state, "po_no": inv.po_no,
-                    "po_date": inv.po_date, "taxable": float(t.taxable), "tax": float(t.tax),
-                    "total": float(t.rounded), "received": float(rec),
-                    "outstanding": (float(t.rounded - rec)
-                                    if inv.doc_type == "TAX" and inv.status == "ACTIVE" else None),
-                    "intra": t.intra})
+        out.append({
+            "id": inv.id, "doc_no": inv.doc_no, "doc_type": inv.doc_type,
+            "status": inv.status, "cancelled_on": inv.cancelled_on,
+            "cancel_reason": inv.cancel_reason,
+            "doc_date": inv.doc_date, "due_date": inv.due_date,
+            "customer": inv.customer.name, "customer_id": inv.customer_id,
+            "customer_email": inv.customer.email,
+            "gstin": inv.gstin, "pos_state": inv.pos_state, "po_no": inv.po_no,
+            "po_date": inv.po_date, "taxable": float(t.taxable), "tax": float(t.tax),
+            "total": float(t.rounded), "received": float(rec),
+            "outstanding": (
+                float(t.rounded - rec)
+                if inv.doc_type == "TAX" and inv.status == "ACTIVE" else None
+            ),
+            "intra": t.intra,
+            "converted_from": inv.converted_from,
+            "converted_to": inv.converted_to,
+            "converted_to_id": inv.converted_to_id,
+            "converted_on": inv.converted_on,
+        })
     return out
+
+
+@router.get("/invoices/next-no")
+def invoice_next_no(doc_type: str = "TAX", doc_date: date | None = None,
+                    ctx: Ctx = Depends(need("invoice"))):
+    kind = {"TAX": "invoice", "PRO": "proforma"}.get(doc_type.upper())
+    if not kind:
+        raise HTTPException(422, "doc_type must be TAX or PRO")
+    if kind == "proforma":
+        ctx.require("proforma")
+    return {"doc_no": next_no(ctx, kind, doc_date)}
 
 
 @router.get("/invoices/{iid}")
@@ -156,7 +189,8 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
     if ship_addr and ship_addr.addr_type not in ("SHIPPING", "BOTH"):
         raise HTTPException(422, "Selected address cannot be used for shipping")
 
-    doc_no = body.doc_no or next_no(ctx, "invoice", body.doc_date)
+    range_kind = "proforma" if body.doc_type == "PRO" else "invoice"
+    doc_no = body.doc_no or next_no(ctx, range_kind, body.doc_date)
     if ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
                       .where(M.Invoice.doc_no == doc_no)).scalar_one_or_none():
         raise HTTPException(409, f"Invoice {doc_no} already exists")
@@ -257,31 +291,101 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
             m.stock_qty = m.stock_qty - qty
 
     if not body.doc_no:
-        bump(ctx, "invoice", body.doc_date)
+        bump(ctx, range_kind, body.doc_date)
     ctx.db.commit()
     ctx.db.refresh(inv)
     return {"id": inv.id, "doc_no": inv.doc_no, "totals": tax_json(invoice_tax(ctx, inv))}
 
 
 @router.post("/invoices/{iid}/convert")
-def convert(iid: int, doc_no: str | None = None, ctx: Ctx = Depends(need("invoice"))):
-    inv = ctx.get(M.Invoice, iid)
-    if not inv:
+def convert(iid: int, doc_no: str | None = None, doc_date: date | None = None,
+            ctx: Ctx = Depends(need("invoice"))):
+    ctx.require("proforma")
+    pro = ctx.get(M.Invoice, iid)
+    if not pro:
         raise HTTPException(404, "No such invoice")
-    if inv.doc_type != "PRO":
+    if pro.doc_type != "PRO":
         raise HTTPException(409, "Only a proforma can be converted")
-    new_no = doc_no or next_no(ctx, "invoice", inv.doc_date)
-    if ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
-                      .where(M.Invoice.doc_no == new_no)).scalar_one_or_none():
+    if pro.converted_to_id:
+        linked = ctx.get(M.Invoice, pro.converted_to_id)
+        if linked:
+            raise HTTPException(409, "This proforma has already been converted")
+
+    tax_date = doc_date or pro.doc_date
+    new_no = doc_no or next_no(ctx, "invoice", tax_date)
+    if ctx.db.execute(
+        ctx.scope(select(M.Invoice), M.Invoice)
+        .where(M.Invoice.doc_no == new_no)
+    ).scalar_one_or_none():
         raise HTTPException(409, f"Invoice {new_no} already exists")
-    inv.converted_from, inv.doc_no, inv.doc_type = inv.doc_no, new_no, "TAX"
-    if tracks_stock(ctx):
-        for l in inv.lines:
-            l.material.stock_qty = l.material.stock_qty - l.qty
+
+    stock = tracks_stock(ctx)
+    if stock:
+        for line in pro.lines:
+            if line.qty > line.material.stock_qty:
+                raise HTTPException(
+                    422,
+                    f"Insufficient stock for {line.material.code}: "
+                    f"available {line.material.stock_qty}, required {line.qty}",
+                )
+
+    tax = M.Invoice(
+        tenant_id=pro.tenant_id,
+        doc_no=new_no,
+        doc_type="TAX",
+        doc_date=tax_date,
+        due_date=pro.due_date,
+        customer_id=pro.customer_id,
+        gstin=pro.gstin,
+        pos_state=pro.pos_state,
+        po_no=pro.po_no,
+        po_date=pro.po_date,
+        reverse_chg=pro.reverse_chg,
+        converted_from=pro.doc_no,
+        status="ACTIVE",
+        subject=pro.subject,
+        instructions=pro.instructions,
+        bill_addr_id=pro.bill_addr_id,
+        ship_addr_id=pro.ship_addr_id,
+        pos_manual=pro.pos_manual,
+        price_mode=pro.price_mode,
+    )
+    ctx.db.add(tax)
+    ctx.db.flush()
+
+    for line in pro.lines:
+        ctx.db.add(M.InvoiceLine(
+            invoice_id=tax.id,
+            line_no=line.line_no,
+            material_id=line.material_id,
+            qty=line.qty,
+            price=line.price,
+            descr2=line.descr2,
+            sgst_pct=line.sgst_pct,
+            cgst_pct=line.cgst_pct,
+            igst_pct=line.igst_pct,
+            rate_label=line.rate_label,
+            price_inclusive=line.price_inclusive,
+        ))
+        if stock:
+            line.material.stock_qty -= line.qty
+
+    pro.converted_to = new_no
+    pro.converted_to_id = tax.id
+    pro.converted_on = date.today()
+
     if not doc_no:
-        bump(ctx, "invoice", inv.doc_date)
+        bump(ctx, "invoice", tax_date)
+
     ctx.db.commit()
-    return {"id": inv.id, "doc_no": inv.doc_no, "converted_from": inv.converted_from}
+    ctx.db.refresh(tax)
+    return {
+        "id": tax.id,
+        "doc_no": tax.doc_no,
+        "converted_from": pro.doc_no,
+        "proforma_id": pro.id,
+        "totals": tax_json(invoice_tax(ctx, tax)),
+    }
 
 
 @router.post("/invoices/{iid}/cancel")
@@ -341,9 +445,28 @@ def del_invoice(iid: int, ctx: Ctx = Depends(need("invoice"))):
         raise HTTPException(404, "No such invoice")
     if settled(ctx, invoice_id=iid) > 0:
         raise HTTPException(409, "That invoice has receipts against it")
+
+    if inv.doc_type == "PRO" and inv.converted_to_id:
+        linked = ctx.get(M.Invoice, inv.converted_to_id)
+        if linked:
+            raise HTTPException(409, "Delete the linked tax invoice before deleting this proforma")
+
+    if inv.doc_type == "TAX" and inv.converted_from:
+        pro = ctx.db.execute(
+            ctx.scope(select(M.Invoice), M.Invoice).where(
+                M.Invoice.doc_type == "PRO",
+                M.Invoice.doc_no == inv.converted_from,
+            )
+        ).scalar_one_or_none()
+        if pro and pro.converted_to_id == inv.id:
+            pro.converted_to = None
+            pro.converted_to_id = None
+            pro.converted_on = None
+
     if inv.doc_type == "TAX" and tracks_stock(ctx):
-        for l in inv.lines:
-            l.material.stock_qty = l.material.stock_qty + l.qty
+        for line in inv.lines:
+            line.material.stock_qty += line.qty
+
     ctx.db.delete(inv)
     ctx.db.commit()
 

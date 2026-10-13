@@ -5,7 +5,7 @@ from sqlalchemy import (String, Integer, BigInteger, SmallInteger, Numeric, Date
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
-PERMS = ["invoice","saved","po","vinv","so","del","grn","disc","phys","stock",
+PERMS = ["invoice","saved","po","vinv","so","del","grn","disc","phys","stock","proforma","signatures",
          "audit","bankstmt","cardstmt","employees","expenses",
          "crec","vpay","reports","registers","gstr","customers","vendors",
          "materials","attrs","hsn","org","users","data"]
@@ -52,6 +52,13 @@ class Tenant(Base):
     vinv_prefix: Mapped[str]=mapped_column(String(24),default="PINV/")
     vinv_seq: Mapped[int]=mapped_column(Integer,default=1)
     vinv_fy: Mapped[bool]=mapped_column(Boolean,default=False)
+    pro_prefix: Mapped[str]=mapped_column(String(20),default="PI/")
+    pro_seq: Mapped[int]=mapped_column(Integer,default=1)
+    pro_fy: Mapped[bool]=mapped_column(Boolean,default=False)
+    inv_notes: Mapped[str|None]=mapped_column(Text,nullable=True)
+    inv_terms: Mapped[str|None]=mapped_column(Text,nullable=True)
+    sig_on_tax: Mapped[bool]=mapped_column(Boolean,default=True)
+    sig_on_pro: Mapped[bool]=mapped_column(Boolean,default=True)
 
     # automatic master codes
     cust_prefix: Mapped[str]=mapped_column(String(12),default="C")
@@ -277,6 +284,9 @@ class Invoice(Base):
     po_date: Mapped[date|None]=mapped_column(Date,nullable=True)
     reverse_chg: Mapped[str]=mapped_column(Enum("Y","N",name="rchg"),default="N")
     converted_from: Mapped[str|None]=mapped_column(String(40),nullable=True)
+    converted_to: Mapped[str|None]=mapped_column(String(40),nullable=True)
+    converted_to_id: Mapped[int|None]=mapped_column(Integer,nullable=True)
+    converted_on: Mapped[date|None]=mapped_column(Date,nullable=True)
     status: Mapped[str]=mapped_column(
         Enum("ACTIVE","CANCELLED",name="istat"),default="ACTIVE"
     )
@@ -836,3 +846,34 @@ class DocFile(Base):
         DateTime,
         server_default=func.now()
     )
+
+class EmailLog(Base):
+    __tablename__ = "email_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    doc_kind: Mapped[str] = mapped_column(String(8))
+    doc_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    doc_no: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    sent_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    from_addr: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    to_addrs: Mapped[str] = mapped_column(Text)
+    cc_addrs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bcc_addrs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subject: Mapped[str] = mapped_column(String(250))
+    attachments: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(8), default="SENT")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Signatory(Base):
+    __tablename__ = "signatories"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(120))
+    designation: Mapped[str] = mapped_column(String(80), default="Director")
+    image: Mapped[str] = mapped_column(Text)
+    on_invoices: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    uploaded_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

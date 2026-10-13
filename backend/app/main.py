@@ -21,3 +21,10 @@ for r in (auth, masters, docs, documents, returns, admin, inventory, ordering,
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# v4.4/v4.5 routers; register once without altering existing routes.
+from .routers import mailing, signatories
+
+app.include_router(mailing.router, prefix="/api")
+app.include_router(signatories.router, prefix="/api")
