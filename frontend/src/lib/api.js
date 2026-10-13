@@ -65,6 +65,8 @@ export function makeApi(token, tenantId) {
       call(`/addresses/${id}`, { method: 'DELETE' }),
 
 
+
+
     vendors:       ()   => call('/vendors'),
     addVendor:     (b)  => call('/vendors', { method: 'POST', body: b }),
     editVendor:    (id, b) => call(`/vendors/${id}`, { method: 'PUT', body: b }),
@@ -80,7 +82,12 @@ export function makeApi(token, tenantId) {
     invoices:      ()   => call('/invoices'),
     invoice:       (id) => call(`/invoices/${id}`),
     addInvoice:    (b)  => call('/invoices', { method: 'POST', body: b }),
-    convert:       (id) => call(`/invoices/${id}/convert`, { method: 'POST' }),
+
+    convert: (id, docDate) => call(
+      `/invoices/${id}/convert${docDate ? `?doc_date=${encodeURIComponent(docDate)}` : ''}`,
+      { method: 'POST' }
+    ),
+
     cancelInvoice: (id, reason) => call(`/invoices/${id}/cancel`, { method: 'POST', body: { reason } }),
     delInvoice:    (id) => call(`/invoices/${id}`, { method: 'DELETE' }),
 
