@@ -120,6 +120,7 @@ def get_invoice(iid: int, ctx: Ctx = Depends(need("saved"))):
         "id": inv.id,
         "doc_no": inv.doc_no,
         "doc_type": inv.doc_type,
+        "customer_id": inv.customer_id,
         "doc_date": inv.doc_date,
         "due_date": inv.due_date,
         "po_no": inv.po_no,
@@ -130,6 +131,23 @@ def get_invoice(iid: int, ctx: Ctx = Depends(need("saved"))):
         "bill_addr_id": inv.bill_addr_id,
         "ship_addr_id": inv.ship_addr_id,
         "price_mode": inv.price_mode,
+        "reverse_chg": inv.reverse_chg,
+        "subject": inv.subject,
+        "instructions": inv.instructions,
+        "lines": [
+            {
+                "material_id": line.material_id,
+                "qty": float(line.qty),
+                "price": float(line.price),
+                "descr2": line.descr2,
+                "price_inclusive": line.price_inclusive,
+                "sgst_pct": float(line.sgst_pct or 0),
+                "cgst_pct": float(line.cgst_pct or 0),
+                "igst_pct": float(line.igst_pct or 0),
+                "rate_label": line.rate_label,
+            }
+            for line in inv.lines
+        ],
     },
 
     "pos_manual": inv.pos_manual,
@@ -295,6 +313,196 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
     ctx.db.commit()
     ctx.db.refresh(inv)
     return {"id": inv.id, "doc_no": inv.doc_no, "totals": tax_json(invoice_tax(ctx, inv))}
+
+
+@router.put("/invoices/{iid}")
+def update_invoice(iid: int, body: S.InvoiceIn,
+                   ctx: Ctx = Depends(need("invoice"))):
+    inv = ctx.get(M.Invoice, iid)
+    if not inv:
+        raise HTTPException(404, "No such invoice")
+
+    if inv.status == "CANCELLED":
+        raise HTTPException(409, "Cancelled invoices cannot be edited")
+    if inv.converted_from or inv.converted_to or inv.converted_to_id:
+        raise HTTPException(409, "Converted invoices cannot be edited")
+    if body.doc_type != inv.doc_type:
+        raise HTTPException(409, "The document type cannot be changed while editing")
+
+    payment_exists = ctx.db.execute(
+        select(M.Payment.id).where(
+            M.Payment.tenant_id == ctx.tenant.id,
+            M.Payment.invoice_id == inv.id,
+        ).limit(1)
+    ).scalar_one_or_none()
+    if payment_exists is not None:
+        raise HTTPException(
+            409, "Invoices with payment history cannot be edited"
+        )
+
+    c = ctx.get(M.Customer, body.customer_id)
+    if not c:
+        raise HTTPException(422, "No such customer in this organisation")
+
+    reg = resolve_reg(c, body.gstin)
+    if c.party_type == "B2B" and reg is None:
+        raise HTTPException(422, "A B2B customer must be billed under a GSTIN")
+    if c.party_type == "B2C" and body.gstin:
+        raise HTTPException(422, "A B2C invoice cannot carry a recipient GSTIN")
+
+    bill_addr = _party_address(ctx, body.bill_addr_id, "CUSTOMER", c.id)
+    ship_addr = _party_address(ctx, body.ship_addr_id, "CUSTOMER", c.id)
+
+    if bill_addr and bill_addr.addr_type not in ("BILLING", "BOTH"):
+        raise HTTPException(422, "Selected address cannot be used for billing")
+    if ship_addr and ship_addr.addr_type not in ("SHIPPING", "BOTH"):
+        raise HTTPException(422, "Selected address cannot be used for shipping")
+
+    if body.pos_manual:
+        if not body.pos_state or not ctx.db.get(M.State, body.pos_state):
+            raise HTTPException(422, "Invalid place of supply state")
+        pos, pos_manual = body.pos_state, True
+    else:
+        pos = (
+            bill_addr.state_code if bill_addr
+            else (reg.state_code if reg else c.bill_state)
+        )
+        pos_manual = False
+
+    resolved = build_lines(ctx, body.lines)
+    stock = tracks_stock(ctx)
+
+    old_qty = {}
+    for line in inv.lines:
+        old_qty[line.material_id] = (
+            old_qty.get(line.material_id, Decimal("0")) + Decimal(str(line.qty))
+        )
+
+    new_qty = {}
+    for _, material, qty, _, _, _ in resolved:
+        new_qty[material.id] = new_qty.get(
+            material.id, Decimal("0")
+        ) + qty
+
+    if stock and inv.doc_type == "TAX":
+        for _, material, _, _, _, _ in resolved:
+            available = Decimal(str(material.stock_qty)) + old_qty.get(
+                material.id, Decimal("0")
+            )
+            if new_qty[material.id] > available:
+                raise HTTPException(
+                    422,
+                    f"Insufficient stock for {material.code}: "
+                    f"available {available}, required {new_qty[material.id]}"
+                )
+
+    # Validate every selected HSN rate before changing saved lines or stock.
+    rates = []
+    for n, material, _, _, _, _ in resolved:
+        requested_rate_id = body.lines[n - 1].hsn_rate_id
+        rate = None
+
+        if requested_rate_id:
+            hsn = ctx.db.execute(
+                ctx.scope(select(M.HsnCode), M.HsnCode).where(
+                    M.HsnCode.code == material.hsn,
+                    M.HsnCode.active == True,
+                )
+            ).scalar_one_or_none()
+
+            if not hsn:
+                raise HTTPException(
+                    422, f"Line {n}: material HSN {material.hsn} is not active"
+                )
+
+            rate = ctx.db.execute(
+                select(M.HsnRate)
+                .join(M.HsnCode, M.HsnRate.hsn_id == M.HsnCode.id)
+                .where(
+                    M.HsnRate.id == requested_rate_id,
+                    M.HsnRate.hsn_id == hsn.id,
+                    M.HsnRate.active == True,
+                    M.HsnCode.tenant_id == ctx.tenant.id,
+                )
+            ).scalar_one_or_none()
+
+            if not rate:
+                raise HTTPException(
+                    422,
+                    f"Line {n}: selected HSN rate does not match "
+                    f"material HSN {material.hsn}"
+                )
+
+        rates.append(rate)
+
+    try:
+        # Apply the net stock movement, restoring old quantities before
+        # deducting the replacement quantities.
+        if stock and inv.doc_type == "TAX":
+            materials_by_id = {}
+            for line in inv.lines:
+                materials_by_id[line.material_id] = line.material
+            for _, material, _, _, _, _ in resolved:
+                materials_by_id[material.id] = material
+
+            for material_id, material in materials_by_id.items():
+                material.stock_qty = (
+                    Decimal(str(material.stock_qty))
+                    + old_qty.get(material_id, Decimal("0"))
+                    - new_qty.get(material_id, Decimal("0"))
+                )
+
+        inv.doc_date = body.doc_date
+        inv.due_date = body.due_date or (
+            body.doc_date + timedelta(days=c.payment_term_days)
+            if c.payment_term_days > 0 else None
+        )
+        inv.customer_id = c.id
+        inv.gstin = reg.gstin if reg else None
+        inv.pos_state = pos
+        inv.pos_manual = pos_manual
+        inv.po_no = body.po_no
+        inv.po_date = body.po_date
+        inv.reverse_chg = body.reverse_chg
+        inv.subject = (body.subject or "").strip() or None
+        inv.instructions = (body.instructions or "").strip() or None
+        inv.bill_addr_id = bill_addr.id if bill_addr else None
+        inv.ship_addr_id = ship_addr.id if ship_addr else None
+        inv.price_mode = body.price_mode
+
+        inv.lines.clear()
+        ctx.db.flush()
+
+        for n, material, qty, price, descr, inclusive in resolved:
+            rate = rates[n - 1]
+            ctx.db.add(M.InvoiceLine(
+                invoice_id=inv.id,
+                line_no=n,
+                material_id=material.id,
+                qty=qty,
+                price=price,
+                descr2=descr,
+                price_inclusive=(
+                    True if body.price_mode == "INCL"
+                    else False if body.price_mode == "EXCL"
+                    else inclusive
+                ),
+                sgst_pct=rate.sgst_pct if rate else None,
+                cgst_pct=rate.cgst_pct if rate else None,
+                igst_pct=rate.igst_pct if rate else None,
+                rate_label=rate.label if rate else None,
+            ))
+
+    except Exception:
+        ctx.db.rollback()
+        raise
+
+    ctx.db.refresh(inv)
+    return {
+        "id": inv.id,
+        "doc_no": inv.doc_no,
+        "totals": tax_json(invoice_tax(ctx, inv)),
+    }
 
 
 @router.post("/invoices/{iid}/convert")

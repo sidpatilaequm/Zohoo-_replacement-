@@ -88,6 +88,7 @@ export function makeApi(token, tenantId) {
     invoices:      ()   => call('/invoices'),
     invoice:       (id) => call(`/invoices/${id}`),
     addInvoice:    (b)  => call('/invoices', { method: 'POST', body: b }),
+    updateInvoice: (id, b) => call(`/invoices/${id}`, { method: 'PUT', body: b }),
 
     convert: (id, docDate) => call(
       `/invoices/${id}/convert${docDate ? `?doc_date=${encodeURIComponent(docDate)}` : ''}`,

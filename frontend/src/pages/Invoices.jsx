@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, useLoad, Loading, ErrorBox, useFlash,
   usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
@@ -6,6 +7,7 @@ import { inr, gd } from '../lib/fmt'
 import DocFiles from '../components/DocFiles'
 export default function Invoices() {
   const { api, me } = useAuth()
+  const navigate = useNavigate()
   const list = useLoad(() => api.invoices())
   const [filter, setFilter] = useState('ALL')
   const [flash, showFlash] = useFlash()
@@ -109,6 +111,9 @@ export default function Invoices() {
                   Docs
                 </button>
               <button className="btn btn-sm" style={{ marginLeft: 5 }} onClick={() => mail(v)}>Email</button>
+              {!dead && !v.converted_from && !v.converted_to && !v.converted_to_id &&
+                <button className="btn btn-sm" style={{ marginLeft: 5 }}
+                  onClick={() => navigate(`/invoices/new?edit=${v.id}`)}>Edit</button>}
               {pro && !dead && <button className="btn btn-sm btn-a" style={{ marginLeft: 5 }}
                 onClick={() => convert(v.id)}>Convert</button>}
               {!pro && !dead && <button className="btn btn-sm" style={{ marginLeft: 5, color: 'var(--red)' }}

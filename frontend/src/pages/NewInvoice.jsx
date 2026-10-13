@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr, money, today } from '../lib/fmt'
 
 export default function NewInvoice() {
   const { api, me } = useAuth()
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const editId = searchParams.get('edit')
   const customers = useLoad(() => api.customers())
   const materials = useLoad(() => api.materials())
   const states = useLoad(() => api.states())
@@ -20,7 +24,66 @@ export default function NewInvoice() {
   const [rateMap, setRateMap] = useState({})   // hsn code -> permitted rates
   const [err, setErr] = useState(null)
   const [flash, showFlash] = useFlash()
+  const [editLoading, setEditLoading] = useState(false)
+  const [editLoaded, setEditLoaded] = useState(false)
+  const [docNo, setDocNo] = useState('')
+  const [editOriginalLines, setEditOriginalLines] = useState([])
   const set = (k, v) => setH(s => ({ ...s, [k]: v }))
+
+  useEffect(() => {
+    if (!editId) {
+      setEditLoaded(true)
+      return
+    }
+    let alive = true
+    setEditLoading(true)
+    setEditLoaded(false)
+    api.invoice(editId)
+      .then(d => {
+        if (!alive) return
+        const v = d.invoice
+        setDocNo(v.doc_no || '')
+        setH({
+          doc_type: v.doc_type,
+          doc_date: String(v.doc_date || '').slice(0, 10),
+          due_date: v.due_date ? String(v.due_date).slice(0, 10) : '',
+          due_touched: true,
+          customer_id: String(v.customer_id || ''),
+          gstin: v.gstin || '',
+          pos_state: v.pos_manual ? (v.pos_state || '') : '',
+          bill_addr_id: v.bill_addr_id ? String(v.bill_addr_id) : '',
+          ship_addr_id: v.ship_addr_id ? String(v.ship_addr_id) : '',
+          po_no: v.po_no || '',
+          po_date: v.po_date ? String(v.po_date).slice(0, 10) : '',
+          reverse_chg: v.reverse_chg || 'N',
+          price_mode: v.price_mode || 'MATERIAL',
+          subject: v.subject || d.subject || '',
+          instructions: v.instructions || d.instructions || '',
+        })
+        setEditOriginalLines((v.lines || []).map(l => ({
+        material_id: l.material_id, qty: Number(l.qty || 0),
+      })))
+      setLines((v.lines || []).map(l => ({
+          material_id: l.material_id,
+          qty: l.qty,
+          price: l.price,
+          descr2: l.descr2 || '',
+          hsn_rate_id: '',
+          rate_label: l.rate_label || '',
+          sgst_pct: Number(l.sgst_pct || 0),
+          cgst_pct: Number(l.cgst_pct || 0),
+          igst_pct: Number(l.igst_pct || 0),
+        })))
+        setEditLoaded(true)
+      })
+      .catch(x => {
+        if (alive) setErr(`Could not load invoice for editing: ${x.message}`)
+      })
+      .finally(() => {
+        if (alive) setEditLoading(false)
+      })
+    return () => { alive = false }
+  }, [editId, api])
 
   const cust = customers.data?.find(c => c.id === Number(h.customer_id))
   const regs = cust?.gstins || []
@@ -67,6 +130,33 @@ export default function NewInvoice() {
     return () => { alive = false }
     // eslint-disable-next-line
   }, [lines.length, hsn.data])
+
+  // Restore saved HSN-rate selections when editing an existing invoice.
+  useEffect(() => {
+    if (!editId || !editLoaded || !lines.length) return
+    if (!Object.keys(rateMap).length) return
+
+    setLines(current => {
+      let changed = false
+      const next = current.map(line => {
+        if (line.hsn_rate_id) return line
+        const material = materials.data?.find(m => m.id === line.material_id)
+        if (!material) return line
+
+        const rates = rateMap[material.hsn] || []
+        const saved = rates.find(rate =>
+          rate.label === line.rate_label &&
+          Number(rate.sgst_pct || 0) === Number(line.sgst_pct || 0) &&
+          Number(rate.cgst_pct || 0) === Number(line.cgst_pct || 0) &&
+          Number(rate.igst_pct || 0) === Number(line.igst_pct || 0)
+        )
+        if (!saved) return line
+        changed = true
+        return { ...line, hsn_rate_id: String(saved.id) }
+      })
+      return changed ? next : current
+    })
+  }, [editId, editLoaded, rateMap, materials.data, lines.length])
 
   const calc = useMemo(() => {
     let taxable = 0, cgst = 0, sgst = 0, igst = 0
@@ -118,31 +208,65 @@ export default function NewInvoice() {
   lines.forEach((l, i) => {
     const m = materials.data?.find(x => x.id === l.material_id)
     if (Number(l.qty) <= 0) problems.push(`Line ${i + 1}: quantity must be more than zero.`)
-    else if (trading && m && Number(l.qty) > m.stock_qty) problems.push(`Line ${i + 1}: exceeds stock of ${m.stock_qty}.`)
+    else if (trading && m) {
+      const originalQty = editId
+        ? (editOriginalLines || []).filter(x => Number(x.material_id) === Number(l.material_id))
+            .reduce((sum, x) => sum + Number(x.qty || 0), 0)
+        : 0
+      if (Number(l.qty) > Number(m.stock_qty || 0) + originalQty) {
+        problems.push(`Line ${i + 1}: exceeds available stock of ${Number(m.stock_qty || 0) + originalQty}.`)
+      }
+    }
     if (Number(l.price) <= 0) problems.push(`Line ${i + 1}: price must be more than zero.`)
   })
   if (h.po_date && h.po_date > h.doc_date) problems.push('PO date cannot be after the invoice date.')
 
   async function save(e) {
-    e.preventDefault(); setErr(null)
+    e.preventDefault()
+    setErr(null)
     try {
-      const d = await api.addInvoice({ ...h, customer_id: Number(h.customer_id),
-        due_date: h.due_date || null, po_date: h.po_date || null,
-        gstin: reg?.gstin || null, pos_state: pos,
+      const payload = {
+        ...h,
+        customer_id: Number(h.customer_id),
+        due_date: h.due_date || null,
+        po_date: h.po_date || null,
+        gstin: reg?.gstin || null,
+        pos_state: pos,
+        pos_manual: !!h.pos_state,
         price_mode: h.price_mode,
         bill_addr_id: h.bill_addr_id ? Number(h.bill_addr_id) : null,
         ship_addr_id: h.ship_addr_id ? Number(h.ship_addr_id) : null,
-        subject: h.subject || null, instructions: h.instructions || null,
-        lines: lines.map(l => ({ material_id: l.material_id, qty: Number(l.qty),
-          price: Number(l.price), descr2: l.descr2 || null,
-          hsn_rate_id: l.hsn_rate_id ? Number(l.hsn_rate_id) : null })) })
-      showFlash(`${h.doc_type === 'PRO' ? 'Proforma' : 'Invoice'} ${d.doc_no} saved — ${money(d.totals.rounded)}.`)
-      setLines([]); setH(s => ({ ...s, customer_id: '', gstin: '', pos_state: '', bill_addr_id: '',
-        ship_addr_id: '', po_no: '', po_date: '', subject: '', instructions: '',
-        due_touched: false }))
-      materials.reload()
-    } catch (x) { setErr(x.message) }
+        subject: h.subject || null,
+        instructions: h.instructions || null,
+        lines: lines.map(l => ({
+          material_id: l.material_id,
+          qty: Number(l.qty),
+          price: Number(l.price),
+          descr2: l.descr2 || null,
+          hsn_rate_id: l.hsn_rate_id ? Number(l.hsn_rate_id) : null,
+        })),
+      }
+      const d = editId
+        ? await api.updateInvoice(editId, payload)
+        : await api.addInvoice(payload)
+
+      if (editId) {
+        showFlash(`${d.doc_no || docNo} updated successfully.`)
+        navigate('/invoices')
+      } else {
+        showFlash(`${h.doc_type === 'PRO' ? 'Proforma' : 'Invoice'} ${d.doc_no} saved — ${money(d.totals.rounded)}.`)
+        setLines([])
+        setH(s => ({ ...s, customer_id: '', gstin: '', pos_state: '', bill_addr_id: '',
+          ship_addr_id: '', po_no: '', po_date: '', subject: '', instructions: '',
+          due_touched: false }))
+        materials.reload()
+      }
+    } catch (x) {
+      setErr(x.message)
+    }
   }
+  if (editId && editLoading) return <Loading />
+  if (editId && !editLoaded && err) return <ErrorBox>{err}</ErrorBox>
   if (customers.loading || materials.loading || states.loading) return <Loading />
   if (customers.error) return <ErrorBox>{customers.error}</ErrorBox>
   if (materials.error) return <ErrorBox>{materials.error}</ErrorBox>
@@ -155,7 +279,8 @@ export default function NewInvoice() {
       <div className="row">
         <Field label="Document type"
           hint={h.doc_type === 'PRO' ? 'Not a tax document — excluded from GST returns' : 'Counts towards GST returns'}>
-          <select value={h.doc_type} onChange={e => set('doc_type', e.target.value)}>
+          <select value={h.doc_type} disabled={!!editId}
+            onChange={e => set('doc_type', e.target.value)}>
             <option value="TAX">Tax invoice</option><option value="PRO">Proforma invoice</option>
           </select></Field>
         <Field label="Customer"><select value={h.customer_id}
@@ -332,8 +457,11 @@ export default function NewInvoice() {
 
     <div className="ft">
       <button className="btn btn-a" disabled={problems.length > 0}>
-        Save {h.doc_type === 'PRO' ? 'proforma' : 'invoice'}</button>
-      <button type="button" className="btn" onClick={() => setLines([])}>Clear</button>
+        {editId ? 'Save changes' : `Save ${h.doc_type === 'PRO' ? 'proforma' : 'invoice'}`}
+      </button>
+      {editId
+        ? <button type="button" className="btn" onClick={() => navigate('/invoices')}>Cancel</button>
+        : <button type="button" className="btn" onClick={() => setLines([])}>Clear</button>}
       <span className="err">{err || problems[0] || ''}</span>
     </div>
   </form>)
