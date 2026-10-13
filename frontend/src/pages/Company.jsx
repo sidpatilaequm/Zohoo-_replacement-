@@ -35,6 +35,8 @@ export default function Company() {
         po_prefix: f.po_prefix, po_seq: Number(f.po_seq), bank: f.bank || null,
         inv_fy: !!f.inv_fy, po_fy: !!f.po_fy, vinv_prefix: f.vinv_prefix || 'PINV/',
         vinv_seq: Number(f.vinv_seq || 1), vinv_fy: !!f.vinv_fy,
+        pro_prefix: f.pro_prefix || 'PI/', pro_seq: Number(f.pro_seq || 1),
+        pro_fy: !!f.pro_fy,
         fy_start_month: Number(f.fy_start_month || 4), fy_start_day: Number(f.fy_start_day || 1),
         cust_prefix: f.cust_prefix || 'C', cust_seq: Number(f.cust_seq || 1),
         vend_prefix: f.vend_prefix || 'V', vend_seq: Number(f.vend_seq || 1),
@@ -230,6 +232,18 @@ export default function Company() {
           <Field label="With financial year"><select value={f.vinv_fy ? 'Y' : 'N'}
             onChange={e => set('vinv_fy', e.target.value === 'Y')}><option value="N">No</option><option value="Y">Yes</option></select></Field>
           <Field label="Preview"><input readOnly className="mono" value={preview(f.vinv_prefix || 'PINV/', f.vinv_fy, f.vinv_seq ?? 1)} /></Field>
+        </div>
+
+        <div className="row" style={{ marginTop: 8 }}>
+          <Field label="Proforma prefix"><input className="mono" value={f.pro_prefix ?? 'PI/'}
+            onChange={e => set('pro_prefix', e.target.value)} /></Field>
+          <Field label="Next proforma number" hint={f.pro_fy ? 'Per year; managed automatically' : ''}>
+            <input className="mono" type="number" min="1" disabled={!!f.pro_fy}
+              value={f.pro_seq ?? 1} onChange={e => set('pro_seq', e.target.value)} /></Field>
+          <Field label="With financial year"><select value={f.pro_fy ? 'Y' : 'N'}
+            onChange={e => set('pro_fy', e.target.value === 'Y')}><option value="N">No</option><option value="Y">Yes</option></select></Field>
+          <Field label="Preview"><input readOnly className="mono"
+            value={preview(f.pro_prefix ?? 'PI/', f.pro_fy, f.pro_seq ?? 1)} /></Field>
         </div>
 
         <h3 style={{ fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--muted)',
