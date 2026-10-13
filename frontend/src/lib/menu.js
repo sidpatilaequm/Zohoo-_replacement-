@@ -35,7 +35,8 @@ export const MENU = [
   { group: 'Setup', items: [
     { key: 'org',   label: 'Company Information', path: '/company' },
     { key: 'users', label: 'Users and Access',    path: '/users' },
-    { key: 'data',  label: 'Templates and Import', path: '/templates' } ] },
+    { key: 'data',  label: 'Templates and Import', path: '/templates' },
+    { key: 'signatures', label: 'Signatures', path: '/signatures' } ] },
 ]
 
 /** Menus that only make sense for a business holding physical stock. */

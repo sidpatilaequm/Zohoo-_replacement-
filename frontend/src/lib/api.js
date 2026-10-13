@@ -42,6 +42,12 @@ export function makeApi(token, tenantId) {
     uoms:          ()   => call('/uoms'),
     perms:         ()   => call('/perms'),
 
+    signatories:   ()   => call('/signatories'),
+    addSignatory:  (b)  => call('/signatories', { method: 'POST', body: b }),
+    editSignatory: (id, b) => call(`/signatories/${id}`, { method: 'PUT', body: b }),
+    delSignatory:  (id) => call(`/signatories/${id}`, { method: 'DELETE' }),
+    sigSettings:   (b)  => call('/signatories/settings', { method: 'PUT', body: b }),
+
     customers:     ()   => call('/customers'),
     addCustomer:   (b)  => call('/customers', { method: 'POST', body: b }),
     customerLogo:  (id, logo) => call(`/customers/${id}/logo`, { method: 'PUT', body: { logo } }),
