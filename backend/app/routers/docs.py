@@ -497,6 +497,7 @@ def update_invoice(iid: int, body: S.InvoiceIn,
         ctx.db.rollback()
         raise
 
+    ctx.db.commit()
     ctx.db.refresh(inv)
     return {
         "id": inv.id,
