@@ -170,6 +170,17 @@ export function makeApi(token, tenantId) {
     payables:      (p)  => call('/returns/reports/payables' + (p ? `?period=${encodeURIComponent(p)}` : '')),
     margin:        (p)  => call('/returns/reports/margin' + (p ? `?period=${encodeURIComponent(p)}` : '')),
     financialYears: ()  => call('/returns/financial-years'),
+    salesRanges: (today) =>
+      call('/reports/sales/ranges' + (today ? `?today=${encodeURIComponent(today)}` : '')),
+    salesReport: (params) => {
+      const q = new URLSearchParams()
+      q.set('group', params.group)
+      q.set('range', params.range || 'this_month')
+      if (params.today) q.set('today', params.today)
+      if (params.start) q.set('start', params.start)
+      if (params.end) q.set('end', params.end)
+      return call(`/reports/sales?${q.toString()}`)
+    },
     csvUrl:        (s, p) => `${BASE}/returns/gstr1/${s}.csv?period=${p}`,
 
     // ---- reference masters ----

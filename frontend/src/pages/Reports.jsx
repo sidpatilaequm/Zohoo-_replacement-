@@ -3,12 +3,14 @@ import { useAuth } from '../lib/auth'
 import { Panel, Table, useLoad, Loading, ErrorBox, PeriodPicker, useDefaultFy } from '../components/ui'
 import { inr, gd } from '../lib/fmt'
 import GstFiling from '../components/GstFiling'
+import SalesReport, { SALES_REPORTS } from '../components/SalesReport'
 
 const REPORTS = [
   { key: 'crec', label: 'Customer outstanding — receivables' },
   { key: 'vpay', label: 'Vendor outstanding — payables' },
   { key: 'marg', label: 'Margin by material' },
   { key: 'gst',  label: 'GST filing — GSTR-1 (A), GSTR-3B (B), A − B' },
+  ...SALES_REPORTS,
 ]
 
 export default function Reports() {
@@ -22,6 +24,12 @@ export default function Reports() {
   const rec = useLoad(() => period === undefined ? [] : api.receivables(p), [period])
   const pay = useLoad(() => period === undefined ? [] : api.payables(p), [period])
   const mar = useLoad(() => period === undefined ? [] : api.margin(p), [period])
+  if (kind.startsWith('sales_')) return <SalesReport kind={kind} selector={
+    <select value={kind} onChange={e => setKind(e.target.value)}
+      style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
+      {REPORTS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+    </select>
+  } />
   const busy = rec.loading || pay.loading || mar.loading || fys.loading || period === undefined
   if (busy) return <Loading />
   const anyErr = rec.error || pay.error || mar.error

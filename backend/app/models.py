@@ -273,6 +273,9 @@ class Invoice(Base):
     __table_args__=(UniqueConstraint("tenant_id","doc_no",name="uq_i"),)
     id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
     tenant_id: Mapped[int]=mapped_column(ForeignKey("tenants.id",ondelete="CASCADE"))
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     doc_no: Mapped[str]=mapped_column(String(40))
     doc_type: Mapped[str]=mapped_column(Enum("TAX","PRO",name="dtype"),default="TAX")
     doc_date: Mapped[date]=mapped_column(Date)
@@ -313,6 +316,7 @@ class Invoice(Base):
     lines: Mapped[list["InvoiceLine"]]=relationship(back_populates="invoice",
         cascade="all, delete-orphan",lazy="selectin")
     customer: Mapped[Customer]=relationship(lazy="selectin")
+    created_by: Mapped[User | None] = relationship(lazy="selectin")
 
 class InvoiceLine(Base):
     __tablename__="invoice_lines"

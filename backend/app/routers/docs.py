@@ -225,6 +225,7 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
 
     inv = M.Invoice(
         tenant_id=ctx.tenant.id,
+        created_by_user_id=ctx.user.id,
         doc_no=doc_no,
         doc_type=body.doc_type,
         doc_date=body.doc_date,

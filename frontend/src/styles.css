@@ -139,3 +139,22 @@ tr.row-attach:hover td{background:#FBFBF8}
   width:max-content;max-width:100%}
 .chip-k{font-size:10.5px;color:var(--muted)}
 .chip .rm{font-size:14px;padding:0 4px}
+
+/* v4.4 sales reports */
+.sr-head{display:flex;flex-wrap:wrap;gap:10px 28px;align-items:flex-end;padding:14px 18px;
+  border-bottom:1px solid var(--line)}
+.sr-head>div{display:flex;flex-direction:column;gap:2px}
+.sr-period{margin-right:auto}
+.sr-period b{font-size:15px}
+.sr-kpi{text-align:right;align-items:flex-end}
+.sr-kpi b{font-size:16px}
+tr.sr-row{cursor:pointer}
+td.sr-tog{width:34px}
+.sr-share{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end}
+.sr-bar{width:56px;height:6px;border-radius:3px;background:var(--line);overflow:hidden;display:inline-block}
+.sr-bar span{display:block;height:100%;background:var(--accent)}
+tr.sr-total td{font-weight:700;border-top:2px solid var(--text);background:#fff}
+table.sr-docs{width:100%;font-size:12.5px;margin-top:8px}
+table.sr-docs th{font-size:11px;color:var(--muted);font-weight:600;text-align:left;padding:5px 8px}
+table.sr-docs th.r,table.sr-docs td.r{text-align:right}
+table.sr-docs td{padding:5px 8px;border-top:1px solid var(--line)}
