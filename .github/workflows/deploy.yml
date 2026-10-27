@@ -131,11 +131,23 @@ jobs:
           test -f "$RELEASE_DIR/backend/app/main.py"
           test -f "$RELEASE_DIR/frontend/src/App.jsx"
 
-          echo "Release files verified."
 
           echo ""
           echo "======================================"
-          echo "6. Updating backend source"
+          echo "5A. Applying Sales Reports migration"
+          echo "======================================"
+
+          MIGRATION_FILE="$RELEASE_DIR/db/18_v44_sales_reports.sql"
+
+          test -s "$MIGRATION_FILE"
+
+          docker compose exec -T db \
+            sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" aequm_billing' \
+            < "$MIGRATION_FILE"
+
+          echo "Sales Reports migration applied successfully."
+
+
           echo "======================================"
 
           tar \

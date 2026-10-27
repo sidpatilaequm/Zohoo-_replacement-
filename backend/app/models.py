@@ -316,7 +316,9 @@ class Invoice(Base):
     lines: Mapped[list["InvoiceLine"]]=relationship(back_populates="invoice",
         cascade="all, delete-orphan",lazy="selectin")
     customer: Mapped[Customer]=relationship(lazy="selectin")
-    created_by: Mapped[User | None] = relationship(lazy="selectin")
+    created_by: Mapped[User | None] = relationship(
+        foreign_keys=[created_by_user_id], lazy="selectin"
+    )
 
 class InvoiceLine(Base):
     __tablename__="invoice_lines"
