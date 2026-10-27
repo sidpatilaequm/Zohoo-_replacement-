@@ -8,6 +8,7 @@ from .. import models as M
 from ..deps import Ctx, need, need_any
 from ..service import invoice_tax, vinv_tax, settled, live_invoices
 from ..tax import q2
+from ..fy import in_period
 
 router = APIRouter(prefix="/returns", tags=["returns"])
 MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -202,9 +203,12 @@ def gstr1_csv(section: str, period: str = Query(...), ctx: Ctx = Depends(need("g
 
 # ------------------------------------------------------------- reports
 @router.get("/reports/receivables")
-def receivables(ctx: Ctx = Depends(need("reports"))):
+def receivables(period: str | None = Query(None), ctx: Ctx = Depends(need("reports"))):
+    """Outstanding customer invoices, optionally restricted by invoice date."""
     out = []
     for inv in ctx.db.execute(live_invoices(ctx)).scalars():
+        if not in_period(ctx.tenant, inv.doc_date, period):
+            continue
         t = invoice_tax(ctx, inv)
         rec = settled(ctx, invoice_id=inv.id)
         bal = t.rounded - rec
@@ -218,9 +222,12 @@ def receivables(ctx: Ctx = Depends(need("reports"))):
 
 
 @router.get("/reports/payables")
-def payables(ctx: Ctx = Depends(need("reports"))):
+def payables(period: str | None = Query(None), ctx: Ctx = Depends(need("reports"))):
+    """Outstanding vendor invoices, optionally restricted by invoice date."""
     out = []
     for vi in ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)).scalars():
+        if not in_period(ctx.tenant, vi.doc_date, period):
+            continue
         t = vinv_tax(ctx, vi)
         paid = settled(ctx, vinv_id=vi.id)
         bal = t.rounded - paid
@@ -233,17 +240,20 @@ def payables(ctx: Ctx = Depends(need("reports"))):
 
 
 @router.get("/reports/margin")
-def margin(ctx: Ctx = Depends(need("reports"))):
+def margin(period: str | None = Query(None), ctx: Ctx = Depends(need("reports"))):
+    """Material margin using only sales and purchases in the selected period."""
     out = []
     for m in ctx.db.execute(ctx.scope(select(M.Material), M.Material).order_by(M.Material.code)).scalars():
         sq = sv = bq = bv = Decimal(0)
         for l in ctx.db.execute(select(M.InvoiceLine).where(M.InvoiceLine.material_id == m.id)).scalars():
-            if l.invoice.doc_type == "TAX" and l.invoice.status != "CANCELLED":
+            if (l.invoice.doc_type == "TAX" and l.invoice.status != "CANCELLED"
+                    and in_period(ctx.tenant, l.invoice.doc_date, period)):
                 sq += l.qty
                 sv += l.qty * l.price
         for l in ctx.db.execute(select(M.VendorInvoiceLine).where(M.VendorInvoiceLine.material_id == m.id)).scalars():
-            bq += l.qty
-            bv += l.qty * l.price
+            if in_period(ctx.tenant, l.invoice.doc_date, period):
+                bq += l.qty
+                bv += l.qty * l.price
         if not sq and not bq:
             continue
         out.append({"code": m.code, "descr": m.descr, "sold_qty": float(sq),

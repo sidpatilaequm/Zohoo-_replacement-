@@ -226,6 +226,20 @@ def test_part_receipt_then_settlement(org):
     assert a.get("/api/returns/reports/receivables").json() == []
 
 
+def test_receivables_report_filters_selected_month(org):
+    a = org(); m = mat(a); c = cust(a)
+    may = a.post("/api/invoices", json={"doc_date": "2026-05-10", "customer_id": c,
+        "lines": [{"material_id": m, "qty": 10}]}).json()
+    a.post("/api/invoices", json={"doc_date": "2023-04-13", "customer_id": c,
+        "lines": [{"material_id": m, "qty": 10}]})
+
+    response = a.get("/api/returns/reports/receivables?period=2026-05")
+    assert response.status_code == 200
+    rows = response.json()
+    assert [row["doc_no"] for row in rows] == [may["doc_no"]]
+    assert all(row["doc_date"].startswith("2026-05") for row in rows)
+
+
 def test_a_proforma_cannot_be_settled(org):
     a = org(); m = mat(a); c = cust(a)
     inv = a.post("/api/invoices", json={"doc_date": "2026-08-10", "doc_type": "PRO",
