@@ -281,6 +281,10 @@ class Invoice(Base):
     doc_date: Mapped[date]=mapped_column(Date)
     due_date: Mapped[date|None]=mapped_column(Date,nullable=True)
     customer_id: Mapped[int]=mapped_column(ForeignKey("customers.id"))
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    created_by: Mapped["User | None"] = relationship(lazy="selectin")
     gstin: Mapped[str|None]=mapped_column(String(15),nullable=True)
     pos_state: Mapped[str]=mapped_column(String(2),ForeignKey("states.code"))
     po_no: Mapped[str|None]=mapped_column(String(60),nullable=True)

@@ -11,9 +11,15 @@ app.add_middleware(CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","),
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+<<<<<<< HEAD
 for r in (auth, masters, docs, documents, returns, admin, inventory, ordering,
           registers, templates, printing, extraction, audit, statements,
           employees, expenses, sales_reports):
+=======
+for r in (auth, masters, docs, returns, admin, inventory, ordering,
+          registers, templates, printing, extraction, audit, statements, employees, expenses,
+          sales_reports):
+>>>>>>> fix/report-period-filter
     app.include_router(r.router, prefix="/api")
 
 

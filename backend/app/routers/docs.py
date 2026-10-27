@@ -235,6 +235,7 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
             else None
         ),
         customer_id=c.id,
+        created_by_user_id=ctx.user.id,
         gstin=reg.gstin if reg else None,
         pos_state=pos,
         pos_manual=pos_manual,
