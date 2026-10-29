@@ -244,10 +244,28 @@ export function makeApi(token, tenantId) {
     deliveries: () => call('/deliveries'),
 
     // ---- registers and GST reconciliation ----
-    invoiceRegister: (p) => call('/registers/invoices' + (p ? `?period=${p}` : '')),
+    invoiceRegister: (filters = {}) => {
+      const q = new URLSearchParams()
+      if (filters.financialYear) q.set('financial_year', filters.financialYear)
+      if (filters.dateRange) q.set('date_range', filters.dateRange)
+      if (filters.today) q.set('today', filters.today)
+      const query = q.toString()
+      return call('/registers/invoices' + (query ? `?${query}` : ''))
+    },
     gstRegister: (p) => call('/registers/gst' + (p ? `?period=${p}` : '')),
     tdsRegister: (p) => call('/registers/tds' + (p ? `?period=${p}` : '')),
-    registerCsv: (w, p) => `${BASE}/registers/${w}.csv` + (p ? `?period=${p}` : ''),
+    registerCsv: (w, filters) => {
+      const q = new URLSearchParams()
+      if (filters && typeof filters === 'object') {
+        if (filters.financialYear) q.set('financial_year', filters.financialYear)
+        if (filters.dateRange) q.set('date_range', filters.dateRange)
+        if (filters.today) q.set('today', filters.today)
+      } else if (filters) {
+        q.set('period', filters)
+      }
+      const query = q.toString()
+      return `${BASE}/registers/${w}.csv` + (query ? `?${query}` : '')
+    },
     gstSales: (p) =>
       call('/registers/gst-sales' + (p ? `?period=${encodeURIComponent(p)}` : '')),
 

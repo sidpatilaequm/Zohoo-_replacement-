@@ -22,12 +22,23 @@ def gd(d):
 
 # ==================================================== invoice register
 @router.get("/invoices")
-def invoice_register(period: str | None = None, ctx: Ctx = Depends(need("registers"))):
-    """Every customer document, tax and proforma, with its settlement position."""
+def invoice_register(
+    period: str | None = None,
+    financial_year: str | None = None,
+    date_range: str | None = None,
+    today: date | None = None,
+    ctx: Ctx = Depends(need("registers")),
+):
+    """Every customer document, tax and proforma, with optional date filters."""
     out = []
     for inv in ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
                               .order_by(M.Invoice.doc_date, M.Invoice.id)).scalars():
-        if not in_period(ctx.tenant, inv.doc_date, period):
+        if not in_period(
+            ctx.tenant, inv.doc_date, period,
+            financial_year=financial_year,
+            date_range=date_range,
+            today=today,
+        ):
             continue
         t = invoice_tax(ctx, inv)
         rec = settled(ctx, invoice_id=inv.id)
@@ -326,10 +337,22 @@ def _csv(rows, filename):
 
 
 @router.get("/{which}.csv")
-def register_csv(which: str, period: str | None = None,
-                 ctx: Ctx = Depends(need("registers"))):
+def register_csv(
+    which: str,
+    period: str | None = None,
+    financial_year: str | None = None,
+    date_range: str | None = None,
+    today: date | None = None,
+    ctx: Ctx = Depends(need("registers")),
+):
     if which == "invoices":
-        data = invoice_register(period, ctx)
+        data = invoice_register(
+            period=period,
+            financial_year=financial_year,
+            date_range=date_range,
+            today=today,
+            ctx=ctx,
+        )
         head = ["Type","Status","Invoice","Date","Customer code","Customer","GSTIN","PAN","MSME",
                 "Place of supply","PO number","Taxable","CGST","SGST","IGST","Total",
                 "Received","Outstanding","Supply"]
