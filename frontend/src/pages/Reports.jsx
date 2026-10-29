@@ -30,12 +30,9 @@ export default function Reports() {
   const [financialYear, setFinancialYear] = useState('')
   const [dateRange, setDateRange] = useState('')
 
-  // Select the latest available financial year when the API finishes loading.
+  // Empty selection means all financial years.
   const years = fys.data || []
-  const selectedYear = financialYear ||
-    (years.length ? `FY${String(
-      typeof years[0] === 'string' ? years[0] : years[0].label
-    ).replace(/^FY/i, '')}` : '')
+  const selectedYear = financialYear
 
   const localToday = () => {
     const d = new Date()
@@ -50,15 +47,15 @@ export default function Reports() {
   }
 
   const rec = useLoad(
-    () => selectedYear ? api.receivables(filters) : [],
+    () => api.receivables(filters),
     [selectedYear, dateRange, today]
   )
   const pay = useLoad(
-    () => selectedYear ? api.payables(filters) : [],
+    () => api.payables(filters),
     [selectedYear, dateRange, today]
   )
   const mar = useLoad(
-    () => selectedYear ? api.margin(filters) : [],
+    () => api.margin(filters),
     [selectedYear, dateRange, today]
   )
 
@@ -79,7 +76,7 @@ export default function Reports() {
   }
 
   const busy = fys.loading || rec.loading || pay.loading || mar.loading ||
-    (!selectedYear && years.length > 0)
+    false
 
   if (busy) return <Loading />
 
