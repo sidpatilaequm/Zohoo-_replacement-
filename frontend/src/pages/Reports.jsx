@@ -28,7 +28,7 @@ export default function Reports() {
   const fys = useLoad(() => api.financialYears())
 
   const [financialYear, setFinancialYear] = useState('')
-  const [dateRange, setDateRange] = useState('this_year')
+  const [dateRange, setDateRange] = useState('')
 
   // Select the latest available financial year when the API finishes loading.
   const years = fys.data || []

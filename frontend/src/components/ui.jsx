@@ -136,6 +136,7 @@ export function FinancialYearPicker({ value, onChange, years = [] }) {
       onChange={e => onChange(e.target.value)}
       style={FILTER_STYLE}
     >
+      <option value="">All financial years</option>
       {years.map(f => {
         const label = typeof f === 'string' ? f : f.label
         const current = typeof f === 'object' && f.current
@@ -168,6 +169,7 @@ export function DateRangePicker({ value, onChange }) {
       onChange={e => onChange(e.target.value)}
       style={FILTER_STYLE}
     >
+      <option value="">All dates</option>
       {DATE_RANGES.map(r => (
         <option key={r.value} value={r.value}>
           {r.label}
