@@ -1,9 +1,6 @@
 """GSTR-1 sections, GSTR-3B summary, the reconciliation between them, and reports."""
 import csv, io
 from decimal import Decimal
-from datetime import date
-from ..fy import fy_bounds
-from ..sales_report import resolve_range
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -31,20 +28,6 @@ def _tax_invoices(ctx, period):
     return [i for i in ctx.db.execute(q).scalars() if str(i.doc_date)[:7] == period]
 
 
-def _report_date_matches(tenant, doc_date, financial_year, date_range, today):
-    """Match a document date against both the selected FY and date range."""
-    if not doc_date:
-        return False
-
-    fy_label = financial_year.removeprefix("FY")
-    fy_start, fy_end = fy_bounds(tenant, fy_label)
-
-    date_window = resolve_range(tenant, date_range, today)
-    start = max(fy_start, date_window["start"])
-    end = min(fy_end, date_window["end"])
-
-    return start <= doc_date <= end
-
 def _cancelled(ctx, period):
     q = ctx.scope(select(M.Invoice), M.Invoice).where(M.Invoice.doc_type == "TAX",
                                                        M.Invoice.status == "CANCELLED")
@@ -58,31 +41,28 @@ def periods(ctx: Ctx = Depends(need_any("gstr", "registers", "reports"))):
     return sorted(p, reverse=True)
 
 
-
 @router.get("/financial-years")
 def financial_years(ctx: Ctx = Depends(need_any("gstr", "registers", "reports"))):
-    from ..fy import fy_labels_for, current_fy
+    years = set()
 
-    invoices = list(ctx.db.execute(
+    invoices = ctx.db.execute(
         ctx.scope(select(M.Invoice), M.Invoice)
-    ).scalars())
-    vendor_invoices = list(ctx.db.execute(
+    ).scalars()
+
+    vendor_invoices = ctx.db.execute(
         ctx.scope(select(M.VendorInvoice), M.VendorInvoice)
-    ).scalars())
+    ).scalars()
 
-    dates = [
-        doc.doc_date
-        for doc in invoices + vendor_invoices
-        if doc.doc_date
-    ]
-    labels = fy_labels_for(ctx.tenant, dates)
-    current = current_fy(ctx.tenant)
+    for doc in list(invoices) + list(vendor_invoices):
+        if doc.doc_date:
+            y = doc.doc_date.year
+            m = doc.doc_date.month
+            years.add(
+                f"{y}-{str(y + 1)[-2:]}" if m >= 4
+                else f"{y - 1}-{str(y)[-2:]}"
+            )
 
-    return [
-        {"label": label, "current": label == current}
-        for label in labels
-    ]
-
+    return sorted(years, reverse=True)
 
 
 @router.get("/gstr1")
@@ -222,8 +202,6 @@ def gstr1_csv(section: str, period: str = Query(...), ctx: Ctx = Depends(need("g
 
 
 # ------------------------------------------------------------- reports
-
-
 @router.get("/reports/receivables")
 def receivables(
     period: str | None = Query(None),
@@ -232,32 +210,25 @@ def receivables(
     today: date | None = Query(None),
     ctx: Ctx = Depends(need("reports")),
 ):
-    """Outstanding customer invoices, optionally restricted by date filters."""
+    """Outstanding customer invoices, optionally restricted by invoice date."""
     out = []
     for inv in ctx.db.execute(live_invoices(ctx)).scalars():
         if not in_period(
-            ctx.tenant, inv.doc_date, period,
-            financial_year=financial_year,
-            date_range=date_range,
-            today=today,
-        ):
+                ctx.tenant, inv.doc_date, period,
+                financial_year=financial_year,
+                date_range=date_range,
+                today=today,
+            ):
             continue
-
         t = invoice_tax(ctx, inv)
         rec = settled(ctx, invoice_id=inv.id)
         bal = t.rounded - rec
         if bal <= Decimal("0.5"):
             continue
-
-        out.append({
-            "customer": inv.customer.name,
-            "doc_no": inv.doc_no,
-            "doc_date": inv.doc_date,
-            "due_date": inv.due_date,
-            "total": float(t.rounded),
-            "received": float(rec),
-            "outstanding": float(bal),
-        })
+        out.append({"customer": inv.customer.name, "doc_no": inv.doc_no,
+                    "doc_date": inv.doc_date, "due_date": inv.due_date,
+                    "total": float(t.rounded), "received": float(rec),
+                    "outstanding": float(bal)})
     return sorted(out, key=lambda r: r["doc_date"])
 
 
@@ -269,34 +240,24 @@ def payables(
     today: date | None = Query(None),
     ctx: Ctx = Depends(need("reports")),
 ):
-    """Outstanding vendor invoices, optionally restricted by date filters."""
+    """Outstanding vendor invoices, optionally restricted by invoice date."""
     out = []
-    for vi in ctx.db.execute(
-        ctx.scope(select(M.VendorInvoice), M.VendorInvoice)
-    ).scalars():
+    for vi in ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)).scalars():
         if not in_period(
-            ctx.tenant, vi.doc_date, period,
-            financial_year=financial_year,
-            date_range=date_range,
-            today=today,
-        ):
+                ctx.tenant, vi.doc_date, period,
+                financial_year=financial_year,
+                date_range=date_range,
+                today=today,
+            ):
             continue
-
         t = vinv_tax(ctx, vi)
         paid = settled(ctx, vinv_id=vi.id)
         bal = t.rounded - paid
         if bal <= Decimal("0.5"):
             continue
-
-        out.append({
-            "vendor": vi.vendor.name,
-            "doc_no": vi.doc_no,
-            "doc_date": vi.doc_date,
-            "due_date": vi.due_date,
-            "total": float(t.rounded),
-            "paid": float(paid),
-            "outstanding": float(bal),
-        })
+        out.append({"vendor": vi.vendor.name, "doc_no": vi.doc_no, "doc_date": vi.doc_date,
+                    "due_date": vi.due_date, "total": float(t.rounded),
+                    "paid": float(paid), "outstanding": float(bal)})
     return sorted(out, key=lambda r: r["doc_date"])
 
 
@@ -308,62 +269,36 @@ def margin(
     today: date | None = Query(None),
     ctx: Ctx = Depends(need("reports")),
 ):
-    """Material margin using sales and purchases in the selected period."""
+    """Material margin using only sales and purchases in the selected period."""
     out = []
-    materials = ctx.db.execute(
-        ctx.scope(select(M.Material), M.Material).order_by(M.Material.code)
-    ).scalars()
-
-    for m in materials:
+    for m in ctx.db.execute(ctx.scope(select(M.Material), M.Material).order_by(M.Material.code)).scalars():
         sq = sv = bq = bv = Decimal(0)
-
-        for l in ctx.db.execute(
-            select(M.InvoiceLine).where(M.InvoiceLine.material_id == m.id)
-        ).scalars():
-            if (
-                l.invoice.doc_type == "TAX"
-                and l.invoice.status != "CANCELLED"
-                and in_period(
-                    ctx.tenant, l.invoice.doc_date, period,
-                    financial_year=financial_year,
-                    date_range=date_range,
-                    today=today,
-                )
-            ):
+        for l in ctx.db.execute(select(M.InvoiceLine).where(M.InvoiceLine.material_id == m.id)).scalars():
+            if (l.invoice.doc_type == "TAX" and l.invoice.status != "CANCELLED"
+                    and in_period(
+                        ctx.tenant, l.invoice.doc_date, period,
+                        financial_year=financial_year,
+                        date_range=date_range,
+                        today=today,
+                    )):
                 sq += l.qty
                 sv += l.qty * l.price
-
-        for l in ctx.db.execute(
-            select(M.VendorInvoiceLine).where(
-                M.VendorInvoiceLine.material_id == m.id
-            )
-        ).scalars():
+        for l in ctx.db.execute(select(M.VendorInvoiceLine).where(M.VendorInvoiceLine.material_id == m.id)).scalars():
             if in_period(
-                ctx.tenant, l.invoice.doc_date, period,
-                financial_year=financial_year,
-                date_range=date_range,
-                today=today,
-            ):
+                        ctx.tenant, l.invoice.doc_date, period,
+                        financial_year=financial_year,
+                        date_range=date_range,
+                        today=today,
+                    ):
                 bq += l.qty
                 bv += l.qty * l.price
-
         if not sq and not bq:
             continue
-
-        out.append({
-            "code": m.code,
-            "descr": m.descr,
-            "sold_qty": float(sq),
-            "sales_value": float(q2(sv)),
-            "bought_qty": float(bq),
-            "purchase_value": float(q2(bv)),
-            "margin": float(q2(sv - bv)),
-            "margin_pct": float(q2((sv - bv) / sv * 100)) if sv else None,
-        })
-
+        out.append({"code": m.code, "descr": m.descr, "sold_qty": float(sq),
+                    "sales_value": float(q2(sv)), "bought_qty": float(bq),
+                    "purchase_value": float(q2(bv)), "margin": float(q2(sv - bv)),
+                    "margin_pct": float(q2((sv - bv) / sv * 100)) if sv else None})
     return out
-
-
 
 
 # =========================================== GSTR-1 for the GST portal
