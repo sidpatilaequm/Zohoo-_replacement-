@@ -187,3 +187,20 @@ export function useDefaultFy(years, value, setValue) {
     }
   }, [years]) // eslint-disable-line
 }
+
+export function PeriodPicker({ value, onChange, months = [], years = [], allLabel = 'All periods' }) {
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const ml = p => { const [y, m] = p.split('-'); return `${MON[+m - 1]} ${y}` }
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
+      <optgroup label="Financial year">
+        {years.map(f => <option key={f.label} value={'FY' + f.label}>FY {f.label}{f.current ? ' (current)' : ''}</option>)}
+      </optgroup>
+      {months.length > 0 && <optgroup label="Month">
+        {months.map(x => <option key={x} value={x}>{ml(x)}</option>)}
+      </optgroup>}
+      <option value="">{allLabel}</option>
+    </select>)
+}
+

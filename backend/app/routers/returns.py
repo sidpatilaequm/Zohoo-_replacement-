@@ -225,14 +225,6 @@ def gstr1_csv(section: str, period: str = Query(...), ctx: Ctx = Depends(need("g
 
 
 @router.get("/reports/receivables")
-<<<<<<< HEAD
-def receivables(period: str | None = Query(None), ctx: Ctx = Depends(need("reports"))):
-    """Outstanding customer invoices, optionally restricted by invoice date."""
-    out = []
-    for inv in ctx.db.execute(live_invoices(ctx)).scalars():
-        if not in_period(ctx.tenant, inv.doc_date, period):
-            continue
-=======
 def receivables(
     period: str | None = Query(None),
     financial_year: str | None = Query(None),
@@ -251,7 +243,6 @@ def receivables(
         ):
             continue
 
->>>>>>> 2080b95 (Add financial year and date range filters to reports)
         t = invoice_tax(ctx, inv)
         rec = settled(ctx, invoice_id=inv.id)
         bal = t.rounded - rec
@@ -271,14 +262,6 @@ def receivables(
 
 
 @router.get("/reports/payables")
-<<<<<<< HEAD
-def payables(period: str | None = Query(None), ctx: Ctx = Depends(need("reports"))):
-    """Outstanding vendor invoices, optionally restricted by invoice date."""
-    out = []
-    for vi in ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)).scalars():
-        if not in_period(ctx.tenant, vi.doc_date, period):
-            continue
-=======
 def payables(
     period: str | None = Query(None),
     financial_year: str | None = Query(None),
@@ -299,7 +282,6 @@ def payables(
         ):
             continue
 
->>>>>>> 2080b95 (Add financial year and date range filters to reports)
         t = vinv_tax(ctx, vi)
         paid = settled(ctx, vinv_id=vi.id)
         bal = t.rounded - paid
@@ -319,10 +301,6 @@ def payables(
 
 
 @router.get("/reports/margin")
-<<<<<<< HEAD
-def margin(period: str | None = Query(None), ctx: Ctx = Depends(need("reports"))):
-    """Material margin using only sales and purchases in the selected period."""
-=======
 def margin(
     period: str | None = Query(None),
     financial_year: str | None = Query(None),
@@ -331,7 +309,6 @@ def margin(
     ctx: Ctx = Depends(need("reports")),
 ):
     """Material margin using sales and purchases in the selected period."""
->>>>>>> 2080b95 (Add financial year and date range filters to reports)
     out = []
     materials = ctx.db.execute(
         ctx.scope(select(M.Material), M.Material).order_by(M.Material.code)
@@ -339,17 +316,6 @@ def margin(
 
     for m in materials:
         sq = sv = bq = bv = Decimal(0)
-<<<<<<< HEAD
-        for l in ctx.db.execute(select(M.InvoiceLine).where(M.InvoiceLine.material_id == m.id)).scalars():
-            if (l.invoice.doc_type == "TAX" and l.invoice.status != "CANCELLED"
-                    and in_period(ctx.tenant, l.invoice.doc_date, period)):
-                sq += l.qty
-                sv += l.qty * l.price
-        for l in ctx.db.execute(select(M.VendorInvoiceLine).where(M.VendorInvoiceLine.material_id == m.id)).scalars():
-            if in_period(ctx.tenant, l.invoice.doc_date, period):
-                bq += l.qty
-                bv += l.qty * l.price
-=======
 
         for l in ctx.db.execute(
             select(M.InvoiceLine).where(M.InvoiceLine.material_id == m.id)
@@ -381,7 +347,6 @@ def margin(
                 bq += l.qty
                 bv += l.qty * l.price
 
->>>>>>> 2080b95 (Add financial year and date range filters to reports)
         if not sq and not bq:
             continue
 
