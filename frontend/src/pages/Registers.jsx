@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
-  usePrintVariant, VariantPicker, PrintButtons, PeriodPicker, useDefaultFy } from '../components/ui'
+  usePrintVariant, VariantPicker, PrintButtons, PeriodPicker, useDefaultFy,
+  FinancialYearPicker, DateRangePicker } from '../components/ui'
 import { inr, money, gd } from '../lib/fmt'
 import { GstSales, GstPurchases, TdsReport } from '../components/TaxReports'
 
@@ -14,12 +15,22 @@ export default function Registers() {
   const fys = useLoad(() => api.financialYears())
   const [period, setPeriod] = useState(undefined)
   useDefaultFy(fys.data, period, setPeriod)
+  const [financialYear, setFinancialYear] = useState('')
+  const [dateRange, setDateRange] = useState('')
+  const today = (() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  })()
+  const invoiceFilters = { financialYear, dateRange, today }
   const [which, setWhich] = useState('invoices')
   const [variant, setVariant] = usePrintVariant()
   const [printAs, setPrintAs] = useState('')
   const [flash, showFlash] = useFlash()
   const p = period || null
-  const inv = useLoad(() => api.invoiceRegister(p), [p])
+  const inv = useLoad(
+    () => api.invoiceRegister(invoiceFilters),
+    [financialYear, dateRange, today]
+  )
   const gst = useLoad(() => api.gstRegister(p), [p])
   const tds = useLoad(() => api.tdsRegister(p), [p])
 
@@ -39,7 +50,23 @@ export default function Registers() {
       <option value="gst-purchases">GST register — purchases</option>
       <option value="tds-report">TDS report — vendors and customers</option>
     </select>
-    <PeriodPicker value={period} onChange={setPeriod} months={periods.data || []} years={fys.data || []} />
+    {which === 'invoices' ? (
+      <>
+        <FinancialYearPicker
+          value={financialYear}
+          onChange={setFinancialYear}
+          years={fys.data || []}
+        />
+        <DateRangePicker value={dateRange} onChange={setDateRange} />
+      </>
+    ) : (
+      <PeriodPicker
+        value={period}
+        onChange={setPeriod}
+        months={periods.data || []}
+        years={fys.data || []}
+      />
+    )}
     {which === 'tds-report'
       ? <><button type="button" className="btn btn-sm" onClick={() => csv('tds-vendors')}>CSV — vendors</button>
           <button type="button" className="btn btn-sm" onClick={() => csv('tds-customers')}>CSV — customers</button></>
