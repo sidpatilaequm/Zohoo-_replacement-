@@ -1,5 +1,6 @@
 """GSTR-1 sections, GSTR-3B summary, the reconciliation between them, and reports."""
 import csv, io
+from datetime import date
 from decimal import Decimal
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
