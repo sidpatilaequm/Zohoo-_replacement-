@@ -37,23 +37,23 @@ export function exchangeMicrosoftCode(code) {
 export function makeApi(token, tenantId) {
   const call = (p, o = {}) => req(p, { ...o, token, tenantId })
   return {
-    me:            ()   => call('/auth/me'),
-    states:        ()   => call('/states'),
-    uoms:          ()   => call('/uoms'),
-    perms:         ()   => call('/perms'),
+    me: () => call('/auth/me'),
+    states: () => call('/states'),
+    uoms: () => call('/uoms'),
+    perms: () => call('/perms'),
 
-    signatories:   ()   => call('/signatories'),
-    addSignatory:  (b)  => call('/signatories', { method: 'POST', body: b }),
+    signatories: () => call('/signatories'),
+    addSignatory: (b) => call('/signatories', { method: 'POST', body: b }),
     editSignatory: (id, b) => call(`/signatories/${id}`, { method: 'PUT', body: b }),
-    delSignatory:  (id) => call(`/signatories/${id}`, { method: 'DELETE' }),
-    sigSettings:   (b)  => call('/signatories/settings', { method: 'PUT', body: b }),
+    delSignatory: (id) => call(`/signatories/${id}`, { method: 'DELETE' }),
+    sigSettings: (b) => call('/signatories/settings', { method: 'PUT', body: b }),
 
-    customers:     ()   => call('/customers'),
-    addCustomer:   (b)  => call('/customers', { method: 'POST', body: b }),
-    customerLogo:  (id, logo) => call(`/customers/${id}/logo`, { method: 'PUT', body: { logo } }),
-    editCustomer:  (id, b) => call(`/customers/${id}`, { method: 'PUT', body: b }),
-    delCustomer:   (id) => call(`/customers/${id}`, { method: 'DELETE' }),
-        // ---- additional customer/vendor addresses ----
+    customers: () => call('/customers'),
+    addCustomer: (b) => call('/customers', { method: 'POST', body: b }),
+    customerLogo: (id, logo) => call(`/customers/${id}/logo`, { method: 'PUT', body: { logo } }),
+    editCustomer: (id, b) => call(`/customers/${id}`, { method: 'PUT', body: b }),
+    delCustomer: (id) => call(`/customers/${id}`, { method: 'DELETE' }),
+    // ---- additional customer/vendor addresses ----
     addresses: (kind, partyId) => {
       const party = kind === 'customer' ? 'customer' : 'vendor'
       return call(`/parties/${party}/${partyId}/addresses`)
@@ -73,21 +73,21 @@ export function makeApi(token, tenantId) {
 
 
 
-    vendors:       ()   => call('/vendors'),
-    addVendor:     (b)  => call('/vendors', { method: 'POST', body: b }),
-    editVendor:    (id, b) => call(`/vendors/${id}`, { method: 'PUT', body: b }),
-    vendorLogo:    (id, logo) => call(`/vendors/${id}/logo`, { method: 'PUT', body: { logo } }),
-    delVendor:     (id) => call(`/vendors/${id}`, { method: 'DELETE' }),
+    vendors: () => call('/vendors'),
+    addVendor: (b) => call('/vendors', { method: 'POST', body: b }),
+    editVendor: (id, b) => call(`/vendors/${id}`, { method: 'PUT', body: b }),
+    vendorLogo: (id, logo) => call(`/vendors/${id}/logo`, { method: 'PUT', body: { logo } }),
+    delVendor: (id) => call(`/vendors/${id}`, { method: 'DELETE' }),
 
-    materials:     ()   => call('/materials'),
-    addMaterial:   (b)  => call('/materials', { method: 'POST', body: b }),
-    editMaterial:  (id, b) => call(`/materials/${id}`, { method: 'PUT', body: b }),
-    delMaterial:   (id) => call(`/materials/${id}`, { method: 'DELETE' }),
-    hsnRates:      (id) => call(`/hsn/${id}/rates`),
+    materials: () => call('/materials'),
+    addMaterial: (b) => call('/materials', { method: 'POST', body: b }),
+    editMaterial: (id, b) => call(`/materials/${id}`, { method: 'PUT', body: b }),
+    delMaterial: (id) => call(`/materials/${id}`, { method: 'DELETE' }),
+    hsnRates: (id) => call(`/hsn/${id}/rates`),
 
-    invoices:      ()   => call('/invoices'),
-    invoice:       (id) => call(`/invoices/${id}`),
-    addInvoice:    (b)  => call('/invoices', { method: 'POST', body: b }),
+    invoices: () => call('/invoices'),
+    invoice: (id) => call(`/invoices/${id}`),
+    addInvoice: (b) => call('/invoices', { method: 'POST', body: b }),
     updateInvoice: (id, b) => call(`/invoices/${id}`, { method: 'PUT', body: b }),
 
     convert: (id, docDate) => call(
@@ -96,9 +96,9 @@ export function makeApi(token, tenantId) {
     ),
 
     cancelInvoice: (id, reason) => call(`/invoices/${id}/cancel`, { method: 'POST', body: { reason } }),
-    delInvoice:    (id) => call(`/invoices/${id}`, { method: 'DELETE' }),
+    delInvoice: (id) => call(`/invoices/${id}`, { method: 'DELETE' }),
 
-        invoiceDocuments: (id) =>
+    invoiceDocuments: (id) =>
       call(`/invoices/${id}/documents`),
 
     addInvoiceDocument: (id, file) =>
@@ -120,56 +120,78 @@ export function makeApi(token, tenantId) {
         inline
       ),
 
-    pos:           ()   => call('/purchase-orders'),
-    addPo:         (b)  => call('/purchase-orders', { method: 'POST', body: b }),
+    pos: () => call('/purchase-orders'),
+    addPo: (b) => call('/purchase-orders', { method: 'POST', body: b }),
 
-    vinvs:         ()   => call('/vendor-invoices'),
-    addVinv:       (b)  => call('/vendor-invoices', { method: 'POST', body: b }),
-    extractCaps:   ()   => call('/vendor-invoices/extract/capabilities'),
-    extractVinv:   (f)  => upload('/vendor-invoices/extract', f, { token, tenantId }),
+    vinvs: () => call('/vendor-invoices'),
+    addVinv: (b) => call('/vendor-invoices', { method: 'POST', body: b }),
+    extractCaps: () => call('/vendor-invoices/extract/capabilities'),
+    extractVinv: (f) => upload('/vendor-invoices/extract', f, { token, tenantId }),
 
     // ---- PDF print-outs (variant: TRADING | NONTRADING, defaults to the org's type) ----
-    printVariants: ()   => call('/print/variants'),
-    printPdf:      (kind, id, variant, inline, extra = '') => download(
-                        `/print/${kind}/${id}.pdf?variant=${variant || ''}`
-                        + (inline ? '&disposition=inline' : '') + extra, { token, tenantId }, inline),
+    printVariants: () => call('/print/variants'),
+    printPdf: (kind, id, variant, inline, extra = '') => download(
+      `/print/${kind}/${id}.pdf?variant=${variant || ''}`
+      + (inline ? '&disposition=inline' : '') + extra, { token, tenantId }, inline),
 
-    receipts:      ()   => call('/receipts'),
-    addReceipt:    (b)  => call('/receipts', { method: 'POST', body: b }),
-    vendorPayments:()   => call('/vendor-payments'),
-    addVendorPay:  (b)  => call('/vendor-payments', { method: 'POST', body: b }),
-    delPayment:    (id) => call(`/payments/${id}`, { method: 'DELETE' }),
+    receipts: () => call('/receipts'),
+    addReceipt: (b) => call('/receipts', { method: 'POST', body: b }),
+    vendorPayments: () => call('/vendor-payments'),
+    addVendorPay: (b) => call('/vendor-payments', { method: 'POST', body: b }),
+    delPayment: (id) => call(`/payments/${id}`, { method: 'DELETE' }),
 
-    org:           ()   => call('/org'),
-    saveOrg:       (b)  => call('/org', { method: 'PUT', body: b }),
-    saveLogo:      (l)  => call('/org/logo', { method: 'PUT', body: { logo: l } }),
-    saveSmtp:      (b)  => call('/org/smtp', { method: 'PUT', body: b }),
-    checkSmtp:     ()   => call('/org/smtp/check', { method: 'POST' }),
+    org: () => call('/org'),
+    saveOrg: (b) => call('/org', { method: 'PUT', body: b }),
+    saveLogo: (l) => call('/org/logo', { method: 'PUT', body: { logo: l } }),
+    saveSmtp: (b) => call('/org/smtp', { method: 'PUT', body: b }),
+    checkSmtp: () => call('/org/smtp/check', { method: 'POST' }),
 
-    groups:        ()   => call('/groups'),
-    addGroup:      (b)  => call('/groups', { method: 'POST', body: b }),
-    editGroup:     (id, b) => call(`/groups/${id}`, { method: 'PUT', body: b }),
-    delGroup:      (id) => call(`/groups/${id}`, { method: 'DELETE' }),
-    licence:       ()   => call('/licence'),
-    users:         ()   => call('/users'),
-    addUser:       (b)  => call('/users', { method: 'POST', body: b }),
-    setRole:       (id, gid) => call(`/users/${id}/role`,
-                        { method: 'PUT', body: { user_id: id, group_id: gid } }),
+    groups: () => call('/groups'),
+    addGroup: (b) => call('/groups', { method: 'POST', body: b }),
+    editGroup: (id, b) => call(`/groups/${id}`, { method: 'PUT', body: b }),
+    delGroup: (id) => call(`/groups/${id}`, { method: 'DELETE' }),
+    licence: () => call('/licence'),
+    users: () => call('/users'),
+    addUser: (b) => call('/users', { method: 'POST', body: b }),
+    setRole: (id, gid) => call(`/users/${id}/role`,
+      { method: 'PUT', body: { user_id: id, group_id: gid } }),
     rejectPending: (id) => call(`/users/${id}/pending`, { method: 'DELETE' }),
 
-    periods:       ()   => call('/returns/periods'),
-    gstr1:         (p)  => call(`/returns/gstr1?period=${p}`),
-    gstr3b:        (p)  => call(`/returns/gstr3b?period=${p}`),
-    recon:         (p)  => call(`/returns/reconciliation?period=${p}`),
-    reconAB:       (p)  => call(`/returns/reconciliation/ab?period=${p}`),
-    gstr1Portal:   (p, fmt) => download(`/returns/gstr1/portal.${fmt}?period=${p}`, { token, tenantId }),
+    periods: () => call('/returns/periods'),
+    gstr1: (p) => call(`/returns/gstr1?period=${p}`),
+    gstr3b: (p) => call(`/returns/gstr3b?period=${p}`),
+    recon: (p) => call(`/returns/reconciliation?period=${p}`),
+    reconAB: (p) => call(`/returns/reconciliation/ab?period=${p}`),
+    gstr1Portal: (p, fmt) => download(`/returns/gstr1/portal.${fmt}?period=${p}`, { token, tenantId }),
     gstr1SectionCsv: (s, p) => download(`/returns/gstr1/${s}.csv?period=${p}`, { token, tenantId }),
-    upload3bJson:  (p, f) => upload(`/registers/gstr3b/upload-json?period=${p}`, f, { token, tenantId }),
-    upload3bCsv:   (p, f) => upload(`/registers/gstr3b/upload-csv?period=${p}`, f, { token, tenantId }),
-    receivables:   (p)  => call('/returns/reports/receivables' + (p ? `?period=${encodeURIComponent(p)}` : '')),
-    payables:      (p)  => call('/returns/reports/payables' + (p ? `?period=${encodeURIComponent(p)}` : '')),
-    margin:        (p)  => call('/returns/reports/margin' + (p ? `?period=${encodeURIComponent(p)}` : '')),
-    financialYears: ()  => call('/returns/financial-years'),
+    upload3bJson: (p, f) => upload(`/registers/gstr3b/upload-json?period=${p}`, f, { token, tenantId }),
+    upload3bCsv: (p, f) => upload(`/registers/gstr3b/upload-csv?period=${p}`, f, { token, tenantId }),
+
+
+    receivables: (filters) => {
+      const q = new URLSearchParams()
+      if (filters?.financialYear) q.set('financial_year', filters.financialYear)
+      if (filters?.dateRange) q.set('date_range', filters.dateRange)
+      if (filters?.today) q.set('today', filters.today)
+      return call('/returns/reports/receivables?' + q.toString())
+    },
+    payables: (filters) => {
+      const q = new URLSearchParams()
+      if (filters?.financialYear) q.set('financial_year', filters.financialYear)
+      if (filters?.dateRange) q.set('date_range', filters.dateRange)
+      if (filters?.today) q.set('today', filters.today)
+      return call('/returns/reports/payables?' + q.toString())
+    },
+    margin: (filters) => {
+      const q = new URLSearchParams()
+      if (filters?.financialYear) q.set('financial_year', filters.financialYear)
+      if (filters?.dateRange) q.set('date_range', filters.dateRange)
+      if (filters?.today) q.set('today', filters.today)
+      return call('/returns/reports/margin?' + q.toString())
+    },
+
+
+    financialYears: () => call('/returns/financial-years'),
     salesRanges: (today) =>
       call('/reports/sales/ranges' + (today ? `?today=${encodeURIComponent(today)}` : '')),
     salesReport: (params) => {
@@ -181,51 +203,51 @@ export function makeApi(token, tenantId) {
       if (params.end) q.set('end', params.end)
       return call(`/reports/sales?${q.toString()}`)
     },
-    csvUrl:        (s, p) => `${BASE}/returns/gstr1/${s}.csv?period=${p}`,
+    csvUrl: (s, p) => `${BASE}/returns/gstr1/${s}.csv?period=${p}`,
 
     // ---- reference masters ----
-    designations:  ()   => call('/designations'),
-    addDesignation:(b)  => call('/designations', { method: 'POST', body: b }),
-    banks:         ()   => call('/banks'),
-    addBank:       (b)  => call('/banks', { method: 'POST', body: b }),
-    hsn:           ()   => call('/hsn'),
-    addHsn:        (b)  => call('/hsn', { method: 'POST', body: b }),
-    editHsn:       (id, b) => call(`/hsn/${id}`, { method: 'PUT', body: b }),
-    delHsn:        (id) => call(`/hsn/${id}`, { method: 'DELETE' }),
+    designations: () => call('/designations'),
+    addDesignation: (b) => call('/designations', { method: 'POST', body: b }),
+    banks: () => call('/banks'),
+    addBank: (b) => call('/banks', { method: 'POST', body: b }),
+    hsn: () => call('/hsn'),
+    addHsn: (b) => call('/hsn', { method: 'POST', body: b }),
+    editHsn: (id, b) => call(`/hsn/${id}`, { method: 'PUT', body: b }),
+    delHsn: (id) => call(`/hsn/${id}`, { method: 'DELETE' }),
 
     // ---- attributes ----
-    attributes:    ()   => call('/attributes'),
-    addAttribute:  (b)  => call('/attributes', { method: 'POST', body: b }),
+    attributes: () => call('/attributes'),
+    addAttribute: (b) => call('/attributes', { method: 'POST', body: b }),
     editAttribute: (id, b) => call(`/attributes/${id}`, { method: 'PUT', body: b }),
-    delAttribute:  (id) => call(`/attributes/${id}`, { method: 'DELETE' }),
+    delAttribute: (id) => call(`/attributes/${id}`, { method: 'DELETE' }),
 
     // ---- inventory ----
-    openPos:       ()   => call('/grn/open-pos'),
-    postGrn:       (b)  => call('/grn', { method: 'POST', body: b }),
+    openPos: () => call('/grn/open-pos'),
+    postGrn: (b) => call('/grn', { method: 'POST', body: b }),
     discrepancies: (st) => call('/discrepancies' + (st ? `?status=${st}` : '')),
-    releaseDisc:   (id) => call(`/discrepancies/${id}/release`, { method: 'POST' }),
-    holdDisc:      (id) => call(`/discrepancies/${id}/hold`, { method: 'POST' }),
+    releaseDisc: (id) => call(`/discrepancies/${id}/release`, { method: 'POST' }),
+    holdDisc: (id) => call(`/discrepancies/${id}/hold`, { method: 'POST' }),
     discInvoiceable: () => call('/discrepancies/invoiceable'),
-    countSheet:    ()   => call('/physical/sheet'),
-    postCount:     (b)  => call('/physical', { method: 'POST', body: b }),
-    counts:        ()   => call('/physical'),
-    stockSummary:  ()   => call('/stock/summary'),
-    stockBatches:  ()   => call('/stock/batches'),
-    stockMoves:    ()   => call('/stock/movements'),
+    countSheet: () => call('/physical/sheet'),
+    postCount: (b) => call('/physical', { method: 'POST', body: b }),
+    counts: () => call('/physical'),
+    stockSummary: () => call('/stock/summary'),
+    stockBatches: () => call('/stock/batches'),
+    stockMoves: () => call('/stock/movements'),
 
     // ---- ordering ----
-    salesOrders:   ()   => call('/sales-orders'),
-    addSalesOrder: (b)  => call('/sales-orders', { method: 'POST', body: b }),
+    salesOrders: () => call('/sales-orders'),
+    addSalesOrder: (b) => call('/sales-orders', { method: 'POST', body: b }),
     delSalesOrder: (id) => call(`/sales-orders/${id}`, { method: 'DELETE' }),
-    suggestPicks:  (id) => call(`/deliveries/suggest/${id}`),
-    postDelivery:  (b)  => call('/deliveries', { method: 'POST', body: b }),
-    deliveries:    ()   => call('/deliveries'),
+    suggestPicks: (id) => call(`/deliveries/suggest/${id}`),
+    postDelivery: (b) => call('/deliveries', { method: 'POST', body: b }),
+    deliveries: () => call('/deliveries'),
 
     // ---- registers and GST reconciliation ----
     invoiceRegister: (p) => call('/registers/invoices' + (p ? `?period=${p}` : '')),
-    gstRegister:     (p) => call('/registers/gst' + (p ? `?period=${p}` : '')),
-    tdsRegister:     (p) => call('/registers/tds' + (p ? `?period=${p}` : '')),
-    registerCsv:  (w, p) => `${BASE}/registers/${w}.csv` + (p ? `?period=${p}` : ''),
+    gstRegister: (p) => call('/registers/gst' + (p ? `?period=${p}` : '')),
+    tdsRegister: (p) => call('/registers/tds' + (p ? `?period=${p}` : '')),
+    registerCsv: (w, p) => `${BASE}/registers/${w}.csv` + (p ? `?period=${p}` : ''),
     gstSales: (p) =>
       call('/registers/gst-sales' + (p ? `?period=${encodeURIComponent(p)}` : '')),
 
@@ -234,12 +256,12 @@ export function makeApi(token, tenantId) {
 
     tdsReport: (p) =>
       call('/registers/tds-report' + (p ? `?period=${encodeURIComponent(p)}` : '')),
-    upload3b:      (b)  => call('/registers/gstr3b', { method: 'POST', body: b }),
-    compare3b:     (p)  => call(`/registers/gstr3b/compare?period=${p}`),
-    template3bUrl: ()   => `${BASE}/registers/gstr3b/template.csv`,
+    upload3b: (b) => call('/registers/gstr3b', { method: 'POST', body: b }),
+    compare3b: (p) => call(`/registers/gstr3b/compare?period=${p}`),
+    template3bUrl: () => `${BASE}/registers/gstr3b/template.csv`,
 
     // ---- bank and card statements ----
-    stmtAccounts:  () => call('/statements/accounts'),
+    stmtAccounts: () => call('/statements/accounts'),
     addStmtAccount: (b) => call('/statements/accounts', { method: 'POST', body: b }),
     editStmtAccount: (id, b) => call(`/statements/accounts/${id}`, { method: 'PUT', body: b }),
     stmtAccountImpact: (id) =>
@@ -248,7 +270,7 @@ export function makeApi(token, tenantId) {
     delStmtAccount: (id, confirm) =>
       call(
         `/statements/accounts/${id}` +
-          (confirm ? `?confirm=${encodeURIComponent(confirm)}` : ''),
+        (confirm ? `?confirm=${encodeURIComponent(confirm)}` : ''),
         { method: 'DELETE' }
       ),
     // opts (card statements only): { allocation: 'UNALLOCATED'|'COMPANY'|'PERSONAL', category }
@@ -263,11 +285,11 @@ export function makeApi(token, tenantId) {
     allocateAll: (id, period, b) =>
       call(`/statements/accounts/${id}/allocate-all?period=${encodeURIComponent(period)}`,
         { method: 'PUT', body: b }),
-      attachables: (txnId) => call(`/statements/txns/${txnId}/attachables`),
-      addTxnLink: (txnId, b) => call(`/statements/txns/${txnId}/links`, {
-        method: 'POST',
-        body: b
-      }),
+    attachables: (txnId) => call(`/statements/txns/${txnId}/attachables`),
+    addTxnLink: (txnId, b) => call(`/statements/txns/${txnId}/links`, {
+      method: 'POST',
+      body: b
+    }),
     delTxnLink: (id) => call(`/statements/links/${id}`, { method: 'DELETE' }),
 
     // Supporting documents for a bank/card statement transaction
@@ -293,24 +315,24 @@ export function makeApi(token, tenantId) {
       call(`/statements/ledger?period=${encodeURIComponent(period)}`),
 
     // ---- employees ----
-    employees:     ()   => call('/employees'),
-    addEmployee:   (b)  => call('/employees', { method: 'POST', body: b }),
-    editEmployee:  (id, b) => call(`/employees/${id}`, { method: 'PUT', body: b }),
-    delEmployee:   (id) => call(`/employees/${id}`, { method: 'DELETE' }),
+    employees: () => call('/employees'),
+    addEmployee: (b) => call('/employees', { method: 'POST', body: b }),
+    editEmployee: (id, b) => call(`/employees/${id}`, { method: 'PUT', body: b }),
+    delEmployee: (id) => call(`/employees/${id}`, { method: 'DELETE' }),
 
     // ---- expense heads ----
-    expenseHeads:  ()   => call('/expense-heads'),
+    expenseHeads: () => call('/expense-heads'),
     addExpenseHead: (b) => call('/expense-heads', { method: 'POST', body: b }),
     addStandardHeads: () => call('/expense-heads/standard', { method: 'POST' }),
     editExpenseHead: (id, b) => call(`/expense-heads/${id}`, { method: 'PUT', body: b }),
     delExpenseHead: (id) => call(`/expense-heads/${id}`, { method: 'DELETE' }),
 
     // ---- master data templates ----
-    templates:     ()   => call('/templates'),
-    templateUrl:   (k)  => `${BASE}/templates/${k}.csv`,
-    templateDl:    (k)  => download(`/templates/${k}.csv`, { token, tenantId }),
-    importCsv:  (k, text) => call(`/templates/${k}/import`,
-                    { method: 'POST', body: { csv: text } }),
+    templates: () => call('/templates'),
+    templateUrl: (k) => `${BASE}/templates/${k}.csv`,
+    templateDl: (k) => download(`/templates/${k}.csv`, { token, tenantId }),
+    importCsv: (k, text) => call(`/templates/${k}/import`,
+      { method: 'POST', body: { csv: text } }),
 
   }
 }

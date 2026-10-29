@@ -31,8 +31,10 @@ from .tax import q2
 
 GROUPS = ("customer", "material", "employee")
 
+
 PRESETS = [
     ("today", "Today"),
+    ("yesterday", "Yesterday"),
     ("this_week", "This week"),
     ("this_month", "This month"),
     ("this_quarter", "This quarter"),
@@ -42,6 +44,7 @@ PRESETS = [
     ("prev_year", "Previous year"),
     ("custom", "Custom dates"),
 ]
+
 PRESET_KEYS = {k for k, _ in PRESETS}
 MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 ZERO = Decimal("0")
@@ -86,10 +89,15 @@ def resolve_range(tenant, key: str, today: date,
             raise HTTPException(422, "The start date is after the end date")
         return {"key": key, "label": "Custom dates", "start": start, "end": end}
 
+
     if key == "today":
         a = b = today
         label = "Today"
+    elif key == "yesterday":
+        a = b = today - timedelta(days=1)
+        label = "Yesterday"
     elif key == "this_week":
+
         a = today - timedelta(days=today.weekday())
         b = a + timedelta(days=6)
         label = "This week"

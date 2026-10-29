@@ -5,8 +5,10 @@ export const Panel = ({ title, right, children, bodyless }) => (
   <div className="panel">
     {(title || right) && (
       <div className="panel-hd">{title && <h2>{title}</h2>}
-        {right && <div style={{ marginLeft: 'auto', display: 'flex', gap: 8,
-          alignItems: 'center', flexWrap: 'wrap' }}>{right}</div>}</div>)}
+        {right && <div style={{
+          marginLeft: 'auto', display: 'flex', gap: 8,
+          alignItems: 'center', flexWrap: 'wrap'
+        }}>{right}</div>}</div>)}
     {bodyless ? children : <div className="panel-bd">{children}</div>}
   </div>
 )
@@ -29,8 +31,8 @@ export const Table = ({ head, children, empty, cols }) => (
     <tbody>{children && children.length
       ? children
       : <tr><td colSpan={cols || head.length}
-          style={{ textAlign: 'center', padding: 24, color: 'var(--faint)' }}>
-          {empty || 'Nothing to show.'}</td></tr>}</tbody>
+        style={{ textAlign: 'center', padding: 24, color: 'var(--faint)' }}>
+        {empty || 'Nothing to show.'}</td></tr>}</tbody>
   </table></div>
 )
 
@@ -119,21 +121,62 @@ export function PrintButtons({ kind, id, variant, onError, small = true, extra =
  * Financial years (from the company profile) first, then months, then "all".
  * The value sent to the API is "FY2026-27", "2026-04" or "".
  */
-export function PeriodPicker({ value, onChange, months = [], years = [], allLabel = 'All periods' }) {
-  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
-  const ml = p => { const [y, m] = p.split('-'); return `${MON[+m - 1]} ${y}` }
-  return (
-    <select value={value} onChange={e => onChange(e.target.value)}
-      style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
-      <optgroup label="Financial year">
-        {years.map(f => <option key={f.label} value={'FY' + f.label}>FY {f.label}{f.current ? ' (current)' : ''}</option>)}
-      </optgroup>
-      {months.length > 0 && <optgroup label="Month">
-        {months.map(x => <option key={x} value={x}>{ml(x)}</option>)}
-      </optgroup>}
-      <option value="">{allLabel}</option>
-    </select>)
+
+const FILTER_STYLE = {
+  padding: '7px 10px',
+  border: '1px solid var(--line2)',
+  borderRadius: 7,
 }
+
+export function FinancialYearPicker({ value, onChange, years = [] }) {
+  return (
+    <select
+      aria-label="Financial year"
+      value={value || ''}
+      onChange={e => onChange(e.target.value)}
+      style={FILTER_STYLE}
+    >
+      {years.map(f => {
+        const label = typeof f === 'string' ? f : f.label
+        const current = typeof f === 'object' && f.current
+        const fy = String(label).replace(/^FY/i, '')
+
+        return (
+          <option key={fy} value={`FY${fy}`}>
+            FY {fy}{current ? ' (current)' : ''}
+          </option>
+        )
+      })}
+    </select>
+  )
+}
+
+export const DATE_RANGES = [
+  { value: 'today', label: 'Today' },
+  { value: 'yesterday', label: 'Yesterday' },
+  { value: 'this_week', label: 'This week' },
+  { value: 'this_month', label: 'This month' },
+  { value: 'this_quarter', label: 'This quarter' },
+  { value: 'this_year', label: 'This year' },
+]
+
+export function DateRangePicker({ value, onChange }) {
+  return (
+    <select
+      aria-label="Date range"
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      style={FILTER_STYLE}
+    >
+      {DATE_RANGES.map(r => (
+        <option key={r.value} value={r.value}>
+          {r.label}
+        </option>
+      ))}
+    </select>
+  )
+}
+
 
 /** Default period = the current financial year, once the list has loaded. */
 export function useDefaultFy(years, value, setValue) {

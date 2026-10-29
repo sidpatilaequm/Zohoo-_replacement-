@@ -1,6 +1,14 @@
 import { useState } from 'react'
 import { useAuth } from '../lib/auth'
-import { Panel, Table, useLoad, Loading, ErrorBox, PeriodPicker, useDefaultFy } from '../components/ui'
+import {
+  Panel,
+  Table,
+  useLoad,
+  Loading,
+  ErrorBox,
+  FinancialYearPicker,
+  DateRangePicker,
+} from '../components/ui'
 import { inr, gd } from '../lib/fmt'
 import GstFiling from '../components/GstFiling'
 import SalesReport, { SALES_REPORTS } from '../components/SalesReport'
@@ -9,59 +17,126 @@ const REPORTS = [
   { key: 'crec', label: 'Customer outstanding — receivables' },
   { key: 'vpay', label: 'Vendor outstanding — payables' },
   { key: 'marg', label: 'Margin by material' },
-  { key: 'gst',  label: 'GST filing — GSTR-1 (A), GSTR-3B (B), A − B' },
+  { key: 'gst', label: 'GST filing — GSTR-1 (A), GSTR-3B (B), A − B' },
   ...SALES_REPORTS,
 ]
+
 
 export default function Reports() {
   const { api } = useAuth()
   const [kind, setKind] = useState('crec')
   const fys = useLoad(() => api.financialYears())
-  const months = useLoad(() => api.periods())
-  const [period, setPeriod] = useState(undefined)
-  useDefaultFy(fys.data, period, setPeriod)
-  const p = period || null
-  const rec = useLoad(() => period === undefined ? [] : api.receivables(p), [period])
-  const pay = useLoad(() => period === undefined ? [] : api.payables(p), [period])
-  const mar = useLoad(() => period === undefined ? [] : api.margin(p), [period])
-  if (kind.startsWith('sales_')) return <SalesReport kind={kind} selector={
-    <select value={kind} onChange={e => setKind(e.target.value)}
-      style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
-      {REPORTS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
-    </select>
-  } />
-  const busy = rec.loading || pay.loading || mar.loading || fys.loading || period === undefined
+
+  const [financialYear, setFinancialYear] = useState('')
+  const [dateRange, setDateRange] = useState('this_year')
+
+  // Select the latest available financial year when the API finishes loading.
+  const years = fys.data || []
+  const selectedYear = financialYear ||
+    (years.length ? `FY${String(
+      typeof years[0] === 'string' ? years[0] : years[0].label
+    ).replace(/^FY/i, '')}` : '')
+
+  const localToday = () => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+
+  const today = localToday()
+  const filters = {
+    financialYear: selectedYear,
+    dateRange,
+    today,
+  }
+
+  const rec = useLoad(
+    () => selectedYear ? api.receivables(filters) : [],
+    [selectedYear, dateRange, today]
+  )
+  const pay = useLoad(
+    () => selectedYear ? api.payables(filters) : [],
+    [selectedYear, dateRange, today]
+  )
+  const mar = useLoad(
+    () => selectedYear ? api.margin(filters) : [],
+    [selectedYear, dateRange, today]
+  )
+
+  if (kind.startsWith('sales_')) {
+    return (
+      <SalesReport
+        kind={kind}
+        selector={
+          <select value={kind} onChange={e => setKind(e.target.value)}
+            style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
+            {REPORTS.map(r => (
+              <option key={r.key} value={r.key}>{r.label}</option>
+            ))}
+          </select>
+        }
+      />
+    )
+  }
+
+  const busy = fys.loading || rec.loading || pay.loading || mar.loading ||
+    (!selectedYear && years.length > 0)
+
   if (busy) return <Loading />
-  const anyErr = rec.error || pay.error || mar.error
+
+  const anyErr = rec.error || pay.error || mar.error || fys.error
   if (anyErr) return <ErrorBox>{anyErr}</ErrorBox>
 
   function csv(rows, head, file) {
     const body = [head.join(','), ...rows.map(r => r.map(v =>
       `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))].join('\r\n')
     const url = URL.createObjectURL(new Blob([body], { type: 'text/csv' }))
-    const a = document.createElement('a'); a.href = url; a.download = file; a.click()
+    const a = document.createElement('a')
+    a.href = url
+    a.download = file
+    a.click()
     URL.revokeObjectURL(url)
   }
+
   const download = () => {
     if (kind === 'crec') csv((rec.data || []).map(r => [r.customer, r.doc_no, gd(r.doc_date),
-      gd(r.due_date), r.total, r.received, r.outstanding]),
+    gd(r.due_date), r.total, r.received, r.outstanding]),
       ['Customer', 'Invoice', 'Date', 'Due', 'Total', 'Received', 'Outstanding'], 'receivables.csv')
     else if (kind === 'vpay') csv((pay.data || []).map(r => [r.vendor, r.doc_no, gd(r.doc_date),
-      gd(r.due_date), r.total, r.paid, r.outstanding]),
+    gd(r.due_date), r.total, r.paid, r.outstanding]),
       ['Vendor', 'Invoice', 'Date', 'Due', 'Total', 'Paid', 'Outstanding'], 'payables.csv')
     else csv((mar.data || []).map(r => [r.code, r.descr, r.sold_qty, r.sales_value,
-      r.bought_qty, r.purchase_value, r.margin, r.margin_pct]),
+    r.bought_qty, r.purchase_value, r.margin, r.margin_pct]),
       ['Material', 'Description', 'Sold qty', 'Sales value', 'Bought qty',
-       'Purchase value', 'Margin', 'Margin %'], 'margin.csv')
+        'Purchase value', 'Margin', 'Margin %'], 'margin.csv')
   }
 
-  const picker = (<>
-    <select value={kind} onChange={e => setKind(e.target.value)}
-      style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
-      {REPORTS.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
-    </select>
-    {kind !== 'gst' && <PeriodPicker value={period} onChange={setPeriod} months={months.data || []}
-      years={fys.data || []} allLabel="All years" />}</>)
+
+
+  const picker = (
+    <>
+      <select value={kind} onChange={e => setKind(e.target.value)}
+        style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
+        {REPORTS.map(r => (
+          <option key={r.key} value={r.key}>{r.label}</option>
+        ))}
+      </select>
+
+      {kind !== 'gst' && (
+        <>
+          <FinancialYearPicker
+            value={selectedYear}
+            onChange={setFinancialYear}
+            years={years}
+          />
+          <DateRangePicker
+            value={dateRange}
+            onChange={setDateRange}
+          />
+        </>
+      )}
+    </>
+  )
+
 
   if (kind === 'gst') return (<>
     <Panel title="Reports" right={picker}>
