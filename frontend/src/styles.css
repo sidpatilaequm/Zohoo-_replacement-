@@ -176,3 +176,37 @@ table.lines td{border-bottom:1px solid var(--line);padding:6px 8px}
   font-family:var(--mono)}
 .disc select{padding:6px 4px;border:1px solid var(--line2);border-radius:6px;background:#fff}
 .btn.on{background:var(--paper);border-color:var(--muted)}
+
+/* Modals and dialogs */
+.modal-bg{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(18,33,28,.48);
+  backdrop-filter:blur(3px);z-index:999;display:flex;align-items:center;justify-content:center;
+  padding:20px;overflow-y:auto}
+.modal{background:var(--card);border-radius:12px;box-shadow:0 24px 64px rgba(0,0,0,.22);
+  width:100%;max-width:540px;overflow:hidden;border:1px solid var(--line);
+  display:flex;flex-direction:column;animation:modalIn .15s ease-out}
+@keyframes modalIn{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:scale(1)}}
+.modal.mail{max-width:680px}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;padding:16px 22px;
+  border-bottom:1px solid var(--line);background:#fafaf8}
+.modal-hd h2{font-family:var(--serif);font-size:18px;margin:0;font-weight:600}
+.modal-hd .rm{font-size:20px;padding:2px 8px;border:none;background:none;cursor:pointer;color:var(--muted)}
+.modal-hd .rm:hover{color:var(--text)}
+.modal-bd{padding:20px 22px;overflow-y:auto;max-height:calc(85vh - 70px)}
+.modal-bd .ft{display:flex;gap:10px;align-items:center;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.modal-bd .ft .err{color:var(--red);font-size:12.5px;margin-left:auto}
+
+/* Mail composer */
+.mail-h{display:grid;grid-template-columns:70px 1fr;gap:9px 12px;align-items:center;margin-bottom:14px}
+.mail-h label{font-size:12px;color:var(--muted);font-weight:500;text-align:right}
+.mail-h input{width:100%;padding:6px 9px;border:1px solid var(--line2);border-radius:6px;font-size:13px}
+.mail-from{font-size:13px;color:var(--text);padding:4px 0}
+.mail-sugg{font-size:11.5px;color:var(--muted);margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.mail-body{width:100%;padding:10px 12px;border:1px solid var(--line2);border-radius:7px;
+  font-family:inherit;font-size:13px;line-height:1.5;resize:vertical;min-height:180px;margin-bottom:12px}
+.mail-att{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;
+  background:var(--paper);border:1px solid var(--line);border-radius:7px;margin-bottom:12px;font-size:12.5px}
+.mail-att label.att{display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+.mail-att .att-ic{background:var(--red);color:#fff;font-size:10px;font-weight:700;padding:2px 5px;border-radius:4px}
+.mail-hist{background:#fafaf8;border:1px solid var(--line);border-radius:7px;padding:10px 12px;
+  margin-top:12px;font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+.mail-hist .bad{color:var(--red)}
