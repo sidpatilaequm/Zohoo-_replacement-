@@ -10,11 +10,11 @@ import EmailComposer from '../components/EmailComposer'
 export default function Invoices() {
   const { api, me, can } = useAuth()
   const navigate = useNavigate()
-  const list = useLoad(() => api.invoices())
+  const list = useLoad(() => api.invoices('TAX'))
   const [filter, setFilter] = useState('ALL')
   const [flash, showFlash] = useFlash()
   const [variant, setVariant] = usePrintVariant()
-  const [printAs, setPrintAs] = useState('')   // '' = as the document is, 'PRO' = proforma layout\
+  const [printAs, setPrintAs] = useState('')   // '' = as the document is, 'PRO' = proforma layout
   const [documentsFor, setDocumentsFor] = useState(null)
   const [open, setOpen] = useState(null)       // invoice whose lines are shown
   const [mailing, setMailing] = useState(null)
@@ -24,10 +24,10 @@ export default function Invoices() {
   const canEdit = can ? can('invoice') : true
 
   const rows = list.data.filter(v =>
-    filter === 'ALL' ? true
-    : filter === 'OPEN' ? v.doc_type === 'TAX' && v.status === 'ACTIVE' && v.outstanding > 0.5
+    filter === 'ALL' ? v.status !== 'CANCELLED'
+    : filter === 'OPEN' ? v.status === 'ACTIVE' && v.outstanding > 0.5
     : filter === 'CANCELLED' ? v.status === 'CANCELLED'
-    : v.doc_type === filter && v.status === 'ACTIVE')
+    : true)
   const anyDisc = rows.some(v => v.discount > 0.004)
 
   async function convert(id) {
@@ -78,9 +78,7 @@ export default function Invoices() {
         </select></label>
       <select value={filter} onChange={e => setFilter(e.target.value)}
         style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
-        <option value="ALL">All documents</option>
-        <option value="TAX">Tax invoices only</option>
-        <option value="PRO">Proforma only</option>
+        <option value="ALL">All invoices</option>
         <option value="OPEN">Unpaid or part paid</option>
         <option value="CANCELLED">Cancelled</option>
       </select>
