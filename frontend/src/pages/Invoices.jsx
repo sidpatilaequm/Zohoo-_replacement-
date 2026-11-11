@@ -1,13 +1,14 @@
 import { Fragment, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, useLoad, Loading, ErrorBox, useFlash,
   usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
 import { inr, gd } from '../lib/fmt'
 import DocFiles from '../components/DocFiles'
 import InvoiceLines from '../components/InvoiceLines'
+import EmailComposer from '../components/EmailComposer'
 export default function Invoices() {
-  const { api, me } = useAuth()
+  const { api, me, can } = useAuth()
   const navigate = useNavigate()
   const list = useLoad(() => api.invoices())
   const [filter, setFilter] = useState('ALL')
@@ -16,8 +17,11 @@ export default function Invoices() {
   const [printAs, setPrintAs] = useState('')   // '' = as the document is, 'PRO' = proforma layout\
   const [documentsFor, setDocumentsFor] = useState(null)
   const [open, setOpen] = useState(null)       // invoice whose lines are shown
+  const [mailing, setMailing] = useState(null)
   if (list.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
+
+  const canEdit = can ? can('invoice') : true
 
   const rows = list.data.filter(v =>
     filter === 'ALL' ? true
@@ -59,6 +63,9 @@ export default function Invoices() {
 
   return (<>
     {flash}
+    {mailing && <EmailComposer kind="invoice" id={mailing.id} variant={variant}
+      onClose={() => setMailing(null)}
+      onSent={r => showFlash(`${r.doc_no} emailed to ${r.to.join(', ')}.`)} />}
     <Panel title={`Invoice register — ${rows.length}`} right={<>
       <VariantPicker value={variant} onChange={setVariant} />
       <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
@@ -76,7 +83,9 @@ export default function Invoices() {
         <option value="PRO">Proforma only</option>
         <option value="OPEN">Unpaid or part paid</option>
         <option value="CANCELLED">Cancelled</option>
-      </select></>} bodyless>
+      </select>
+      {canEdit && <Link className="btn btn-sm btn-a" to="/invoices/new">Add invoice</Link>}
+    </>} bodyless>
       <Table head={[{ label: 'Type', align: 'c' }, 'Invoice', 'Date', 'Customer', 'PO no',
         { label: 'Supply', align: 'c' },
         ...(anyDisc ? [{ label: 'Discount', align: 'r' }] : []),
@@ -121,7 +130,7 @@ export default function Invoices() {
                 >
                   Docs
                 </button>
-              <button className="btn btn-sm" style={{ marginLeft: 5 }} onClick={() => mail(v)}>Email</button>
+              <button className="btn btn-sm" style={{ marginLeft: 5 }} onClick={() => setMailing(v)}>Email</button>
               {!dead && !v.converted_from && !v.converted_to && !v.converted_to_id &&
                 <button className="btn btn-sm" style={{ marginLeft: 5 }}
                   onClick={() => navigate(`/invoices/new?edit=${v.id}`)}>Edit</button>}
