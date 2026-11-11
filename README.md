@@ -28,6 +28,70 @@ Sign in as `alok@aequm.in` (any password — the demo does not check them, and s
 so on screen).
 
 
+## Version 4.6 changes
+
+**Discounts on sales invoices and proformas.** Each line can carry a discount
+as a percentage or a rupee amount, and the document can carry an overall
+discount, also a percentage or an amount. A discount shown on the invoice
+reduces the taxable value (CGST Act s.15(3)(a)), so both come off *before*
+GST: the line discount comes off its line, then the overall discount is shared
+over the lines in proportion to what each is worth after its own discount.
+Every line therefore keeps its own taxable value, rate and tax, which GSTR-1
+and the HSN summary need, and the shares add up to the overall discount to the
+paisa (any paise left over go to the largest line). On a line priced
+inclusive of GST the discount comes off the quoted, inclusive figure and the
+tax is carved out of what is left. A discount cannot take more off than the
+line or the bill holds, a percentage cannot exceed 100, and discounts cannot
+bring a document to nil. Discounts are kept when a document is edited and are
+carried onto the tax invoice when a proforma is converted. Registers, GST
+returns, sales reports and the margin report all use the discounted value; the
+margin report now counts sales at taxable value (it used quantity × price,
+which overstated GST-inclusive lines).
+
+**Clear line items.** The tax invoice and proforma print-out reads left to
+right on every line: Qty (with its unit) × Rate − Discount = Taxable Value,
+then the tax on it. The Discount column appears only when something is
+discounted, and the totals then show Items Total, Less: Discount and Sub
+Total. On a GST-inclusive line the rate and discount are printed without GST so
+the row still adds up, with the quoted inclusive price beneath the rate; a
+footnote says so. On screen, the Invoice Register and the Proforma Register
+have an **Items** button on every row that opens the same breakdown, with GST
+and a line total per line. The New Invoice screen shows the discount, taxable
+value and line total per line as they are entered, using the same arithmetic as
+the server (`frontend/src/lib/invoiceCalc.js` mirrors `backend/app/tax.py`).
+
+**Document numbers typed by hand.** An invoice or proforma number can be typed
+on New Invoice, changed when editing, and typed when converting a proforma. It
+is kept as typed and refused only if the same kind of document already uses it
+in the same financial year (capitals and small letters count as the same).
+Tax invoices and proformas are separate series, and the same number may be
+used again in another financial year. Left blank, the next number in the
+series is used; the series steps over numbers already typed by hand, so it
+never collides with one. The screens check a typed number as it is entered
+(`GET /api/invoices/check-no`). Because numbers can now repeat across years, a
+converted proforma is found from its tax invoice by the stored link, not by
+number.
+
+**Proforma Register in the menu.** The v4.4 Proforma Register page was never
+routed; it is now under Sales for users with the `proforma` permission. The
+API client was also dropping its proforma filter, and **New proforma** opened
+the form as a tax invoice; both are fixed.
+
+**Database.** Run `db/19_v46_discounts_doc_numbers.sql` after
+`db/18_v44_sales_reports.sql`. It adds `invoices.fy` and fills it from each
+document date and the organisation's financial-year start, adds the discount
+columns to `invoices` and `invoice_lines`, and replaces the unique key
+`uq_i (tenant_id, doc_no)` with `uq_i_fy (tenant_id, doc_type, fy, doc_no)`.
+Existing data already satisfies the new key, and the file is safe to run
+again. The deploy workflow applies it (step 5B). Run it on a staging copy
+first; it was exercised on MariaDB 10.11, not on MySQL 8 itself. The
+financial year stored on an invoice is fixed when it is saved, so changing the
+organisation's financial-year start later does not move existing invoices.
+Tests: `tests/test_v46_discounts_numbers.py`.
+
+**Not changed.** `invoicing-standalone.html` (the in-browser demo) does not
+have discounts or typed numbers.
+
 ## Version 4.3 changes
 
 **Expense master.** Masters → Expenses holds an Expense ID and an Expense name

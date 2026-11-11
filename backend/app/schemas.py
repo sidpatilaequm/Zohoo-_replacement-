@@ -221,6 +221,21 @@ class MaterialIn(BaseModel):
         return self
 
 
+def _check_disc(kind, value, where):
+    """A discount is a percentage (0-100) or a rupee amount; none is (None, 0)."""
+    if value is None or value == 0:
+        return None, Decimal("0")
+    if value < 0:
+        raise ValueError(f"{where}: a discount cannot be negative")
+    if kind not in ("PCT", "AMT"):
+        raise ValueError(f"{where}: say whether the discount is a percentage (PCT) or an amount (AMT)")
+    if kind == "PCT" and value > 100:
+        raise ValueError(f"{where}: a percentage discount cannot be more than 100")
+    if kind == "AMT" and value != value.quantize(Decimal("0.01")):
+        raise ValueError(f"{where}: an amount discount is in rupees and paise, two decimals at most")
+    return kind, value
+
+
 class LineIn(BaseModel):
     material_id: int
     qty: Decimal = Field(gt=0)
@@ -228,6 +243,9 @@ class LineIn(BaseModel):
     hsn_rate_id: int | None = None
     price_inclusive: bool | None = None
     descr2: str | None = Field(None, max_length=200)
+    # v4.6 — line discount: PCT (percent) or AMT (rupees off the line)
+    disc_type: str | None = None
+    disc_value: Decimal | None = None
 
 
 class InvoiceIn(BaseModel):
@@ -247,12 +265,23 @@ class InvoiceIn(BaseModel):
     reverse_chg: str = "N"
     subject: str | None = Field(None, max_length=200)
     instructions: str | None = Field(None, max_length=2000)
+    # v4.6 — overall discount, spread over the lines before tax
+    disc_type: str | None = None
+    disc_value: Decimal | None = None
     lines: list[LineIn]
 
     @model_validator(mode="after")
     def _v(self):
         if self.doc_type not in ("TAX", "PRO"):
             raise ValueError("doc_type must be TAX or PRO")
+        self.doc_no = (self.doc_no or "").strip() or None
+        if self.doc_no and len(self.doc_no) > 40:
+            raise ValueError("A document number can be 40 characters at most")
+        self.disc_type, self.disc_value = _check_disc(
+            self.disc_type, self.disc_value, "Overall discount")
+        for i, li in enumerate(self.lines, 1):
+            li.disc_type, li.disc_value = _check_disc(
+                li.disc_type, li.disc_value, f"Line {i}")
         if not self.lines:
             raise ValueError("An invoice needs at least one line")
         if self.po_date and self.po_date > self.doc_date:

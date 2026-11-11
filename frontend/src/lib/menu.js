@@ -1,7 +1,8 @@
 export const MENU = [
   { group: 'Sales', items: [
     { key: 'invoice', label: 'Customer Invoices', path: '/invoices/new' },
-    { key: 'saved',   label: 'Invoice Register',  path: '/invoices' } ] },
+    { key: 'saved',   label: 'Invoice Register',  path: '/invoices' },
+    { key: 'proforma', label: 'Proforma Register', path: '/proformas' } ] },
   { group: 'Purchases', items: [
     { key: 'po',   label: 'Purchase Orders',  path: '/purchase-orders' },
     { key: 'vinv', label: 'Vendor Invoices',  path: '/vendor-invoices' } ] },

@@ -33,6 +33,7 @@ import CardStatements from './pages/CardStatements'
 import Employees from './pages/Employees'
 import Expenses from './pages/Expenses'
 import Signatures from './pages/Signatures'
+import ProformaInvoices from './pages/ProformaInvoices'
 
 
 const PAGES = {
@@ -44,7 +45,7 @@ const PAGES = {
   phys: PhysicalInventory, stock: StockReport,
   hsn: HsnCodes, registers: Registers, data: Templates,
   bankstmt: BankStatements, cardstmt: CardStatements, employees: Employees, expenses: Expenses,
-  signatures: Signatures,
+  signatures: Signatures, proforma: ProformaInvoices,
 }
 
 export default function App() {

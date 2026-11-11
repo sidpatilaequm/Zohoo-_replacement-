@@ -13,6 +13,7 @@ from .. import models as M, schemas as S
 from ..deps import Ctx, need
 from ..routers.masters import add_customer, add_vendor, add_material
 from ..routers.docs import add_invoice, add_po, add_vinv
+from ..service import invoice_no_taken
 
 router = APIRouter(prefix="/templates", tags=["templates"])
 
@@ -308,14 +309,16 @@ def _import_documents(ctx, key, rows):
                 c = find(M.Customer, first["Customer Code"].strip())
                 if not c:
                     raise HTTPException(422, f"customer {first['Customer Code']} is not on file")
-                if ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
-                                  .where(M.Invoice.doc_no == doc_no)).scalar_one_or_none():
+                datecol = "Document Date" if key == "customer-estimates" else "Invoice Date"
+                dtype = "PRO" if key == "customer-estimates" else "TAX"
+                ddate = _date(first[datecol], datecol, n0)
+                # v4.6 — a number is taken only within its financial year
+                if invoice_no_taken(ctx, dtype, doc_no, ddate):
                     skipped += 1
                     continue
-                datecol = "Document Date" if key == "customer-estimates" else "Invoice Date"
                 add_invoice(S.InvoiceIn(doc_no=doc_no,
-                    doc_type="PRO" if key == "customer-estimates" else "TAX",
-                    doc_date=_date(first[datecol], datecol, n0),
+                    doc_type=dtype,
+                    doc_date=ddate,
                     due_date=_date(first.get("Due Date"), "Due Date", n0, False),
                     customer_id=c.id,
                     gstin=(first.get("Recipient GSTIN") or "").strip().upper() or None,

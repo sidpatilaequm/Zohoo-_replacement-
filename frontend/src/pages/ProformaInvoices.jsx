@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, useLoad, Loading, ErrorBox, useFlash,
   usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
 import { inr, gd, today } from '../lib/fmt'
 import EmailComposer from '../components/EmailComposer'
+import InvoiceLines from '../components/InvoiceLines'
 
 /** Every proforma raised, including those already converted. Converting raises a
  *  new tax invoice in the invoice number range and leaves the proforma here,
@@ -16,8 +17,31 @@ export default function ProformaInvoices() {
   const [flash, showFlash] = useFlash()
   const [variant, setVariant] = usePrintVariant()
   const [mailing, setMailing] = useState(null)
-  const [converting, setConverting] = useState(null)   // { v, date }
+  const [converting, setConverting] = useState(null)   // { v, date, no }
   const [busy, setBusy] = useState(false)
+  const [expanded, setExpanded] = useState(null)       // proforma whose lines are shown
+  const [cvNext, setCvNext] = useState(null)           // next tax invoice number for that date
+  const [cvCheck, setCvCheck] = useState(null)         // check of a typed number
+
+  // The tax invoice number the series would give on the chosen date, and
+  // whether a typed one is free in that financial year.
+  const cvDate = converting?.date, cvNo = (converting?.no || '').trim()
+  useEffect(() => {
+    setCvNext(null)
+    if (!cvDate) return
+    let alive = true
+    api.invoiceNextNo('TAX', cvDate).then(r => { if (alive) setCvNext(r) }).catch(() => {})
+    return () => { alive = false }
+  }, [cvDate, api])
+  useEffect(() => {
+    setCvCheck(null)
+    if (!cvNo || !cvDate) return
+    let alive = true
+    const timer = setTimeout(() => api.checkInvoiceNo('TAX', cvNo, cvDate)
+      .then(r => { if (alive) setCvCheck(r) }).catch(() => {}), 300)
+    return () => { alive = false; clearTimeout(timer) }
+  }, [cvNo, cvDate, api])
+  const cvTaken = cvCheck && cvCheck.doc_no === cvNo && !cvCheck.available
 
   if (list.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
@@ -26,11 +50,12 @@ export default function ProformaInvoices() {
     filter === 'OPEN' ? !v.converted_to : filter === 'DONE' ? !!v.converted_to : true)
   const open = list.data.filter(v => !v.converted_to)
   const canEdit = can('invoice')
+  const anyDisc = rows.some(v => v.discount > 0.004)
 
   async function convert() {
     setBusy(true)
     try {
-      const d = await api.convert(converting.v.id, converting.date)
+      const d = await api.convert(converting.v.id, converting.date, cvNo || undefined)
       showFlash(`${converting.v.doc_no} converted to tax invoice ${d.doc_no}. The proforma is kept here.`)
       setConverting(null); list.reload()
     } catch (x) { showFlash(x.message, 'bad') } finally { setBusy(false) }
@@ -58,8 +83,17 @@ export default function ProformaInvoices() {
           <div className="f"><label htmlFor="cv-date">Tax invoice date</label>
             <input id="cv-date" type="date" value={converting.date} autoFocus
               onChange={e => setConverting(c => ({ ...c, date: e.target.value }))} /></div>
+          <div className="f"><label htmlFor="cv-no">Tax invoice number</label>
+            <input id="cv-no" className="mono" maxLength={40} value={converting.no || ''}
+              placeholder={cvNext?.doc_no || 'automatic'}
+              style={cvTaken ? { borderColor: 'var(--red)' } : undefined}
+              onChange={e => setConverting(c => ({ ...c, no: e.target.value }))} />
+            <div className="hint">{cvTaken
+              ? <span style={{ color: 'var(--red)' }}>Already used in FY {cvCheck.fy}</span>
+              : cvNo ? (cvCheck && cvCheck.doc_no === cvNo ? `Free in FY ${cvCheck.fy}` : 'Checking…')
+              : `Blank takes the next in the series${cvNext ? ` · FY ${cvNext.fy}` : ''}`}</div></div>
           <div className="ft">
-            <button className="btn btn-a" disabled={busy || !converting.date} onClick={convert}>
+            <button className="btn btn-a" disabled={busy || !converting.date || cvTaken} onClick={convert}>
               {busy ? 'Converting…' : 'Raise tax invoice'}</button>
             <button className="btn" onClick={() => setConverting(null)} disabled={busy}>Cancel</button>
           </div>
@@ -78,15 +112,18 @@ export default function ProformaInvoices() {
       {canEdit && <Link className="btn btn-sm btn-a" to="/invoices/new?type=PRO">New proforma</Link>}
       </>} bodyless>
       <Table head={['Proforma', 'Date', 'Customer', 'PO no', { label: 'Supply', align: 'c' },
+        ...(anyDisc ? [{ label: 'Discount', align: 'r' }] : []),
         { label: 'Taxable', align: 'r' }, { label: 'Tax', align: 'r' }, { label: 'Total', align: 'r' },
         { label: 'Status', align: 'c' }, { label: 'Actions', align: 'c' }, '']}
         empty="No proformas yet. Raise one from Customer Invoices with Document type set to Proforma invoice.">
-        {rows.map(v => (<tr key={v.id}>
-          <td className="mono"><b>{v.doc_no}</b></td>
+        {rows.map(v => (<Fragment key={v.id}><tr>
+          <td className="mono"><b>{v.doc_no}</b>
+            <div className="fine">FY {v.fy}</div></td>
           <td className="mono">{gd(v.doc_date)}</td>
           <td>{v.customer}</td>
           <td className="mono">{v.po_no || '—'}</td>
           <td className="c">{v.intra ? <Tag kind="ok">Intra</Tag> : <Tag kind="warn">Inter</Tag>}</td>
+          {anyDisc && <td className="r mono">{v.discount > 0.004 ? inr(v.discount) : '—'}</td>}
           <td className="r mono">{inr(v.taxable)}</td>
           <td className="r mono">{inr(v.tax)}</td>
           <td className="r mono"><b>{inr(v.total)}</b></td>
@@ -95,13 +132,20 @@ export default function ProformaInvoices() {
                 <div className="fine mono">{v.converted_to}{v.converted_on ? `, ${gd(v.converted_on)}` : ''}</div></>
             : <Tag kind="warn">Open</Tag>}</td>
           <td className="c" style={{ whiteSpace: 'nowrap' }}>
+            <button className={`btn btn-sm${expanded === v.id ? ' on' : ''}`} style={{ marginRight: 5 }}
+              aria-expanded={expanded === v.id}
+              onClick={() => setExpanded(expanded === v.id ? null : v.id)}>
+              Items ({v.lines_count})</button>
             <PrintButtons kind="invoices" id={v.id} variant={variant} onError={m => showFlash(m, 'bad')} />
             <button className="btn btn-sm" style={{ marginLeft: 5 }} onClick={() => setMailing(v)}>Email</button>
             {canEdit && !v.converted_to && <button className="btn btn-sm btn-a" style={{ marginLeft: 5 }}
               onClick={() => setConverting({ v, date: today() })}>Convert to tax invoice</button>}</td>
           <td className="r">{canEdit && !v.converted_to && <button className="rm" title="Delete proforma"
             aria-label={`Delete ${v.doc_no}`} onClick={() => remove(v)}>×</button>}</td>
-        </tr>))}
+        </tr>
+        {expanded === v.id && <tr className="lines-row"><td colSpan={anyDisc ? 12 : 11}>
+          <InvoiceLines id={v.id} /></td></tr>}
+        </Fragment>))}
       </Table>
     </Panel>
   </>)

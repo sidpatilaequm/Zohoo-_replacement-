@@ -27,30 +27,74 @@ def _fy_seq(ctx, kind, label):
     return row
 
 
-def next_no(ctx, kind, doc_date=None):
-    """Generate the next document number."""
+_INVOICE_KINDS = {"invoice": "TAX", "proforma": "PRO"}
+
+
+def doc_fy(ctx, doc_date=None) -> str:
+    """The financial year label a document dated `doc_date` belongs to."""
+    from datetime import date
+    return fy_label(ctx.tenant, doc_date or date.today())
+
+
+def invoice_no_taken(ctx, doc_type, doc_no, doc_date, exclude_id=None):
+    """The invoice already using `doc_no` for this document type in the
+    financial year of `doc_date`, or None. Numbers may repeat across years
+    and between tax invoices and proformas, never within one year and type."""
+    q = ctx.scope(select(M.Invoice), M.Invoice).where(
+        M.Invoice.doc_type == doc_type,
+        M.Invoice.fy == doc_fy(ctx, doc_date),
+        func.lower(M.Invoice.doc_no) == (doc_no or "").strip().lower(),
+    )
+    if exclude_id:
+        q = q.where(M.Invoice.id != exclude_id)
+    return ctx.db.execute(q.limit(1)).scalar_one_or_none()
+
+
+def _formatted(ctx, kind, doc_date, n):
     t = ctx.tenant
-    pre, seq, fyflag = _RANGES[kind]
+    pre, _, fyflag = _RANGES[kind]
     prefix = getattr(t, pre)
-
     if getattr(t, fyflag):
-        from datetime import date
-        label = fy_label(t, doc_date or date.today())
-        return f"{prefix}{label}/{_fy_seq(ctx, kind, label).next_no:03d}"
-
-    return f"{prefix}{getattr(t, seq):03d}"
+        return f"{prefix}{doc_fy(ctx, doc_date)}/{n:03d}"
+    return f"{prefix}{n:03d}"
 
 
-def bump(ctx, kind, doc_date=None):
+def _current(ctx, kind, doc_date):
     t = ctx.tenant
-    pre, seq, fyflag = _RANGES[kind]
+    _, seq, fyflag = _RANGES[kind]
+    if getattr(t, fyflag):
+        return _fy_seq(ctx, kind, doc_fy(ctx, doc_date)).next_no
+    return getattr(t, seq)
+
+
+def next_no(ctx, kind, doc_date=None):
+    """Generate the next document number.
+
+    For invoices and proformas, a number already typed in by hand is
+    stepped over, so the automatic series never collides with one."""
+    n = _current(ctx, kind, doc_date)
+    doc_type = _INVOICE_KINDS.get(kind)
+    while doc_type and invoice_no_taken(
+            ctx, doc_type, _formatted(ctx, kind, doc_date, n), doc_date):
+        n += 1
+    return _formatted(ctx, kind, doc_date, n)
+
+
+def bump(ctx, kind, doc_date=None, used=None):
+    """Move the series on past the number just used. When next_no stepped
+    over hand-typed numbers to reach `used`, the series follows it there
+    instead of going back over them."""
+    t = ctx.tenant
+    _, seq, fyflag = _RANGES[kind]
+    n = start = _current(ctx, kind, doc_date)
+    if used is not None:
+        n = next((k for k in range(start, start + 1000)
+                  if _formatted(ctx, kind, doc_date, k) == used), start)
 
     if getattr(t, fyflag):
-        from datetime import date
-        label = fy_label(t, doc_date or date.today())
-        _fy_seq(ctx, kind, label).next_no += 1
+        _fy_seq(ctx, kind, doc_fy(ctx, doc_date)).next_no = n + 1
     else:
-        setattr(t, seq, getattr(t, seq) + 1)
+        setattr(t, seq, n + 1)
 
 
 def next_code(ctx, kind):
@@ -165,51 +209,6 @@ def _rated(l):
         getattr(l, "igst_pct", None),
     )
 
-class _RatedMaterial:
-    """Material wrapper carrying the GST rate selected on the invoice line."""
-    __slots__ = ("_m", "sgst_pct", "cgst_pct", "igst_pct")
-
-    def __init__(self, m, sgst, cgst, igst):
-        self._m = m
-        self.sgst_pct = m.sgst_pct if sgst is None else sgst
-        self.cgst_pct = m.cgst_pct if cgst is None else cgst
-        self.igst_pct = m.igst_pct if igst is None else igst
-
-    def __getattr__(self, name):
-        return getattr(self._m, name)
-
-
-def _rated(l):
-    return _RatedMaterial(
-        l.material,
-        getattr(l, "sgst_pct", None),
-        getattr(l, "cgst_pct", None),
-        getattr(l, "igst_pct", None),
-    )
-
-
-class _RatedMaterial:
-    """Material wrapper carrying the GST rate selected on the invoice line."""
-    __slots__ = ("_m", "sgst_pct", "cgst_pct", "igst_pct")
-
-    def __init__(self, m, sgst, cgst, igst):
-        self._m = m
-        self.sgst_pct = m.sgst_pct if sgst is None else sgst
-        self.cgst_pct = m.cgst_pct if cgst is None else cgst
-        self.igst_pct = m.igst_pct if igst is None else igst
-
-    def __getattr__(self, name):
-        return getattr(self._m, name)
-
-
-def _rated(l):
-    return _RatedMaterial(
-        l.material,
-        getattr(l, "sgst_pct", None),
-        getattr(l, "cgst_pct", None),
-        getattr(l, "igst_pct", None),
-    )
-
 
 def invoice_tax(ctx, inv) -> TaxResult:
     lines = [
@@ -220,10 +219,13 @@ def invoice_tax(ctx, inv) -> TaxResult:
             l.price,
             l.descr2,
             bool(getattr(l, "price_inclusive", False)),
+            (getattr(l, "disc_type", None), getattr(l, "disc_value", 0) or 0),
         )
         for l in sorted(inv.lines, key=lambda x: x.line_no)
     ]
-    return compute(lines, ctx.tenant.state_code, inv.pos_state)
+    return compute(lines, ctx.tenant.state_code, inv.pos_state,
+                   discount=(getattr(inv, "disc_type", None),
+                             getattr(inv, "disc_value", 0) or 0))
 
 
 def _purchase_tax(ctx, doc) -> TaxResult:

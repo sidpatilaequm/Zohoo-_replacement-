@@ -7,6 +7,8 @@ from ..deps import Ctx, need
 from ..service import (
     next_no,
     bump,
+    doc_fy,
+    invoice_no_taken,
     resolve_reg,
     build_lines,
     tracks_stock,
@@ -15,7 +17,7 @@ from ..service import (
     vinv_tax,
     settled,
 )
-from ..tax import hsn_summary, in_words
+from ..tax import hsn_summary, in_words, q2, disc_amount
 
 router = APIRouter(tags=["documents"])
 
@@ -40,15 +42,68 @@ def _party_address(ctx, address_id, party_kind, party_id):
     return a
 
 
+def _line_basis_inclusive(price_mode, inclusive):
+    return (True if price_mode == "INCL"
+            else False if price_mode == "EXCL" else inclusive)
+
+
+def _check_discounts(body, resolved):
+    """Discounts may not take more off than there is. Percentages are bounded
+    by the schema; amounts are checked here against the line and the bill."""
+    left = []
+    for (n, m, qty, price, _d2, _incl), li in zip(resolved, body.lines):
+        value = q2(qty * price)
+        if li.disc_type == "AMT" and li.disc_value > value:
+            raise HTTPException(
+                422, f"Line {n}: discount {li.disc_value} is more than the line value {value}")
+        left.append(value - disc_amount(value, li.disc_type, li.disc_value))
+    after = sum(left, Decimal("0"))
+    if body.disc_type == "AMT" and body.disc_value > after:
+        raise HTTPException(
+            422, f"Overall discount {body.disc_value} is more than the items total "
+                 f"{after} after line discounts")
+    if after - disc_amount(after, body.disc_type, body.disc_value) <= 0:
+        raise HTTPException(422, "Discounts cannot bring the invoice to nil")
+
+
+def _claim_no(ctx, body, kind, exclude_id=None, current=None):
+    """The number this document will carry. A hand-typed number is kept as
+    typed and must not already be used by the same kind of document in the
+    same financial year. Blank means the next one in the series."""
+    typed = body.doc_no
+    if typed is None and current is not None:
+        typed = current           # editing and the number was left alone
+    if typed:
+        clash = invoice_no_taken(ctx, body.doc_type, typed, body.doc_date, exclude_id)
+        if clash:
+            label = "Proforma" if body.doc_type == "PRO" else "Invoice"
+            raise HTTPException(
+                409, f"{label} {clash.doc_no} already exists in financial year "
+                     f"{doc_fy(ctx, body.doc_date)} (dated {clash.doc_date}). "
+                     f"Use another number, or leave it blank for the next in the series.")
+        return typed, False
+    return next_no(ctx, kind, body.doc_date), True
+
+
 def tax_json(t):
     f = float
     return {"intra": t.intra, "taxable": f(t.taxable), "cgst": f(t.cgst), "sgst": f(t.sgst),
             "igst": f(t.igst), "tax": f(t.tax), "total": f(t.total), "rounded": f(t.rounded),
             "roundoff": f(t.roundoff), "words": in_words(t.rounded),
-            "lines": [{"line_no": L.line_no, "code": L.code, "descr": L.descr, "hsn": L.hsn,
+            # v4.6 — gross - discount = taxable, all without GST
+            "gross": f(t.gross), "discount": f(t.discount),
+            "line_discount": f(t.line_discount), "overall_discount": f(t.overall_discount),
+            "disc_type": t.disc_type, "disc_value": f(t.disc_value),
+            "lines": [{"line_no": L.line_no, "material_id": L.material_id, "code": L.code,
+                       "descr": L.descr, "hsn": L.hsn,
                        "uom": L.uom, "qty": f(L.qty), "price": f(L.price), "amount": f(L.amount),
                        "cgst": f(L.cgst), "sgst": f(L.sgst), "igst": f(L.igst),
-                       "rate": f(L.rate), "inclusive": L.inclusive} for L in t.lines],
+                       "rate": f(L.rate), "inclusive": L.inclusive,
+                       "unit_rate": f(L.unit_rate), "value": f(L.value),
+                       "discount": f(L.discount), "list_value": f(L.list_value),
+                       "line_disc": f(L.line_disc), "overall_disc": f(L.overall_disc),
+                       "disc_type": L.disc_type, "disc_value": f(L.disc_value),
+                       "total": f(L.amount + L.cgst + L.sgst + L.igst)} for L in t.lines],
             "hsn": [{k: (f(v) if isinstance(v, Decimal) else v) for k, v in h.items()}
                     for h in hsn_summary(t)]}
 
@@ -83,7 +138,10 @@ def list_invoices(doc_type: str | None = None, ctx: Ctx = Depends(need("saved"))
             "customer": inv.customer.name, "customer_id": inv.customer_id,
             "customer_email": inv.customer.email,
             "gstin": inv.gstin, "pos_state": inv.pos_state, "po_no": inv.po_no,
-            "po_date": inv.po_date, "taxable": float(t.taxable), "tax": float(t.tax),
+            "po_date": inv.po_date, "fy": inv.fy,
+            "gross": float(t.gross), "discount": float(t.discount),
+            "lines_count": len(t.lines),
+            "taxable": float(t.taxable), "tax": float(t.tax),
             "total": float(t.rounded), "received": float(rec),
             "outstanding": (
                 float(t.rounded - rec)
@@ -106,7 +164,21 @@ def invoice_next_no(doc_type: str = "TAX", doc_date: date | None = None,
         raise HTTPException(422, "doc_type must be TAX or PRO")
     if kind == "proforma":
         ctx.require("proforma")
-    return {"doc_no": next_no(ctx, kind, doc_date)}
+    return {"doc_no": next_no(ctx, kind, doc_date), "fy": doc_fy(ctx, doc_date)}
+
+
+@router.get("/invoices/check-no")
+def invoice_check_no(doc_no: str, doc_type: str = "TAX", doc_date: date | None = None,
+                     exclude_id: int | None = None, ctx: Ctx = Depends(need("invoice"))):
+    """Whether a hand-typed number is free in its financial year."""
+    doc_type = doc_type.upper()
+    if doc_type not in ("TAX", "PRO"):
+        raise HTTPException(422, "doc_type must be TAX or PRO")
+    clash = invoice_no_taken(ctx, doc_type, doc_no, doc_date, exclude_id)
+    return {"doc_no": doc_no.strip(), "fy": doc_fy(ctx, doc_date),
+            "available": clash is None,
+            "taken_by": ({"id": clash.id, "doc_date": clash.doc_date,
+                          "customer": clash.customer.name} if clash else None)}
 
 
 @router.get("/invoices/{iid}")
@@ -134,8 +206,17 @@ def get_invoice(iid: int, ctx: Ctx = Depends(need("saved"))):
         "reverse_chg": inv.reverse_chg,
         "subject": inv.subject,
         "instructions": inv.instructions,
+        "fy": inv.fy,
+        "status": inv.status,
+        "disc_type": inv.disc_type,
+        "disc_value": float(inv.disc_value or 0),
+        "converted_from": inv.converted_from,
+        "converted_to": inv.converted_to,
         "lines": [
             {
+                "line_no": line.line_no,
+                "disc_type": line.disc_type,
+                "disc_value": float(line.disc_value or 0),
                 "material_id": line.material_id,
                 "qty": float(line.qty),
                 "price": float(line.price),
@@ -146,7 +227,7 @@ def get_invoice(iid: int, ctx: Ctx = Depends(need("saved"))):
                 "igst_pct": float(line.igst_pct or 0),
                 "rate_label": line.rate_label,
             }
-            for line in inv.lines
+            for line in sorted(inv.lines, key=lambda x: x.line_no)
         ],
     },
 
@@ -208,11 +289,9 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
         raise HTTPException(422, "Selected address cannot be used for shipping")
 
     range_kind = "proforma" if body.doc_type == "PRO" else "invoice"
-    doc_no = body.doc_no or next_no(ctx, range_kind, body.doc_date)
-    if ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice)
-                      .where(M.Invoice.doc_no == doc_no)).scalar_one_or_none():
-        raise HTTPException(409, f"Invoice {doc_no} already exists")
     resolved = build_lines(ctx, body.lines)
+    _check_discounts(body, resolved)
+    doc_no, auto_no = _claim_no(ctx, body, range_kind)
     stock = tracks_stock(ctx)
 
     if stock:
@@ -229,6 +308,9 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
         doc_no=doc_no,
         doc_type=body.doc_type,
         doc_date=body.doc_date,
+        fy=doc_fy(ctx, body.doc_date),
+        disc_type=body.disc_type,
+        disc_value=body.disc_value or 0,
         due_date=body.due_date or (
             body.doc_date + timedelta(days=c.payment_term_days)
             if c.payment_term_days > 0
@@ -294,11 +376,9 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
                 qty=qty,
                 price=price,
                 descr2=d2,
-                price_inclusive=(
-                    True if body.price_mode == "INCL"
-                    else False if body.price_mode == "EXCL"
-                    else inclusive
-                ),
+                price_inclusive=_line_basis_inclusive(body.price_mode, inclusive),
+                disc_type=body.lines[n - 1].disc_type,
+                disc_value=body.lines[n - 1].disc_value or 0,
                 sgst_pct=rate.sgst_pct if rate else None,
                 cgst_pct=rate.cgst_pct if rate else None,
                 igst_pct=rate.igst_pct if rate else None,
@@ -309,11 +389,12 @@ def add_invoice(body: S.InvoiceIn, ctx: Ctx = Depends(need("invoice"))):
         if body.doc_type == "TAX" and stock:
             m.stock_qty = m.stock_qty - qty
 
-    if not body.doc_no:
-        bump(ctx, range_kind, body.doc_date)
+    if auto_no:
+        bump(ctx, range_kind, body.doc_date, used=doc_no)
     ctx.db.commit()
     ctx.db.refresh(inv)
-    return {"id": inv.id, "doc_no": inv.doc_no, "totals": tax_json(invoice_tax(ctx, inv))}
+    return {"id": inv.id, "doc_no": inv.doc_no, "fy": inv.fy,
+            "totals": tax_json(invoice_tax(ctx, inv))}
 
 
 @router.put("/invoices/{iid}")
@@ -371,6 +452,10 @@ def update_invoice(iid: int, body: S.InvoiceIn,
         pos_manual = False
 
     resolved = build_lines(ctx, body.lines)
+    _check_discounts(body, resolved)
+    range_kind = "proforma" if inv.doc_type == "PRO" else "invoice"
+    new_no, auto_no = _claim_no(ctx, body, range_kind, exclude_id=inv.id,
+                                current=inv.doc_no)
     stock = tracks_stock(ctx)
 
     old_qty = {}
@@ -453,7 +538,11 @@ def update_invoice(iid: int, body: S.InvoiceIn,
                     - new_qty.get(material_id, Decimal("0"))
                 )
 
+        inv.doc_no = new_no
         inv.doc_date = body.doc_date
+        inv.fy = doc_fy(ctx, body.doc_date)
+        inv.disc_type = body.disc_type
+        inv.disc_value = body.disc_value or 0
         inv.due_date = body.due_date or (
             body.doc_date + timedelta(days=c.payment_term_days)
             if c.payment_term_days > 0 else None
@@ -483,16 +572,17 @@ def update_invoice(iid: int, body: S.InvoiceIn,
                 qty=qty,
                 price=price,
                 descr2=descr,
-                price_inclusive=(
-                    True if body.price_mode == "INCL"
-                    else False if body.price_mode == "EXCL"
-                    else inclusive
-                ),
+                price_inclusive=_line_basis_inclusive(body.price_mode, inclusive),
+                disc_type=body.lines[n - 1].disc_type,
+                disc_value=body.lines[n - 1].disc_value or 0,
                 sgst_pct=rate.sgst_pct if rate else None,
                 cgst_pct=rate.cgst_pct if rate else None,
                 igst_pct=rate.igst_pct if rate else None,
                 rate_label=rate.label if rate else None,
             ))
+
+        if auto_no:
+            bump(ctx, range_kind, body.doc_date, used=new_no)
 
     except Exception:
         ctx.db.rollback()
@@ -522,12 +612,15 @@ def convert(iid: int, doc_no: str | None = None, doc_date: date | None = None,
             raise HTTPException(409, "This proforma has already been converted")
 
     tax_date = doc_date or pro.doc_date
+    doc_no = (doc_no or "").strip() or None
+    if doc_no and len(doc_no) > 40:
+        raise HTTPException(422, "A document number can be 40 characters at most")
     new_no = doc_no or next_no(ctx, "invoice", tax_date)
-    if ctx.db.execute(
-        ctx.scope(select(M.Invoice), M.Invoice)
-        .where(M.Invoice.doc_no == new_no)
-    ).scalar_one_or_none():
-        raise HTTPException(409, f"Invoice {new_no} already exists")
+    clash = invoice_no_taken(ctx, "TAX", new_no, tax_date)
+    if clash:
+        raise HTTPException(
+            409, f"Invoice {clash.doc_no} already exists in financial year "
+                 f"{doc_fy(ctx, tax_date)}")
 
     stock = tracks_stock(ctx)
     if stock:
@@ -544,6 +637,10 @@ def convert(iid: int, doc_no: str | None = None, doc_date: date | None = None,
         doc_no=new_no,
         doc_type="TAX",
         doc_date=tax_date,
+        fy=doc_fy(ctx, tax_date),
+        created_by_user_id=ctx.user.id,
+        disc_type=pro.disc_type,
+        disc_value=pro.disc_value or 0,
         due_date=pro.due_date,
         customer_id=pro.customer_id,
         gstin=pro.gstin,
@@ -576,6 +673,8 @@ def convert(iid: int, doc_no: str | None = None, doc_date: date | None = None,
             igst_pct=line.igst_pct,
             rate_label=line.rate_label,
             price_inclusive=line.price_inclusive,
+            disc_type=line.disc_type,
+            disc_value=line.disc_value or 0,
         ))
         if stock:
             line.material.stock_qty -= line.qty
@@ -585,7 +684,7 @@ def convert(iid: int, doc_no: str | None = None, doc_date: date | None = None,
     pro.converted_on = date.today()
 
     if not doc_no:
-        bump(ctx, "invoice", tax_date)
+        bump(ctx, "invoice", tax_date, used=new_no)
 
     ctx.db.commit()
     ctx.db.refresh(tax)
@@ -665,10 +764,10 @@ def del_invoice(iid: int, ctx: Ctx = Depends(need("invoice"))):
         pro = ctx.db.execute(
             ctx.scope(select(M.Invoice), M.Invoice).where(
                 M.Invoice.doc_type == "PRO",
-                M.Invoice.doc_no == inv.converted_from,
-            )
+                M.Invoice.converted_to_id == inv.id,
+            ).limit(1)
         ).scalar_one_or_none()
-        if pro and pro.converted_to_id == inv.id:
+        if pro:
             pro.converted_to = None
             pro.converted_to_id = None
             pro.converted_on = None

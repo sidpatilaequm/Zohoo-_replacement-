@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, useLoad, Loading, ErrorBox, useFlash,
   usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
 import { inr, gd } from '../lib/fmt'
 import DocFiles from '../components/DocFiles'
+import InvoiceLines from '../components/InvoiceLines'
 export default function Invoices() {
   const { api, me } = useAuth()
   const navigate = useNavigate()
@@ -14,6 +15,7 @@ export default function Invoices() {
   const [variant, setVariant] = usePrintVariant()
   const [printAs, setPrintAs] = useState('')   // '' = as the document is, 'PRO' = proforma layout\
   const [documentsFor, setDocumentsFor] = useState(null)
+  const [open, setOpen] = useState(null)       // invoice whose lines are shown
   if (list.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
 
@@ -22,6 +24,7 @@ export default function Invoices() {
     : filter === 'OPEN' ? v.doc_type === 'TAX' && v.status === 'ACTIVE' && v.outstanding > 0.5
     : filter === 'CANCELLED' ? v.status === 'CANCELLED'
     : v.doc_type === filter && v.status === 'ACTIVE')
+  const anyDisc = rows.some(v => v.discount > 0.004)
 
   async function convert(id) {
     try { const d = await api.convert(id); showFlash(`Converted to ${d.doc_no}.`); list.reload() }
@@ -75,7 +78,9 @@ export default function Invoices() {
         <option value="CANCELLED">Cancelled</option>
       </select></>} bodyless>
       <Table head={[{ label: 'Type', align: 'c' }, 'Invoice', 'Date', 'Customer', 'PO no',
-        { label: 'Supply', align: 'c' }, { label: 'Taxable', align: 'r' },
+        { label: 'Supply', align: 'c' },
+        ...(anyDisc ? [{ label: 'Discount', align: 'r' }] : []),
+        { label: 'Taxable', align: 'r' },
         { label: 'Tax', align: 'r' }, { label: 'Total', align: 'r' },
         { label: 'Received', align: 'r' }, { label: 'Status', align: 'c' },
         { label: 'Actions', align: 'c' }, '']} empty="Nothing to show.">
@@ -83,13 +88,15 @@ export default function Invoices() {
           const pro = v.doc_type === 'PRO'
           const bal = (v.outstanding ?? 0)
           const dead = v.status === 'CANCELLED'
-          return (<tr key={v.id} style={dead ? { opacity: .6 } : undefined}>
+          return (<Fragment key={v.id}><tr style={dead ? { opacity: .6 } : undefined}>
             <td className="c">{pro ? <Tag kind="warn">PRO</Tag> : <Tag kind="ok">TAX</Tag>}</td>
-            <td className="mono"><b>{v.doc_no}</b></td>
+            <td className="mono"><b>{v.doc_no}</b>
+              <div className="fine">FY {v.fy}</div></td>
             <td className="mono">{gd(v.doc_date)}</td>
             <td>{v.customer}</td>
             <td className="mono">{v.po_no || '—'}</td>
             <td className="c">{v.intra ? <Tag kind="ok">Intra</Tag> : <Tag kind="warn">Inter</Tag>}</td>
+            {anyDisc && <td className="r mono">{v.discount > 0.004 ? inr(v.discount) : '—'}</td>}
             <td className="r mono">{inr(v.taxable)}</td>
             <td className="r mono">{inr(v.tax)}</td>
             <td className="r mono"><b>{inr(v.total)}</b></td>
@@ -99,6 +106,10 @@ export default function Invoices() {
               : bal <= 0.5 ? <Tag kind="ok">Settled</Tag>
               : v.received > 0.5 ? <Tag kind="warn">Part paid</Tag> : <Tag>Unpaid</Tag>}</td>
             <td className="c" style={{ whiteSpace: 'nowrap' }}>
+              <button className={`btn btn-sm${open === v.id ? ' on' : ''}`} style={{ marginRight: 5 }}
+                aria-expanded={open === v.id}
+                onClick={() => setOpen(open === v.id ? null : v.id)}>
+                Items ({v.lines_count})</button>
               <PrintButtons kind="invoices" id={v.id} variant={variant}
                 extra={printAs ? `&as=${printAs}` : ''} onError={m => showFlash(m, 'bad')} />
               <button
@@ -121,7 +132,10 @@ export default function Invoices() {
                 onClick={() => cancel(v)}>Cancel</button>}</td>
             <td className="r">{pro && <button className="rm" title="Delete proforma"
               onClick={() => remove(v.id)}>×</button>}</td>
-          </tr>)})}
+          </tr>
+          {open === v.id && <tr className="lines-row"><td colSpan={anyDisc ? 14 : 13}>
+            <InvoiceLines id={v.id} /></td></tr>}
+          </Fragment>)})}
       </Table>
         </Panel>
 

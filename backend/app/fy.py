@@ -62,7 +62,6 @@ def current_fy(tenant, today: date | None = None) -> str:
     return fy_label(tenant, today or date.today())
 
 
-
 def in_period(
     tenant,
     d,
@@ -72,14 +71,14 @@ def in_period(
     date_range: str | None = None,
     today: date | None = None,
 ) -> bool:
-    """Filter by legacy period, financial year, and quick date range."""
+    """Filter documents by legacy period and report date filters."""
     if d is None:
         return False
 
     doc_date = d if isinstance(d, date) else date.fromisoformat(str(d)[:10])
     today = today or date.today()
 
-    # Keep existing monthly and financial-year callers working.
+    # Preserve existing callers using a month or financial-year period.
     if period:
         if is_month(period):
             return str(doc_date)[:7] == period
@@ -130,7 +129,6 @@ def in_period(
         end = min(end, range_end)
 
     return start <= doc_date <= end
-
 
 
 def is_month(period: str) -> bool:

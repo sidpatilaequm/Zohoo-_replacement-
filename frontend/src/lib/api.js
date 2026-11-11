@@ -85,15 +85,24 @@ export function makeApi(token, tenantId) {
     delMaterial: (id) => call(`/materials/${id}`, { method: 'DELETE' }),
     hsnRates: (id) => call(`/hsn/${id}/rates`),
 
-    invoices: () => call('/invoices'),
+    invoices: (docType) => call('/invoices' + (docType ? `?doc_type=${docType}` : '')),
+    invoiceNextNo: (docType, docDate) => call(`/invoices/next-no?doc_type=${docType}`
+      + (docDate ? `&doc_date=${encodeURIComponent(docDate)}` : '')),
+    checkInvoiceNo: (docType, docNo, docDate, excludeId) => call(
+      `/invoices/check-no?doc_type=${docType}&doc_no=${encodeURIComponent(docNo)}`
+      + (docDate ? `&doc_date=${encodeURIComponent(docDate)}` : '')
+      + (excludeId ? `&exclude_id=${excludeId}` : '')),
     invoice: (id) => call(`/invoices/${id}`),
     addInvoice: (b) => call('/invoices', { method: 'POST', body: b }),
     updateInvoice: (id, b) => call(`/invoices/${id}`, { method: 'PUT', body: b }),
 
-    convert: (id, docDate) => call(
-      `/invoices/${id}/convert${docDate ? `?doc_date=${encodeURIComponent(docDate)}` : ''}`,
-      { method: 'POST' }
-    ),
+    convert: (id, docDate, docNo) => {
+      const q = new URLSearchParams()
+      if (docDate) q.set('doc_date', docDate)
+      if (docNo) q.set('doc_no', docNo)
+      const qs = q.toString()
+      return call(`/invoices/${id}/convert${qs ? `?${qs}` : ''}`, { method: 'POST' })
+    },
 
     cancelInvoice: (id, reason) => call(`/invoices/${id}/cancel`, { method: 'POST', body: { reason } }),
     delInvoice: (id) => call(`/invoices/${id}`, { method: 'DELETE' }),

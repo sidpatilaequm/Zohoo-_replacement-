@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr, money, today } from '../lib/fmt'
+import { computeInvoice, discAmount, r2 } from '../lib/invoiceCalc'
 
 export default function NewInvoice() {
   const { api, me } = useAuth()
@@ -13,7 +14,8 @@ export default function NewInvoice() {
   const materials = useLoad(() => api.materials())
   const states = useLoad(() => api.states())
   const hsn = useLoad(() => api.hsn())
-  const [h, setH] = useState({ doc_type: 'TAX', doc_date: today(), due_date: '',
+  const [h, setH] = useState({ doc_type: searchParams.get('type') === 'PRO' ? 'PRO' : 'TAX',
+    doc_date: today(), due_date: '',
     customer_id: '', gstin: '', pos_state: '', bill_addr_id: '', ship_addr_id: '',
     po_no: '', po_date: '', reverse_chg: 'N', price_mode: 'MATERIAL',
     subject: '', instructions: '' })
@@ -26,7 +28,11 @@ export default function NewInvoice() {
   const [flash, showFlash] = useFlash()
   const [editLoading, setEditLoading] = useState(false)
   const [editLoaded, setEditLoaded] = useState(false)
-  const [docNo, setDocNo] = useState('')
+  const [docNo, setDocNo] = useState('')          // as typed; blank = next in the series
+  const [origNo, setOrigNo] = useState('')        // the number when editing began
+  const [autoNo, setAutoNo] = useState(null)      // { doc_no, fy } the series would give
+  const [noCheck, setNoCheck] = useState(null)    // { doc_no, available, fy, taken_by }
+  const [disc, setDisc] = useState({ type: 'PCT', value: '' })   // overall discount
   const [editOriginalLines, setEditOriginalLines] = useState([])
   const set = (k, v) => setH(s => ({ ...s, [k]: v }))
 
@@ -43,6 +49,8 @@ export default function NewInvoice() {
         if (!alive) return
         const v = d.invoice
         setDocNo(v.doc_no || '')
+        setOrigNo(v.doc_no || '')
+        setDisc({ type: v.disc_type || 'PCT', value: v.disc_value ? String(v.disc_value) : '' })
         setH({
           doc_type: v.doc_type,
           doc_date: String(v.doc_date || '').slice(0, 10),
@@ -73,6 +81,8 @@ export default function NewInvoice() {
           sgst_pct: Number(l.sgst_pct || 0),
           cgst_pct: Number(l.cgst_pct || 0),
           igst_pct: Number(l.igst_pct || 0),
+          disc_type: l.disc_type || 'PCT',
+          disc_value: l.disc_value ? String(l.disc_value) : '',
         })))
         setEditLoaded(true)
       })
@@ -158,49 +168,54 @@ export default function NewInvoice() {
     })
   }, [editId, editLoaded, rateMap, materials.data, lines.length])
 
+  // What the automatic series would give for this type and date
+  useEffect(() => {
+    if (editId || !h.doc_date) return
+    let alive = true
+    api.invoiceNextNo(h.doc_type, h.doc_date)
+      .then(r => { if (alive) setAutoNo(r) })
+      .catch(() => { if (alive) setAutoNo(null) })
+    return () => { alive = false }
+  }, [editId, h.doc_type, h.doc_date, api])
+
+  // A typed number must be free in its financial year; checked as it is typed
+  const typedNo = docNo.trim()
+  useEffect(() => {
+    setNoCheck(null)
+    if (!typedNo || !h.doc_date) return
+    let alive = true
+    const timer = setTimeout(() => {
+      api.checkInvoiceNo(h.doc_type, typedNo, h.doc_date, editId || undefined)
+        .then(r => { if (alive) setNoCheck(r) })
+        .catch(() => {})
+    }, 300)
+    return () => { alive = false; clearTimeout(timer) }
+  }, [typedNo, h.doc_type, h.doc_date, editId, api])
+  const noTaken = noCheck && noCheck.doc_no === typedNo && !noCheck.available
+
   const calc = useMemo(() => {
-    let taxable = 0, cgst = 0, sgst = 0, igst = 0
-    const rows = lines.map(l => {
+    const known = lines.map(l => {
       const m = materials.data?.find(x => x.id === l.material_id)
       if (!m) return null
-      const gross = Math.round(Number(l.qty) * Number(l.price) * 100) / 100
       // A picked rate wins over the material default; the head still follows
       // the place of supply, which is not the user's to choose.
       const chosen = (rateMap[m.hsn] || []).find(x => String(x.id) === String(l.hsn_rate_id))
-      const pcgst = chosen ? chosen.cgst_pct : m.cgst_pct
-      const psgst = chosen ? chosen.sgst_pct : m.sgst_pct
-      const pigst = chosen ? chosen.igst_pct : m.igst_pct
-      const rate = intra ? pcgst + psgst : pigst
       const incl = h.price_mode === 'INCL' ? true
         : h.price_mode === 'EXCL' ? false : !!m.price_inclusive
-      let amount, c, s, i
-      if (incl) {
-        // carve the tax out, by subtraction, so the parts add back to the gross
-        amount = rate ? Math.round(gross * 100 / (100 + rate) * 100) / 100 : gross
-        const carved = Math.round((gross - amount) * 100) / 100
-        if (intra) {
-          c = (pcgst + psgst) ? Math.round(carved * pcgst / (pcgst + psgst) * 100) / 100 : 0
-          s = Math.round((carved - c) * 100) / 100
-          i = 0
-        } else { c = 0; s = 0; i = carved }
-      } else {
-        amount = gross
-        c = intra ? Math.round(amount * pcgst) / 100 : 0
-        s = intra ? Math.round(amount * psgst) / 100 : 0
-        i = intra ? 0 : Math.round(amount * pigst) / 100
-      }
-      taxable += amount; cgst += c; sgst += s; igst += i
-      return { ...l, m, amount, gross, c, s, i, chosen, incl, rate }
+      return { ...l, m, chosen, incl,
+        cgst: chosen ? chosen.cgst_pct : m.cgst_pct,
+        sgst: chosen ? chosen.sgst_pct : m.sgst_pct,
+        igst: chosen ? chosen.igst_pct : m.igst_pct }
     }).filter(Boolean)
-    const total = taxable + cgst + sgst + igst
-    const rounded = Math.round(total)
-    return { rows, taxable, cgst, sgst, igst, total, rounded, roundoff: rounded - total }
-  }, [lines, materials.data, intra, rateMap, h.price_mode])
+    return computeInvoice(known, intra,
+      { disc_type: disc.type, disc_value: disc.value })
+  }, [lines, materials.data, intra, rateMap, h.price_mode, disc])
 
   function addLine() {
     const m = materials.data.find(x => x.id === Number(pick))
     if (!m) return
-    setLines([...lines, { material_id: m.id, qty: 1, price: m.price }])
+    setLines([...lines, { material_id: m.id, qty: 1, price: m.price,
+      disc_type: 'PCT', disc_value: '' }])
   }
   const problems = []
   if (!h.customer_id) problems.push('Select a customer.')
@@ -220,6 +235,23 @@ export default function NewInvoice() {
     if (Number(l.price) <= 0) problems.push(`Line ${i + 1}: price must be more than zero.`)
   })
   if (h.po_date && h.po_date > h.doc_date) problems.push('PO date cannot be after the invoice date.')
+  if (typedNo.length > 40) problems.push('A document number can be 40 characters at most.')
+  if (noTaken) problems.push(`${typedNo} is already used in financial year ${noCheck.fy}.`)
+  lines.forEach((l, i) => {
+    const v = Number(l.disc_value || 0)
+    const value = r2(Number(l.qty || 0) * Number(l.price || 0))
+    if (v < 0) problems.push(`Line ${i + 1}: a discount cannot be negative.`)
+    else if (l.disc_type === 'PCT' && v > 100) problems.push(`Line ${i + 1}: a percentage discount cannot be more than 100.`)
+    else if (l.disc_type === 'AMT' && v > value) problems.push(`Line ${i + 1}: discount is more than the line value ${inr(value)}.`)
+  })
+  {
+    const v = Number(disc.value || 0)
+    if (v < 0) problems.push('The overall discount cannot be negative.')
+    else if (disc.type === 'PCT' && v > 100) problems.push('The overall discount cannot be more than 100%.')
+    else if (disc.type === 'AMT' && v > calc.afterLineDisc) problems.push(`The overall discount is more than the items total ${inr(calc.afterLineDisc)}.`)
+    else if (lines.length && calc.afterLineDisc - discAmount(calc.afterLineDisc, disc.type, v) <= 0)
+      problems.push('Discounts cannot bring the invoice to nil.')
+  }
 
   async function save(e) {
     e.preventDefault()
@@ -238,12 +270,17 @@ export default function NewInvoice() {
         ship_addr_id: h.ship_addr_id ? Number(h.ship_addr_id) : null,
         subject: h.subject || null,
         instructions: h.instructions || null,
+        doc_no: typedNo || null,
+        disc_type: Number(disc.value) > 0 ? disc.type : null,
+        disc_value: Number(disc.value) > 0 ? Number(disc.value) : null,
         lines: lines.map(l => ({
           material_id: l.material_id,
           qty: Number(l.qty),
           price: Number(l.price),
           descr2: l.descr2 || null,
           hsn_rate_id: l.hsn_rate_id ? Number(l.hsn_rate_id) : null,
+          disc_type: Number(l.disc_value) > 0 ? l.disc_type : null,
+          disc_value: Number(l.disc_value) > 0 ? Number(l.disc_value) : null,
         })),
       }
       const d = editId
@@ -256,6 +293,10 @@ export default function NewInvoice() {
       } else {
         showFlash(`${h.doc_type === 'PRO' ? 'Proforma' : 'Invoice'} ${d.doc_no} saved — ${money(d.totals.rounded)}.`)
         setLines([])
+        setDocNo('')
+        setDisc({ type: 'PCT', value: '' })
+        setAutoNo(null)
+        api.invoiceNextNo(h.doc_type, h.doc_date).then(setAutoNo).catch(() => {})
         setH(s => ({ ...s, customer_id: '', gstin: '', pos_state: '', bill_addr_id: '',
           ship_addr_id: '', po_no: '', po_date: '', subject: '', instructions: '',
           due_touched: false }))
@@ -283,6 +324,20 @@ export default function NewInvoice() {
             onChange={e => set('doc_type', e.target.value)}>
             <option value="TAX">Tax invoice</option><option value="PRO">Proforma invoice</option>
           </select></Field>
+        <Field label={h.doc_type === 'PRO' ? 'Proforma number' : 'Invoice number'}
+          hint={noTaken
+            ? <span style={{ color: 'var(--red)' }}>Already used in FY {noCheck.fy}
+                {noCheck.taken_by ? ` by the ${h.doc_type === 'PRO' ? 'proforma' : 'invoice'} of ${noCheck.taken_by.customer}` : ''}</span>
+            : typedNo
+              ? (noCheck && noCheck.doc_no === typedNo
+                  ? (editId && typedNo === origNo ? `Unchanged · FY ${noCheck.fy}` : `Free in FY ${noCheck.fy}`)
+                  : 'Checking…')
+              : editId ? 'Left blank, the current number is kept'
+              : `Blank takes the next in the series${autoNo ? ` · FY ${autoNo.fy}` : ''}`}>
+          <input className="mono" value={docNo} maxLength={40}
+            placeholder={editId ? origNo : (autoNo?.doc_no || 'automatic')}
+            style={noTaken ? { borderColor: 'var(--red)' } : undefined}
+            onChange={e => setDocNo(e.target.value)} /></Field>
         <Field label="Customer"><select value={h.customer_id}
           onChange={e => { set('customer_id', e.target.value); set('gstin', ''); set('pos_state', '') }}>
           <option value="">— select —</option>
@@ -389,9 +444,10 @@ export default function NewInvoice() {
       <button type="button" className="btn btn-sm btn-a" onClick={addLine}>Add item</button></>} bodyless>
       <Table head={['#', 'Material', 'Description 2', 'HSN', { label: 'Quantity', align: 'r' },
         { label: 'UoM', align: 'c' }, { label: 'Unit price', align: 'r' },
-        { label: 'Amount', align: 'r' }, { label: 'Basis', align: 'c' },
+        { label: 'Discount', align: 'r' }, { label: 'Taxable value', align: 'r' },
+        { label: 'Basis', align: 'c' },
         'GST rate', { label: 'Tax %', align: 'r' },
-        { label: 'Tax', align: 'r' }, '']} empty="No items yet.">
+        { label: 'Tax', align: 'r' }, { label: 'Line total', align: 'r' }, '']} empty="No items yet.">
         {calc.rows.map((r, i) => (
           <tr key={i}>
             <td className="mono">{i + 1}</td>
@@ -409,10 +465,24 @@ export default function NewInvoice() {
               onChange={e => setLines(lines.map((l, j) => j === i ? { ...l, price: e.target.value } : l))} />
               {Math.abs(Number(r.price) - r.m.price) > 0.001 &&
                 <div className="fine" style={{ color: 'var(--amber)' }}>list {inr(r.m.price)}</div>}</td>
-            <td className="r mono"><b>{inr(r.amount)}</b></td>
+            <td className="r">
+              <div className="disc">
+                <input type="number" min="0" step="0.01" value={r.disc_value ?? ''} placeholder="0"
+                  aria-label={`Line ${i + 1} discount`}
+                  onChange={e => setLines(lines.map((l, j) => j === i ? { ...l, disc_value: e.target.value } : l))} />
+                <select value={r.disc_type || 'PCT'} aria-label={`Line ${i + 1} discount type`}
+                  onChange={e => setLines(lines.map((l, j) => j === i ? { ...l, disc_type: e.target.value } : l))}>
+                  <option value="PCT">%</option><option value="AMT">₹</option>
+                </select>
+              </div>
+              {(r.lineDisc > 0 || r.share > 0) && <div className="fine">
+                − {inr(r.lineDisc)}{r.share > 0 ? ` − ${inr(r.share)} overall` : ''}
+                {r.incl ? ' (incl. GST)' : ''}</div>}</td>
+            <td className="r mono"><b>{inr(r.amount)}</b>
+              <div className="fine">{inr(r.listValue)} as quoted</div></td>
             <td className="c">{r.incl
               ? <><Tag kind="warn">incl</Tag>
-                  <div className="fine">of {inr(r.gross)}</div></>
+                  <div className="fine">of {inr(r.net)}</div></>
               : <Tag kind="ok">excl</Tag>}</td>
             <td>{(rateMap[r.m.hsn] || []).length > 1
               ? <select value={r.hsn_rate_id || ''} style={{ padding: '5px 7px',
@@ -429,12 +499,32 @@ export default function NewInvoice() {
                 <div className="fine">{r.chosen.condition_note}</div>}</td>
             <td className="r mono">{r.rate}%</td>
             <td className="r mono">{inr(r.c + r.s + r.i)}</td>
+            <td className="r mono">{inr(r.total)}</td>
             <td className="r"><button type="button" className="rm"
               onClick={() => setLines(lines.filter((_, j) => j !== i))}>×</button></td>
           </tr>))}
       </Table>
       {lines.length > 0 && <div className="panel-bd">
         <div className="totals">
+          <div className="tr"><span>Items total{calc.rows.some(r => r.incl) ? ' (without GST)' : ''}</span>
+            <span>{inr(calc.gross)}</span></div>
+          <div className="tr" style={{ alignItems: 'center' }}>
+            <span>Overall discount
+              <div className="fine">Shared across the lines, before GST</div></span>
+            <div className="disc">
+              <input type="number" min="0" step="0.01" value={disc.value} placeholder="0"
+                aria-label="Overall discount"
+                onChange={e => setDisc(d => ({ ...d, value: e.target.value }))} />
+              <select value={disc.type} aria-label="Overall discount type"
+                onChange={e => setDisc(d => ({ ...d, type: e.target.value }))}>
+                <option value="PCT">%</option><option value="AMT">₹</option>
+              </select>
+            </div></div>
+          {calc.discount > 0 && <div className="tr"><span>Less: discount
+            <div className="fine">{[calc.lineDiscount > 0 ? `lines ${inr(calc.lineDiscount)}` : null,
+              calc.overallDisc > 0 ? `overall ${inr(calc.overallDisc)}` : null].filter(Boolean).join(' · ')}
+              {calc.rows.some(r => r.incl) ? ' (as quoted)' : ''}</div></span>
+            <span>− {inr(calc.discount)}</span></div>}
           <div className="tr"><span>Taxable value</span><span>{inr(calc.taxable)}</span></div>
           {intra ? (<>
             <div className="tr"><span>CGST</span><span>{inr(calc.cgst)}</span></div>
@@ -444,8 +534,7 @@ export default function NewInvoice() {
           <div className="tr grand"><span>Total</span><span>{money(calc.rounded)}</span></div>
         </div>
         {calc.rows.some(r => r.incl) && (() => {
-          const quoted = calc.rows.reduce((a, r) => a + (r.incl ? r.gross : r.gross ??
-            (r.amount + r.c + r.s + r.i)), 0)
+          const quoted = calc.rows.reduce((a, r) => a + r.total, 0)
           return <Alert kind="ok">
             <b>Some lines were quoted inclusive of GST.</b> The tax on those has been carved
             out of the quoted figure rather than added to it, so the customer pays exactly

@@ -49,6 +49,8 @@ S = {
     "right": ParagraphStyle("r", _base, alignment=TA_RIGHT),
     "rightb": ParagraphStyle("rb", _base, alignment=TA_RIGHT, fontName="Helvetica-Bold"),
     "center": ParagraphStyle("c", _base, alignment=TA_CENTER),
+    "smallr": ParagraphStyle("sr", _base, fontSize=6.6, leading=8, textColor=MUTED,
+                             alignment=TA_RIGHT),
     "th": ParagraphStyle("th", _base, fontName="Helvetica-Bold", fontSize=7.4, leading=9,
                          textColor=colors.white),
     "thr": ParagraphStyle("thr", _base, fontName="Helvetica-Bold", fontSize=7.4, leading=9,
@@ -652,45 +654,43 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
     story += [subj, Spacer(1, 8)]
 
     # ---- item grid
+    # v4.6 — every line reads left to right: Qty x Rate - Discount = Taxable
+    # Value, then the tax on it. Rate and discount are shown without GST, so
+    # the arithmetic holds on lines quoted inclusive of GST as well; the
+    # quoted figure is printed beneath the rate on those lines.
+    lines = totals["lines"]
+    has_disc = any(L.get("discount") for L in lines)
+    has_incl = any(L.get("inclusive") for L in lines)
+
     if intra:
         tax_heads = [
-            ("CGST", ["%", "Amt"]),
-            ("SGST", ["%", "Amt"]),
+            ("CGST", "cgst", 0.5),
+            ("SGST", "sgst", 0.5),
         ]
     else:
         tax_heads = [
-            ("IGST", ["%", "Amt"]),
+            ("IGST", "igst", 1),
         ]
 
-    h1 = [
-        _p("#", "th"),
-        _p("Item & Description", "th"),
-        _p("HSN/SAC", "th"),
-        _p("Qty", "thr"),
-        _p("Rate", "thr"),
-    ]
+    lead = ["#", "Item & Description", "HSN/SAC", "Qty", "Rate"]
+    if has_disc:
+        lead.append("Discount")
+    h1 = [_p(x, "th" if k < 3 else "thr") for k, x in enumerate(lead)]
+    h2 = [_p("", "th") for _ in lead]
 
-    h2 = [
-        _p("", "th"),
-        _p("", "th"),
-        _p("", "th"),
-        _p("", "th"),
-        _p("", "th"),
-    ]
-
-    for name, subs in tax_heads:
+    for name, _key, _share in tax_heads:
         h1 += [_p(name, "thr"), _p("", "th")]
-        h2 += [
-            _p(subs[0], "thr"),
-            _p(subs[1], "thr"),
-        ]
+        h2 += [_p("%", "thr"), _p("Amt", "thr")]
 
-    h1.append(_p("Amount", "thr"))
+    h1.append(_p("Taxable Value", "thr"))
     h2.append(_p("", "th"))
 
     rows = [h1, h2]
 
-    for L in totals["lines"]:
+    for L in lines:
+        rate_cell = [_p(_inr(L.get("unit_rate", L["price"])), "right")]
+        if L.get("inclusive"):
+            rate_cell.append(_p(f"{_inr(L['price'])}\nincl. GST", "smallr"))
         r = [
             _p(L["line_no"], "center"),
             [
@@ -698,32 +698,36 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
                 _p(L["code"], "small"),
             ],
             _p(L["hsn"], "center"),
-            _p(_qty(L["qty"]), "right"),
-            _p(_inr(L["price"]), "right"),
+            [_p(_qty(L["qty"]), "right"), _p(L.get("uom") or "", "smallr")],
+            rate_cell,
         ]
 
-        if intra:
+        if has_disc:
+            if L.get("discount"):
+                how = []
+                if L.get("disc_type") == "PCT":
+                    how.append(f"{_qty(L['disc_value'])}%")
+                elif L.get("disc_type") == "AMT":
+                    how.append("line")
+                if L.get("overall_disc"):
+                    how.append("+ overall" if how else "overall")
+                r.append([_p(_inr(L["discount"]), "right")]
+                         + ([_p(" ".join(how), "smallr")] if how else []))
+            else:
+                r.append(_p("—", "right"))
+
+        for _name, key, share in tax_heads:
             r += [
-                _p(f"{_qty(L['rate'] / 2)}%", "right"),
-                _p(_inr(L["cgst"]), "right"),
-                _p(f"{_qty(L['rate'] / 2)}%", "right"),
-                _p(_inr(L["sgst"]), "right"),
-            ]
-        else:
-            r += [
-                _p(f"{_qty(L['rate'])}%", "right"),
-                _p(_inr(L["igst"]), "right"),
+                _p(f"{_qty(L['rate'] * share)}%", "right"),
+                _p(_inr(L[key]), "right"),
             ]
 
         r.append(_p(_inr(L["amount"]), "rightb"))
         rows.append(r)
 
-    fixed = (
-        [8, 18, 14, 20]
-        + ([11, 20, 11, 20] if intra else [12, 22])
-        + [24]
-    )
-
+    lead_w = [14, 13, 18] + ([18] if has_disc else [])
+    tax_w = [9, 17] * len(tax_heads) if intra else [10, 19]
+    fixed = [7] + lead_w + tax_w + [22]
     fixed = [w * mm for w in fixed]
 
     widths = [
@@ -738,6 +742,7 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
     )
 
     ncol = len(widths)
+    nlead = len(lead)
 
     st = [
         ("BACKGROUND", (0, 0), (-1, 1), ACCENT),
@@ -747,17 +752,12 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("TOPPADDING", (0, 0), (-1, -1), 3),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("SPAN", (0, 0), (0, 1)),
-        ("SPAN", (1, 0), (1, 1)),
-        ("SPAN", (2, 0), (2, 1)),
-        ("SPAN", (3, 0), (3, 1)),
-        ("SPAN", (4, 0), (4, 1)),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
         ("SPAN", (ncol - 1, 0), (ncol - 1, 1)),
-    ]
+    ] + [("SPAN", (k, 0), (k, 1)) for k in range(nlead)]
 
-    col = 5
+    col = nlead
 
     for _ in tax_heads:
         st.append(
@@ -767,12 +767,32 @@ def render_invoice(org: dict, inv: dict, totals: dict, variant: str, received=0)
 
     items.setStyle(TableStyle(st))
 
-    story += [items, Spacer(1, 6)]
+    story += [items]
+
+    notes = []
+    if has_disc:
+        note = "Discounts are taken off before GST, so tax is charged on the value after discount."
+        if totals.get("overall_discount"):
+            spec = (f"{_qty(totals['disc_value'])}%" if totals.get("disc_type") == "PCT"
+                    else f"{RUPEE}{_inr(totals['overall_discount'])}")
+            note += (f" The overall discount of {spec} is shared across the lines"
+                     f" in proportion to their value.")
+        notes.append(note)
+    if has_incl:
+        notes.append("Lines marked incl. GST were quoted with GST in the price; their"
+                     " rate and discount are shown here without GST.")
+    for n in notes:
+        story.append(_p(n, "small"))
+    story.append(Spacer(1, 6))
 
     # ---- totals
-    trows = [
-        ["Sub Total", _inr(totals["taxable"])]
-    ]
+    trows = []
+    if totals.get("discount"):
+        trows += [
+            ["Items Total", _inr(totals["gross"])],
+            ["Less: Discount", f"(-) {_inr(totals['discount'])}"],
+        ]
+    trows.append(["Sub Total", _inr(totals["taxable"])])
 
     if totals["tax"] == 0:
         trows.append(["GST", "nil"])

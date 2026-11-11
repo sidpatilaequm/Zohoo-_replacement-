@@ -272,6 +272,7 @@ def margin(
 ):
     """Material margin using only sales and purchases in the selected period."""
     out = []
+    taxed = {}   # invoice id -> {line_no: taxable value}, computed once per request
     for m in ctx.db.execute(ctx.scope(select(M.Material), M.Material).order_by(M.Material.code)).scalars():
         sq = sv = bq = bv = Decimal(0)
         for l in ctx.db.execute(select(M.InvoiceLine).where(M.InvoiceLine.material_id == m.id)).scalars():
@@ -283,7 +284,12 @@ def margin(
                         today=today,
                     )):
                 sq += l.qty
-                sv += l.qty * l.price
+                # v4.6 — the taxable value: after discounts, without GST
+                inv = l.invoice
+                if inv.id not in taxed:
+                    taxed[inv.id] = {x.line_no: x.amount
+                                     for x in invoice_tax(ctx, inv).lines}
+                sv += taxed[inv.id][l.line_no]
         for l in ctx.db.execute(select(M.VendorInvoiceLine).where(M.VendorInvoiceLine.material_id == m.id)).scalars():
             if in_period(
                         ctx.tenant, l.invoice.doc_date, period,

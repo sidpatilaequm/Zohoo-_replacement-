@@ -270,7 +270,9 @@ class Material(Base):
 
 class Invoice(Base):
     __tablename__="invoices"
-    __table_args__=(UniqueConstraint("tenant_id","doc_no",name="uq_i"),)
+    # v4.6 — a number may be typed by hand; it must not repeat within its
+    # financial year for the same kind of document.
+    __table_args__=(UniqueConstraint("tenant_id","doc_type","fy","doc_no",name="uq_i_fy"),)
     id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
     tenant_id: Mapped[int]=mapped_column(ForeignKey("tenants.id",ondelete="CASCADE"))
     created_by_user_id: Mapped[int | None] = mapped_column(
@@ -279,6 +281,7 @@ class Invoice(Base):
     doc_no: Mapped[str]=mapped_column(String(40))
     doc_type: Mapped[str]=mapped_column(Enum("TAX","PRO",name="dtype"),default="TAX")
     doc_date: Mapped[date]=mapped_column(Date)
+    fy: Mapped[str]=mapped_column(String(9))   # v4.6 — financial year of doc_date, e.g. "2026-27"
     due_date: Mapped[date|None]=mapped_column(Date,nullable=True)
     customer_id: Mapped[int]=mapped_column(ForeignKey("customers.id"))
     created_by_user_id: Mapped[int | None] = mapped_column(
@@ -317,6 +320,11 @@ class Invoice(Base):
         Enum("MATERIAL","INCL","EXCL",name="pmode2"),default="MATERIAL"
     )
 
+    # v4.6 — overall discount, spread over the lines before tax
+    disc_type: Mapped[str|None]=mapped_column(
+        Enum("PCT","AMT",name="disctype"),nullable=True)
+    disc_value: Mapped[Decimal]=mapped_column(Numeric(14,4),default=0)
+
     lines: Mapped[list["InvoiceLine"]]=relationship(back_populates="invoice",
         cascade="all, delete-orphan",lazy="selectin")
     customer: Mapped[Customer]=relationship(lazy="selectin")
@@ -342,6 +350,10 @@ class InvoiceLine(Base):
     rate_label: Mapped[str|None]=mapped_column(String(120),nullable=True)
     # v4.1 — price entered inclusive of GST
     price_inclusive: Mapped[bool]=mapped_column(Boolean,default=False)
+    # v4.6 — line discount, taken off before tax
+    disc_type: Mapped[str|None]=mapped_column(
+        Enum("PCT","AMT",name="disctype_l"),nullable=True)
+    disc_value: Mapped[Decimal]=mapped_column(Numeric(14,4),default=0)
 
     invoice: Mapped[Invoice]=relationship(back_populates="lines")
     material: Mapped[Material]=relationship(lazy="selectin")
