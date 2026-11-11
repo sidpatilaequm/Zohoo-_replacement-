@@ -154,6 +154,14 @@ export function makeApi(token, tenantId) {
     saveLogo: (l) => call('/org/logo', { method: 'PUT', body: { logo: l } }),
     saveSmtp: (b) => call('/org/smtp', { method: 'PUT', body: b }),
     checkSmtp: () => call('/org/smtp/check', { method: 'POST' }),
+    testSmtp: (to) => call('/org/smtp/test', { method: 'POST', body: { to } }),
+    emailDraft: (kind, id, variant) => call(
+      `/email/draft?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}${variant ? `&variant=${encodeURIComponent(variant)}` : ''}`
+    ),
+    emailSend: (b) => call('/email/send', { method: 'POST', body: b }),
+    emailLog: (kind, id) => call(
+      '/email/log' + (kind && id ? `?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}` : '')
+    ),
 
     groups: () => call('/groups'),
     addGroup: (b) => call('/groups', { method: 'POST', body: b }),
