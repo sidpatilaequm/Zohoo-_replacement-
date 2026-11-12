@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, useLoad, Loading, ErrorBox, useFlash,
-  usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
+  usePrintVariant, VariantPicker, PrintButtons, FinancialYearPicker } from '../components/ui'
 import { inr, gd, today } from '../lib/fmt'
 import EmailComposer from '../components/EmailComposer'
 import InvoiceLines from '../components/InvoiceLines'
@@ -12,8 +12,10 @@ import InvoiceLines from '../components/InvoiceLines'
  *  marked with the tax invoice it became. */
 export default function ProformaInvoices() {
   const { api, can } = useAuth()
+  const navigate = useNavigate()
   const list = useLoad(() => api.invoices('PRO'))
   const [filter, setFilter] = useState('ALL')
+  const [fy, setFy] = useState('')
   const [flash, showFlash] = useFlash()
   const [variant, setVariant] = usePrintVariant()
   const [mailing, setMailing] = useState(null)
@@ -46,9 +48,23 @@ export default function ProformaInvoices() {
   if (list.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
 
-  const rows = list.data.filter(v =>
+  const now = new Date()
+  const curY = now.getFullYear()
+  const curM = now.getMonth() + 1
+  const currentFyStr = curM >= 4 ? `${curY}-${String(curY + 1).slice(-2)}` : `${curY - 1}-${String(curY).slice(-2)}`
+
+  const rawYears = Array.from(new Set([
+    currentFyStr,
+    ...(list.data || []).map(v => v.fy).filter(Boolean)
+  ])).sort().reverse()
+  const years = rawYears.map(y => ({ label: y, current: y === currentFyStr }))
+
+  const fyNorm = fy ? fy.replace(/^FY\s*/i, '') : ''
+  const inFy = list.data.filter(v => !fyNorm || (v.fy && v.fy.replace(/^FY\s*/i, '') === fyNorm))
+
+  const rows = inFy.filter(v =>
     filter === 'OPEN' ? !v.converted_to : filter === 'DONE' ? !!v.converted_to : true)
-  const open = list.data.filter(v => !v.converted_to)
+  const open = inFy.filter(v => !v.converted_to)
   const canEdit = can('invoice')
   const anyDisc = rows.some(v => v.discount > 0.004)
 
@@ -103,6 +119,7 @@ export default function ProformaInvoices() {
     <Panel title={`Proforma register — ${rows.length}`} right={<>
       <span className="fine">{open.length} open · ₹ {inr(open.reduce((a, v) => a + v.total, 0))}</span>
       <VariantPicker value={variant} onChange={setVariant} />
+      <FinancialYearPicker value={fy} onChange={setFy} years={years} />
       <select value={filter} onChange={e => setFilter(e.target.value)}
         style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
         <option value="ALL">All proformas</option>
@@ -138,6 +155,8 @@ export default function ProformaInvoices() {
               Items ({v.lines_count})</button>
             <PrintButtons kind="invoices" id={v.id} variant={variant} onError={m => showFlash(m, 'bad')} />
             <button className="btn btn-sm" style={{ marginLeft: 5 }} onClick={() => setMailing(v)}>Email</button>
+            <button className="btn btn-sm" style={{ marginLeft: 5 }}
+              onClick={() => navigate(`/invoices/new?edit=${v.id}`)}>Edit</button>
             {canEdit && !v.converted_to && <button className="btn btn-sm btn-a" style={{ marginLeft: 5 }}
               onClick={() => setConverting({ v, date: today() })}>Convert to tax invoice</button>}</td>
           <td className="r">{canEdit && !v.converted_to && <button className="rm" title="Delete proforma"

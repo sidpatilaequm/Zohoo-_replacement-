@@ -3,6 +3,7 @@ import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { PanMsme, BankBlock, Contacts, ContactCell, BankCell, MsmeTag } from '../components/PartyExtras'
 import AddressBook from '../components/AddressBook'
+import { CustomerTransactions } from '../components/Transactions'
 
 const BLANK = { code: '', name: '', party_type: 'B2B', bill_addr: '', bill_city: '',
   bill_state: '29', bill_pin: '', ship_same: true, ship_addr: '', ship_city: '',
@@ -12,7 +13,7 @@ const BLANK = { code: '', name: '', party_type: 'B2B', bill_addr: '', bill_city:
   payment_term_days: 0, payment_terms: '' }
 
 export default function Customers() {
-  const { api } = useAuth()
+  const { api, can } = useAuth()
   const list = useLoad(() => api.customers())
   const states = useLoad(() => api.states())
   const banks = useLoad(() => api.banks())
@@ -22,6 +23,7 @@ export default function Customers() {
   const [regs, setRegs] = useState([])
   const [g, setG] = useState({ gstin: '', label: '' })
   const [openAddr, setOpenAddr] = useState(null)
+  const [txFor, setTxFor] = useState(null)        // { customer, docType } whose documents are open
   const logoRef = useRef(null)
   const [err, setErr] = useState(null)
   const [editing, setEditing] = useState(null)   // id of the customer being edited
@@ -83,6 +85,9 @@ export default function Customers() {
   if (list.loading || states.loading || banks.loading || desigs.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
   const stateName = c => states.data?.find(s => s.code === c)?.name || c
+  // The documents open from here only for groups that can see the registers.
+  const canInv = can('saved'), canPro = can('saved') && can('proforma')
+  const showTx = canInv || canPro
 
   return (<>
     {flash}
@@ -193,7 +198,8 @@ export default function Customers() {
 
     <Panel title={`Customers — ${list.data.length}`} bodyless>
       <Table head={['Code', 'Name', { label: 'Type', align: 'c' }, 'Registrations', 'PAN',
-        { label: 'MSME', align: 'c' }, 'Bank', 'Contact', 'Billing', '']}
+        { label: 'MSME', align: 'c' }, 'Bank', 'Contact', 'Billing',
+        ...(showTx ? ['Transactions'] : []), '']}
         empty="No customers yet.">
         {list.data.map(c => (
           <tr key={c.id}>
@@ -215,6 +221,15 @@ export default function Customers() {
             <td><ContactCell contacts={c.contacts} /></td>
             <td className="fine">{c.bill_addr}, {c.bill_city} {c.bill_pin}
               {!c.ship_same && <div>ships to {c.ship_city}</div>}</td>
+            {showTx && <td style={{ whiteSpace: 'nowrap' }}>
+              {canInv && <button className="btn btn-sm tx-link" onClick={() => setTxFor({ customer: c, docType: 'TAX' })}
+                title={`All tax invoices of ${c.name}${c.invoice_cancelled ? `, plus ${c.invoice_cancelled} cancelled` : ''}`}>
+                Invoices <span className="tx-count">{c.invoice_count ?? 0}</span></button>}
+              {canPro && <button className="btn btn-sm tx-link" style={{ marginLeft: canInv ? 4 : 0 }}
+                onClick={() => setTxFor({ customer: c, docType: 'PRO' })}
+                title={`All proforma invoices of ${c.name}`}>
+                Proformas <span className="tx-count">{c.proforma_count ?? 0}</span></button>}
+            </td>}
             <td className="r" style={{ whiteSpace: 'nowrap' }}>
               <button className="btn btn-sm" onClick={() => edit(c)}>Edit</button>
               <button className="btn btn-sm" style={{ marginLeft: 4 }}
@@ -235,6 +250,8 @@ export default function Customers() {
     </Panel>
     <input type="file" ref={logoRef} accept="image/*" style={{ display: 'none' }} onChange={pickLogo} />
 
+    {txFor && <CustomerTransactions customer={txFor.customer} docType={txFor.docType}
+      onClose={() => setTxFor(null)} />}
     {openAddr && <AddressBook kind="customer" partyId={openAddr} states={states.data} />}
   </>)
 }

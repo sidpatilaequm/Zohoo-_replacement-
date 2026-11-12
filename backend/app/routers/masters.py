@@ -75,12 +75,24 @@ def uoms(db=Depends(get_db)):
 def list_customers(ctx: Ctx = Depends(need("customers"))):
     rows = ctx.db.execute(ctx.scope(select(M.Customer), M.Customer)
                           .order_by(M.Customer.code)).scalars().all()
-    return [_party_out(c, {"bill_addr": c.bill_addr, "bill_city": c.bill_city,
+    # How many invoices and proformas each customer has, for the links on the
+    # customer list. Cancelled ones are counted separately, as the registers do.
+    counts: dict = {}
+    for cid, dtype, status, n in ctx.db.execute(
+            ctx.scope(select(M.Invoice.customer_id, M.Invoice.doc_type, M.Invoice.status,
+                             func.count(M.Invoice.id)), M.Invoice)
+            .group_by(M.Invoice.customer_id, M.Invoice.doc_type, M.Invoice.status)):
+        k = {"TAX": "invoice_count", "PRO": "proforma_count"}[dtype]
+        if status == "CANCELLED":
+            k = k.replace("_count", "_cancelled")
+        counts.setdefault(cid, {})[k] = counts.get(cid, {}).get(k, 0) + n
+    zero = {"invoice_count": 0, "proforma_count": 0, "invoice_cancelled": 0, "proforma_cancelled": 0}
+    return [{**zero, **counts.get(c.id, {}), **_party_out(c, {"bill_addr": c.bill_addr, "bill_city": c.bill_city,
                            "bill_state": c.bill_state, "bill_pin": c.bill_pin,
                            "ship_same": c.ship_same, "ship_addr": c.ship_addr,
                            "ship_city": c.ship_city, "ship_state": c.ship_state,
                            "ship_pin": c.ship_pin},
-                       _contacts_for(ctx, "CUSTOMER", c.id)) for c in rows]
+                       _contacts_for(ctx, "CUSTOMER", c.id))} for c in rows]
 
 
 @router.post("/customers", status_code=201)

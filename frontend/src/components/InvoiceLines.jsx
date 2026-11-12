@@ -6,9 +6,11 @@ import { inr } from '../lib/fmt'
  *  Qty x Rate - Discount = Taxable value, then GST, then the line total.
  *  Rate and discount are shown without GST, as on the print-out, so the row
  *  adds up on lines that were quoted inclusive of GST too. */
-export default function InvoiceLines({ id }) {
+export default function InvoiceLines({ id, data }) {
   const { api } = useAuth()
-  const d = useLoad(() => api.invoice(id), [id])
+  // When the caller already has the invoice, it passes it as data and nothing is fetched.
+  const loaded = useLoad(() => (data ? Promise.resolve(data) : api.invoice(id)), [id, data])
+  const d = data ? { data } : loaded
   if (d.loading) return <Loading />
   if (d.error) return <ErrorBox>{d.error}</ErrorBox>
 

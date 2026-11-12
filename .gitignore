@@ -9,6 +9,13 @@ dist/
 aequm_billing_backup.sql
 .vrnv/
 
-# Zoho migration source data
+# Zoho migration source data and sensitive migration scripts
 migration/zoho_raw/
 migration/zoho_work/
+*.xlsx
+*.xls
+*.csv
+migrate_*.sql
+build_*.py
+verify_*.py
+create_migration_excel.py

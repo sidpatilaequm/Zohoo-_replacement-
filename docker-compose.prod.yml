@@ -1,0 +1,63 @@
+services:
+
+  db:
+    image: mysql:8.0
+    container_name: billing-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: aequm_billing
+      MYSQL_USER: aequm
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - billing_mysql_data:/var/lib/mysql
+    networks:
+      - billing_internal
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build:
+      context: ./backend
+    container_name: billing-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+pymysql://aequm:${MYSQL_PASSWORD}@db:3306/aequm_billing?charset=utf8mb4
+      SECRET_KEY: ${SECRET_KEY}
+      ENTRA_TENANT_ID: ${ENTRA_TENANT_ID}
+      ENTRA_CLIENT_ID: ${ENTRA_CLIENT_ID}
+      ENTRA_CLIENT_SECRET: ${ENTRA_CLIENT_SECRET}
+      ENTRA_REDIRECT_URI: ${ENTRA_REDIRECT_URI}
+      TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-43200}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      EXTRACT_MODEL: ${EXTRACT_MODEL:-claude-sonnet-4-5}
+    networks:
+      - billing_internal
+    depends_on:
+      db:
+        condition: service_healthy
+
+  ui:
+    build:
+      context: ./frontend
+    container_name: billing-ui
+    restart: unless-stopped
+    networks:
+      - billing_internal
+      - projectsystem_default
+    depends_on:
+      - api
+
+networks:
+  billing_internal:
+    driver: bridge
+
+  projectsystem_default:
+    external: true
+
+volumes:
+  billing_mysql_data:

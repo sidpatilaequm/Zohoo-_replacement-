@@ -32,20 +32,31 @@ from .tax import q2
 GROUPS = ("customer", "material", "employee")
 
 
+# (key, name, section). Sections group the choices in the date-range picker.
 PRESETS = [
-    ("today", "Today"),
-    ("yesterday", "Yesterday"),
-    ("this_week", "This week"),
-    ("this_month", "This month"),
-    ("this_quarter", "This quarter"),
-    ("this_year", "This year"),
-    ("prev_month", "Previous month"),
-    ("prev_quarter", "Previous quarter"),
-    ("prev_year", "Previous year"),
-    ("custom", "Custom dates"),
+    ("today", "Today", "This year"),
+    ("this_week", "This week", "This year"),
+    ("this_month", "This month", "This year"),
+    ("this_quarter", "This quarter", "This year"),
+    ("this_year", "This year", "This year"),
+    ("yesterday", "Yesterday", "Previous period"),
+    ("prev_week", "Previous week", "Previous period"),
+    ("prev_month", "Previous month", "Previous period"),
+    ("prev_quarter", "Previous quarter", "Previous period"),
+    ("ly_today", "Same day last year", "Last year"),
+    ("ly_week", "Same week last year", "Last year"),
+    ("ly_month", "Same month last year", "Last year"),
+    ("ly_quarter", "Same quarter last year", "Last year"),
+    ("prev_year", "Last year", "Last year"),
+    ("custom", "Custom dates", "Custom"),
 ]
 
-PRESET_KEYS = {k for k, _ in PRESETS}
+# Each "last year" preset is its "this year" preset moved back one year.
+LAST_YEAR_OF = {"ly_today": "today", "ly_week": "this_week",
+                "ly_month": "this_month", "ly_quarter": "this_quarter"}
+WEEK_KEYS = {"this_week", "prev_week", "ly_week"}
+
+PRESET_KEYS = {k for k, _, _ in PRESETS}
 MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 ZERO = Decimal("0")
 
@@ -55,6 +66,24 @@ def add_months(d: date, n: int) -> date:
     y, m = divmod(d.month - 1 + n, 12)
     y, m = d.year + y, m + 1
     return date(y, m, min(d.day, monthrange(y, m)[1]))
+
+
+def _month_end(d: date) -> date:
+    return d.replace(day=monthrange(d.year, d.month)[1])
+
+
+def year_earlier(start: date, end: date, weekly: bool = False) -> tuple[date, date]:
+    """The same period one year earlier, for comparison.
+
+    Weeks move back 52 weeks so they still run Monday to Sunday. Everything
+    else moves back 12 months. A range of whole months stays whole months, so
+    February of a leap year compares with all of February the year before."""
+    if weekly:
+        return start - timedelta(weeks=52), end - timedelta(weeks=52)
+    a, b = add_months(start, -12), add_months(end, -12)
+    if start.day == 1 and end == _month_end(end):
+        b = _month_end(b)
+    return a, b
 
 
 def _fy_of(tenant, d: date) -> tuple[date, date, str]:
@@ -90,17 +119,33 @@ def resolve_range(tenant, key: str, today: date,
         return {"key": key, "label": "Custom dates", "start": start, "end": end}
 
 
+    if key in LAST_YEAR_OF:
+        base = resolve_range(tenant, LAST_YEAR_OF[key], today)
+        a, b = year_earlier(base["start"], base["end"], weekly=key == "ly_week")
+        name = dict((k, n) for k, n, _ in PRESETS)[key]
+        if key == "ly_today":
+            detail = f"{a.day} {MON[a.month - 1]} {a.year}"
+        elif key == "ly_week":
+            detail = f"{a.day} {MON[a.month - 1]}–{b.day} {MON[b.month - 1]} {b.year}"
+        elif key == "ly_month":
+            detail = f"{MON[a.month - 1]} {a.year}"
+        else:
+            _, _, q, fy = _quarter_of(tenant, a)
+            detail = f"Q{q} {_fy_text(fy)}, {MON[a.month - 1]}–{MON[b.month - 1]}"
+        return {"key": key, "label": f"{name} ({detail})", "start": a, "end": b}
+
     if key == "today":
         a = b = today
         label = "Today"
     elif key == "yesterday":
         a = b = today - timedelta(days=1)
         label = "Yesterday"
-    elif key == "this_week":
-
+    elif key in ("this_week", "prev_week"):
         a = today - timedelta(days=today.weekday())
+        if key == "prev_week":
+            a -= timedelta(days=7)
         b = a + timedelta(days=6)
-        label = "This week"
+        label = "This week" if key == "this_week" else "Previous week"
     elif key in ("this_month", "prev_month"):
         first = today.replace(day=1)
         if key == "prev_month":
@@ -117,19 +162,36 @@ def resolve_range(tenant, key: str, today: date,
         a, b, fy = _fy_of(tenant, today)
         if key == "prev_year":
             a, b, fy = _fy_of(tenant, a - timedelta(days=1))
-        label = f"{'This' if key == 'this_year' else 'Previous'} year ({_fy_text(fy)})"
+        label = f"{'This' if key == 'this_year' else 'Last'} year ({_fy_text(fy)})"
     return {"key": key, "label": label, "start": a, "end": b}
 
 
 def all_ranges(tenant, today: date) -> list[dict]:
     out = []
-    for k, name in PRESETS:
+    for k, name, section in PRESETS:
         if k == "custom":
-            out.append({"key": k, "name": name, "label": name, "start": None, "end": None})
+            out.append({"key": k, "name": name, "section": section, "label": name,
+                        "start": None, "end": None})
         else:
             r = resolve_range(tenant, k, today)
-            out.append({"key": k, "name": name, **r})
+            out.append({"key": k, "name": name, "section": section, **r})
     return out
+
+
+def comparison_range(r: dict, today: date) -> dict:
+    """The same period a year before the range r.
+
+    A period still running (this month, this year) is compared to date: this
+    year so far against last year up to the same day, not against all of last
+    year, which would make every unfinished period look like a fall."""
+    weekly = r["key"] in WEEK_KEYS
+    a, b = year_earlier(r["start"], r["end"], weekly=weekly)
+    if r["start"] <= today < r["end"]:
+        _, b = year_earlier(today, today, weekly=weekly)
+        return {"key": "year_earlier", "label": "Same period a year earlier, to the same date",
+                "start": a, "end": b, "to_date": True, "current_end": today}
+    return {"key": "year_earlier", "label": "Same period a year earlier", "start": a, "end": b,
+            "to_date": False}
 
 
 # ------------------------------------------------------------ aggregation
@@ -219,10 +281,12 @@ def sales_report(ctx, group: str, start: date, end: date) -> dict:
         r["invoices"].add(inv.id)
         r["docs"][inv.id] = {**doc_base, "taxable": t.taxable, "total": t.rounded}
 
+    keys = {id(r): k for k, r in rows.items()}
     base_total = sum((r["total"] for r in rows.values()), ZERO)
     out = []
     for r in sorted(rows.values(), key=lambda x: (-x["total"], x.get("code") or x.get("name") or "")):
         row = {k: v for k, v in r.items() if k not in ("invoices", "docs")}
+        row["key"] = keys[id(r)]
         for k in ("taxable", "cgst", "sgst", "igst", "total"):
             row[k] = _f(r[k])
         row["tax"] = _f(r["cgst"] + r["sgst"] + r["igst"])
@@ -243,3 +307,37 @@ def sales_report(ctx, group: str, start: date, end: date) -> dict:
         totals["line_total"] = _f(base_total)
         totals["qty"] = float(sum((r["qty"] for r in rows.values()), ZERO))
     return {"group": group, "rows": out, "totals": totals}
+
+
+def _growth(now: float, before: float):
+    if not before:
+        return None
+    return round((now - before) / abs(before) * 100, 1)
+
+
+def with_comparison(cur: dict, prev: dict, prev_range: dict) -> dict:
+    """Add last year's figures to each row of cur and to its totals.
+
+    Rows that sold only in the earlier period are added with nothing this
+    period, so a customer or material that stopped buying still shows."""
+    before = {r["key"]: r for r in prev["rows"]}
+    rows = []
+    for r in cur["rows"]:
+        p = before.pop(r["key"], None)
+        rows.append({**r, "prev_total": p["total"] if p else 0.0,
+                     "prev_invoices": p["invoice_count"] if p else 0,
+                     "growth_pct": _growth(r["total"], p["total"] if p else 0.0)})
+    for p in sorted(before.values(), key=lambda x: -x["total"]):
+        blank = {k: (0.0 if isinstance(v, float) else v) for k, v in p.items()}
+        blank.update(invoice_count=0, docs=[], share_pct=0.0, prev_total=p["total"],
+                     prev_invoices=p["invoice_count"], growth_pct=-100.0, only_before=True)
+        if "qty" in blank:
+            blank["qty"] = 0.0
+            blank["avg_price"] = None
+        rows.append(blank)
+    T, P = cur["totals"], prev["totals"]
+    total_key = "line_total" if cur["group"] == "material" else "total"
+    compare = {"range": prev_range, "totals": P,
+               "growth_pct": _growth(T[total_key], P[total_key]),
+               "invoices_change": T["invoices"] - P["invoices"]}
+    return {**cur, "rows": rows, "compare": compare}

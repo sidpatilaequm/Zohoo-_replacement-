@@ -85,7 +85,16 @@ export function makeApi(token, tenantId) {
     delMaterial: (id) => call(`/materials/${id}`, { method: 'DELETE' }),
     hsnRates: (id) => call(`/hsn/${id}/rates`),
 
-    invoices: (docType) => call('/invoices' + (docType ? `?doc_type=${docType}` : '')),
+    /** opts: { customerId, start, end } narrow the list to one customer and/or dates. */
+    invoices: (docType, opts = {}) => {
+      const q = new URLSearchParams()
+      if (docType) q.set('doc_type', docType)
+      if (opts.customerId) q.set('customer_id', opts.customerId)
+      if (opts.start) q.set('start', opts.start)
+      if (opts.end) q.set('end', opts.end)
+      const qs = q.toString()
+      return call('/invoices' + (qs ? `?${qs}` : ''))
+    },
     invoiceNextNo: (docType, docDate) => call(`/invoices/next-no?doc_type=${docType}`
       + (docDate ? `&doc_date=${encodeURIComponent(docDate)}` : '')),
     checkInvoiceNo: (docType, docNo, docDate, excludeId) => call(
@@ -218,6 +227,7 @@ export function makeApi(token, tenantId) {
       if (params.today) q.set('today', params.today)
       if (params.start) q.set('start', params.start)
       if (params.end) q.set('end', params.end)
+      if (params.compare) q.set('compare', 'true')
       return call(`/reports/sales?${q.toString()}`)
     },
     csvUrl: (s, p) => `${BASE}/returns/gstr1/${s}.csv?period=${p}`,

@@ -210,3 +210,59 @@ table.lines td{border-bottom:1px solid var(--line);padding:6px 8px}
 .mail-hist{background:#fafaf8;border:1px solid var(--line);border-radius:7px;padding:10px 12px;
   margin-top:12px;font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:4px}
 .mail-hist .bad{color:var(--red)}
+
+/* v4.7 — customer transactions, transaction detail, sales report comparison */
+.modal.tx{max-width:860px}
+.modal.tx.wide{max-width:1040px}
+.modal-hd h2 .fine{font-family:var(--mono);font-size:12px;font-weight:400;margin-left:6px}
+.tx-sub{font-family:var(--sans);font-size:12px;color:var(--muted);font-weight:400;margin-top:2px}
+.modal-bd.flush{padding:0}
+.tx-filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 22px;
+  border-bottom:1px solid var(--line)}
+.tx-foot{padding:10px 22px;border-top:1px solid var(--line)}
+.tx-empty{padding:32px 22px;text-align:center;color:var(--faint)}
+table.tx-list{width:100%}
+tr.tx-row{cursor:pointer}
+tr.tx-row:hover td,tr.tx-row:focus-visible td{background:var(--accent-soft)}
+tr.tx-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+tr.tx-row.dead td{opacity:.6}
+.tx-open{font-size:12px;color:var(--accent);font-weight:500;white-space:nowrap}
+tr.tx-row:not(:hover):not(:focus-visible) .tx-open{color:var(--faint)}
+
+.tx-detail .tx-title{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;
+  padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--line)}
+.tx-detail .tx-title h3{font-size:20px;margin:2px 0 0;font-weight:600}
+.tx-amount{display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.tx-amount b{font-size:20px}
+.tx-facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px 22px;margin:0 0 16px}
+.tx-facts>div{min-width:0}
+.tx-facts>div:first-child,.tx-facts>div.wide{grid-column:1/-1}
+.tx-facts dt{font-size:11.5px;color:var(--muted);margin-bottom:2px}
+.tx-facts dd{margin:0}
+.tx-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:16px;padding-top:14px;
+  border-top:1px solid var(--line)}
+.tx-actions .err{color:var(--red);font-size:12.5px;margin-left:auto}
+
+.btn.tx-link{display:inline-flex;align-items:center;gap:6px}
+.tx-count{font-family:var(--mono);font-size:11px;min-width:20px;padding:0 5px;border-radius:9px;
+  background:var(--accent-soft);color:var(--accent-dk);text-align:center;line-height:17px}
+
+.sr-compare{display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.sr-compare input{width:15px;height:15px}
+.sr-tools{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:10px 18px;
+  border-bottom:1px solid var(--line)}
+.chg{font-family:var(--mono);font-size:12px;white-space:nowrap}
+.chg.up{color:var(--accent)}
+.chg.down{color:var(--red)}
+.fine-num{color:var(--muted)}
+tr.sr-gone td{color:var(--muted)}
+tr.sr-gone b{font-weight:500}
+tr.sr-docs-total td{font-weight:600;border-top:1.5px solid var(--line2)}
+
+@media (max-width:640px){
+  .tx-detail .tx-title{flex-direction:column;align-items:flex-start}
+  .tx-amount{align-items:flex-start}
+  .tx-filters,.sr-tools{padding-left:14px;padding-right:14px}
+}
+/* Inside a transaction detail the lines fill the modal instead of the register's width. */
+.tx-detail .lines-box{position:static;width:auto;min-width:0}

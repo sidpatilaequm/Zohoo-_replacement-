@@ -110,7 +110,11 @@ def tax_json(t):
 
 # ============================================================== invoices
 @router.get("/invoices")
-def list_invoices(doc_type: str | None = None, ctx: Ctx = Depends(need("saved"))):
+def list_invoices(doc_type: str | None = None, customer_id: int | None = None,
+                  start: date | None = None, end: date | None = None,
+                  ctx: Ctx = Depends(need("saved"))):
+    """Invoices and proformas, newest first. Optionally only one customer's, and
+    only those dated from start to end (both inclusive)."""
     if doc_type is not None:
         doc_type = doc_type.upper()
         if doc_type not in ("TAX", "PRO"):
@@ -123,6 +127,12 @@ def list_invoices(doc_type: str | None = None, ctx: Ctx = Depends(need("saved"))
         q = q.where(M.Invoice.doc_type == doc_type)
     elif "proforma" not in ctx.perms:
         q = q.where(M.Invoice.doc_type == "TAX")
+    if customer_id is not None:
+        q = q.where(M.Invoice.customer_id == customer_id)
+    if start is not None:
+        q = q.where(M.Invoice.doc_date >= start)
+    if end is not None:
+        q = q.where(M.Invoice.doc_date <= end)
 
     out = []
     for inv in ctx.db.execute(
@@ -212,6 +222,12 @@ def get_invoice(iid: int, ctx: Ctx = Depends(need("saved"))):
         "disc_value": float(inv.disc_value or 0),
         "converted_from": inv.converted_from,
         "converted_to": inv.converted_to,
+        "converted_to_id": inv.converted_to_id,
+        "converted_from_id": ctx.db.execute(
+            ctx.scope(select(M.Invoice.id), M.Invoice)
+            .where(M.Invoice.converted_to_id == inv.id)).scalars().first(),
+        "cancel_reason": inv.cancel_reason,
+        "cancelled_on": inv.cancelled_on,
         "lines": [
             {
                 "line_no": line.line_no,
@@ -406,8 +422,6 @@ def update_invoice(iid: int, body: S.InvoiceIn,
 
     if inv.status == "CANCELLED":
         raise HTTPException(409, "Cancelled invoices cannot be edited")
-    if inv.converted_from or inv.converted_to or inv.converted_to_id:
-        raise HTTPException(409, "Converted invoices cannot be edited")
     if body.doc_type != inv.doc_type:
         raise HTTPException(409, "The document type cannot be changed while editing")
 

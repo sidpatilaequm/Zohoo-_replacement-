@@ -2,7 +2,7 @@ import { Fragment, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, useLoad, Loading, ErrorBox, useFlash,
-  usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
+  usePrintVariant, VariantPicker, PrintButtons, FinancialYearPicker } from '../components/ui'
 import { inr, gd } from '../lib/fmt'
 import DocFiles from '../components/DocFiles'
 import InvoiceLines from '../components/InvoiceLines'
@@ -12,6 +12,7 @@ export default function Invoices() {
   const navigate = useNavigate()
   const list = useLoad(() => api.invoices('TAX'))
   const [filter, setFilter] = useState('ALL')
+  const [fy, setFy] = useState('')
   const [flash, showFlash] = useFlash()
   const [variant, setVariant] = usePrintVariant()
   const [printAs, setPrintAs] = useState('')   // '' = as the document is, 'PRO' = proforma layout
@@ -23,7 +24,21 @@ export default function Invoices() {
 
   const canEdit = can ? can('invoice') : true
 
-  const rows = list.data.filter(v =>
+  const now = new Date()
+  const curY = now.getFullYear()
+  const curM = now.getMonth() + 1
+  const currentFyStr = curM >= 4 ? `${curY}-${String(curY + 1).slice(-2)}` : `${curY - 1}-${String(curY).slice(-2)}`
+
+  const rawYears = Array.from(new Set([
+    currentFyStr,
+    ...(list.data || []).map(v => v.fy).filter(Boolean)
+  ])).sort().reverse()
+  const years = rawYears.map(y => ({ label: y, current: y === currentFyStr }))
+
+  const fyNorm = fy ? fy.replace(/^FY\s*/i, '') : ''
+  const inFy = list.data.filter(v => !fyNorm || (v.fy && v.fy.replace(/^FY\s*/i, '') === fyNorm))
+
+  const rows = inFy.filter(v =>
     filter === 'ALL' ? v.status !== 'CANCELLED'
     : filter === 'OPEN' ? v.status === 'ACTIVE' && v.outstanding > 0.5
     : filter === 'CANCELLED' ? v.status === 'CANCELLED'
@@ -76,6 +91,7 @@ export default function Invoices() {
           <option value="PRO">Proforma invoice</option>
           <option value="TAX">Tax invoice</option>
         </select></label>
+      <FinancialYearPicker value={fy} onChange={setFy} years={years} />
       <select value={filter} onChange={e => setFilter(e.target.value)}
         style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
         <option value="ALL">All invoices</option>
@@ -129,9 +145,10 @@ export default function Invoices() {
                   Docs
                 </button>
               <button className="btn btn-sm" style={{ marginLeft: 5 }} onClick={() => setMailing(v)}>Email</button>
-              {!dead && !v.converted_from && !v.converted_to && !v.converted_to_id &&
+              {!dead && (
                 <button className="btn btn-sm" style={{ marginLeft: 5 }}
-                  onClick={() => navigate(`/invoices/new?edit=${v.id}`)}>Edit</button>}
+                  onClick={() => navigate(`/invoices/new?edit=${v.id}`)}>Edit</button>
+              )}
               {pro && !dead && <button className="btn btn-sm btn-a" style={{ marginLeft: 5 }}
                 onClick={() => convert(v.id)}>Convert</button>}
               {!pro && !dead && <button className="btn btn-sm" style={{ marginLeft: 5, color: 'var(--red)' }}

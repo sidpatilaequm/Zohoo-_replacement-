@@ -156,4 +156,6 @@ def test_reports_need_the_reports_permission_and_stay_in_the_tenant(api, org):
     assert r.status_code in (200, 201), r.text
     s = second_user(api, a, "noreports@x.co", "Billing only")
     assert s.get("/api/reports/sales?group=customer&range=this_month").status_code == 403
-    assert s.get("/api/reports/sales/ranges").status_code == 403
+    # v4.7: the period list is only dates, so any group that can open invoices,
+    # proformas or customers may load it for its own period filters.
+    assert s.get("/api/reports/sales/ranges").status_code == 200

@@ -289,7 +289,7 @@ export default function NewInvoice() {
 
       if (editId) {
         showFlash(`${d.doc_no || docNo} updated successfully.`)
-        navigate('/invoices')
+        navigate(h.doc_type === 'PRO' ? '/proformas' : '/invoices')
       } else {
         showFlash(`${h.doc_type === 'PRO' ? 'Proforma' : 'Invoice'} ${d.doc_no} saved — ${money(d.totals.rounded)}.`)
         setLines([])
@@ -549,7 +549,7 @@ export default function NewInvoice() {
         {editId ? 'Save changes' : `Save ${h.doc_type === 'PRO' ? 'proforma' : 'invoice'}`}
       </button>
       {editId
-        ? <button type="button" className="btn" onClick={() => navigate('/invoices')}>Cancel</button>
+        ? <button type="button" className="btn" onClick={() => navigate(h.doc_type === 'PRO' ? '/proformas' : '/invoices')}>Cancel</button>
         : <button type="button" className="btn" onClick={() => setLines([])}>Clear</button>}
       <span className="err">{err || problems[0] || ''}</span>
     </div>
