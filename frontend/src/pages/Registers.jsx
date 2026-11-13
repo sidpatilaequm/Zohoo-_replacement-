@@ -182,11 +182,11 @@ export default function Registers() {
     {which === 'tds-report' && <TdsReport period={p} />}
 
     {which === 'tds' && (
-      <Panel title={`TDS register — ${money(tds.data.total_tds)} deducted`} bodyless>
+      <Panel title={`TDS we deducted from vendors — ${money(tds.data.total_tds)} to deposit`} bodyless>
         <Table head={['Payment date', 'Vendor', 'PAN', { label: 'MSME', align: 'c' },
           'Vendor invoice', { label: 'Taxable', align: 'r' }, { label: 'Gross', align: 'r' },
           { label: 'TDS', align: 'r' }, { label: 'Paid', align: 'r' },
-          { label: 'Implied rate', align: 'r' }, 'Reference']}
+          { label: 'Implied rate', align: 'r' }, 'Source']}
           empty="No tax was deducted in this period.">
           {tds.data.rows.map((r, i) => (
             <tr key={i}>
@@ -201,7 +201,8 @@ export default function Registers() {
               <td className="r mono"><b>{inr(r.tds)}</b></td>
               <td className="r mono">{inr(r.paid)}</td>
               <td className="r mono">{r.implied_rate_pct}%</td>
-              <td className="mono fine">{r.bank_ref || '—'}</td>
+              <td className="fine">{r.source}{r.bank_ref &&
+                <div className="mono">{r.bank_ref}</div>}</td>
             </tr>))}
         </Table>
         <div className="panel-bd">
@@ -209,6 +210,37 @@ export default function Registers() {
             <b>No PAN on file for {tds.data.vendors_without_pan.join(', ')}.</b> Section 206AA
             requires a higher rate where the deductee has not furnished a PAN.</Alert>}
           <Alert kind="warn">{tds.data.note}</Alert>
+        </div>
+      </Panel>)}
+
+    {which === 'tds' && (
+      <Panel title={`TDS deducted by customers — ${money(tds.data.customer_total_tds)} to claim`} bodyless>
+        <Table head={['Date', 'Customer', 'PAN', 'Invoice', { label: 'Invoice value', align: 'r' },
+          { label: 'Received', align: 'r' }, { label: 'TDS', align: 'r' },
+          { label: 'Implied rate', align: 'r' }, 'Quarter', 'Source']}
+          empty="No customer deducted tax in this period.">
+          {tds.data.customers.map((r, i) => (
+            <tr key={i}>
+              <td className="mono">{gd(r.date)}</td>
+              <td>{r.customer}<div className="fine mono">{r.customer_code}</div></td>
+              <td className="mono">{r.pan || <span style={{ color: 'var(--red)' }}>missing</span>}</td>
+              <td className="mono">{r.invoice}<div className="fine">{gd(r.invoice_date)}</div></td>
+              <td className="r mono">{inr(r.invoice_total)}</td>
+              <td className="r mono">{inr(r.received)}</td>
+              <td className="r mono"><b>{inr(r.tds)}</b></td>
+              <td className="r mono">{r.implied_rate_pct}%</td>
+              <td>{r.quarter}</td>
+              <td className="fine">{r.source}{r.bank_account &&
+                <div>{r.bank_account}</div>}</td>
+            </tr>))}
+        </Table>
+        <div className="panel-bd">
+          {tds.data.customers_without_pan.length > 0 && <Alert kind="warn">
+            No PAN on file for {tds.data.customers_without_pan.join(', ')} — needed to match
+            Form 26AS.</Alert>}
+          <div className="fine">Where an invoice is settled from the bank statement, the invoice
+            value less the money collected is booked as TDS on the transaction that closed it.
+            Match these to Form 26AS / AIS by customer and quarter, and ask for Form 16A.</div>
         </div>
       </Panel>)}
   </>)

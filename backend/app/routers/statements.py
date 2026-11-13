@@ -14,13 +14,21 @@ Director Cards (perm: cardstmt)
     director for) or PERSONAL. The reconciliation endpoint totals, month by
     month, what the company owes the director against what has been settled.
 
-Attachments (v4.2)
-    A bank credit can be attached to the customer invoice(s) it settles, and
-    a bank debit to the vendor invoice(s) it pays or to an employee's salary
-    or expense. The amounts attached to a transaction never exceed it, and
+Attachments (v4.2, extended in v4.8)
+    A bank credit can be attached to the customer invoice(s) it settles, to
+    an employee paying money back, or to a loan received from a director; a
+    bank debit to the vendor invoice(s) it pays, to an employee's salary or
+    expense, or to a loan repaid to a director. One invoice can be settled
+    by several transactions, and an invoice attachment can carry TDS — the
+    shortfall between the invoice and the money collected, which then shows
+    in the TDS register. The amounts attached to a transaction never exceed it, and
     the amounts attached to an invoice across all transactions never exceed
-    the invoice. Attaching is a record of what the money was for; it does not
-    post a receipt or payment on the Money screens.
+    the invoice.
+
+    Receipts (v4.9) — attaching a customer invoice to a bank credit also posts
+    the receipt on Customer Payments (amount and any TDS), so the invoice
+    shows as paid or part paid. Removing the attachment, or deleting the
+    statement or account it came from, removes that receipt again.
 
 The ledger endpoint puts the month's expense sources side by side — vendor
 invoices booked, vendor payments made, bank debits, card spend allocated to
@@ -502,14 +510,18 @@ def _upload_impact(ctx, uid):
 
 
 def _purge_txns(ctx, txn_ids):
-    """Delete statement transactions and their attachments.
-
-    Statement attachments describe what a transaction was for; they do not
-    post receipts or payments in the Money screens. Therefore deleting a
-    statement transaction must not delete Payment rows.
-    """
+    """Delete statement transactions and their attachments, and the receipts
+    those attachments posted on Customer Payments (v4.9) — so the invoices
+    they settled show as unpaid again. Receipts entered by hand on Customer
+    Payments are never touched. Returns how many receipts were removed."""
     if not txn_ids:
         return 0
+
+    pids = [p for (p,) in ctx.db.execute(
+        select(M.StmtTxnLink.payment_id).where(
+            M.StmtTxnLink.tenant_id == ctx.tenant.id,
+            M.StmtTxnLink.txn_id.in_(txn_ids),
+            M.StmtTxnLink.payment_id.is_not(None))).all()]
 
     ctx.db.execute(
         delete(M.StmtTxnLink).where(
@@ -518,6 +530,8 @@ def _purge_txns(ctx, txn_ids):
         ).execution_options(synchronize_session=False)
     )
 
+    removed = _drop_receipts(ctx, pids)
+
     ctx.db.execute(
         delete(M.StmtTxn).where(
             M.StmtTxn.tenant_id == ctx.tenant.id,
@@ -525,7 +539,7 @@ def _purge_txns(ctx, txn_ids):
         ).execution_options(synchronize_session=False)
     )
 
-    return 0
+    return removed
 
 
 @router.delete("/uploads/{uid}")
@@ -633,6 +647,14 @@ def _account_impact(ctx, aid) -> dict:
                 M.StmtTxnLink.txn_id.in_(txn_q)
             )
         ),
+        # v4.9 — receipts these attachments posted on Customer Payments
+        "recorded_payments": n(
+            select(func.count()).select_from(M.StmtTxnLink).where(
+                M.StmtTxnLink.tenant_id == ctx.tenant.id,
+                M.StmtTxnLink.txn_id.in_(txn_q),
+                M.StmtTxnLink.payment_id.is_not(None)
+            )
+        ),
     }
 
 
@@ -694,7 +716,7 @@ def delete_account(
         ).all()
     ]
 
-    _purge_txns(ctx, txn_ids)
+    imp["payments_removed"] = _purge_txns(ctx, txn_ids)
 
     ctx.db.execute(
         delete(M.StmtUpload).where(
@@ -719,89 +741,6 @@ def delete_account(
         "label": label,
         "kind": kind,
         **imp
-    }
-
-
-# --------------------------------------------------------------- transactions
-    """Delete an uploaded statement and the transactions it first saved.
-
-    Rows that an earlier upload had already saved belong to that earlier
-    upload and stay. Without force, an upload whose transactions are
-    allocated or attached is refused with the counts, so nothing decided by
-    hand disappears by accident; with force=true they are removed with it.
-    Re-uploading the same file afterwards saves its transactions afresh.
-    """
-    u = ctx.get(M.StmtUpload, uid)
-
-    if not u:
-        raise HTTPException(404, "No such upload")
-
-    ctx.require(_perm_for(u.account.kind))
-
-    held, allocated, links = _upload_impact(ctx, uid)
-
-    if (allocated or links) and not force:
-        what = []
-
-        if allocated:
-            what.append(
-                f"{allocated} transaction(s) already allocated company or personal"
-            )
-
-        if links:
-            what.append(
-                f"{links} invoice or employee attachment(s)"
-            )
-
-        raise HTTPException(
-            409,
-            "This statement has " + " and ".join(what) +
-            ". Confirm the delete to remove them with it."
-        )
-
-    # Children first and in plain SQL, so the result is the same whether or
-    # not the database enforces the ON DELETE CASCADE foreign keys.
-    txn_ids = (
-        select(M.StmtTxn.id)
-        .where(
-            M.StmtTxn.tenant_id == ctx.tenant.id,
-            M.StmtTxn.upload_id == uid
-        )
-        .scalar_subquery()
-    )
-
-    ctx.db.execute(
-        delete(M.StmtTxnLink)
-        .where(
-            M.StmtTxnLink.tenant_id == ctx.tenant.id,
-            M.StmtTxnLink.txn_id.in_(txn_ids)
-        )
-        .execution_options(synchronize_session=False)
-    )
-
-    ctx.db.execute(
-        delete(M.StmtTxn)
-        .where(
-            M.StmtTxn.tenant_id == ctx.tenant.id,
-            M.StmtTxn.upload_id == uid
-        )
-        .execution_options(synchronize_session=False)
-    )
-
-    ctx.db.execute(
-        delete(M.StmtUpload)
-        .where(M.StmtUpload.id == uid)
-    )
-
-    ctx.db.commit()
-
-    return {
-        "deleted": uid,
-        "period": u.period,
-        "filename": u.filename,
-        "transactions_removed": held,
-        "allocations_removed": allocated,
-        "attachments_removed": links
     }
 
 
@@ -915,7 +854,8 @@ def categories(ctx: Ctx = Depends(need("cardstmt"))):
 
 # --------------------------------------------------------------- attachments
 
-PURPOSES = ("SALARY", "EXPENSE")
+PURPOSES = ("SALARY", "EXPENSE", "REFUND")
+CENT = Decimal("0.005")
 
 
 def _links_for(ctx, txn_ids):
@@ -933,9 +873,10 @@ def _links_for(ctx, txn_ids):
 
 def _link_out(ctx, l):
     d = {"id": l.id, "txn_id": l.txn_id, "link_type": l.link_type,
-         "amount": float(l.amount), "notes": l.notes, "purpose": l.purpose,
-         "linked_by": l.linked_by, "ref_id": None, "ref": None, "party": None,
-         "expense_id": l.expense_id, "expense": None}
+         "amount": float(l.amount), "tds": float(l.tds or 0), "notes": l.notes,
+         "purpose": l.purpose, "linked_by": l.linked_by, "ref_id": None, "ref": None,
+         "party": None, "expense_id": l.expense_id, "expense": None,
+         "invoice_total": None, "invoice_open": None}
     if l.expense_id:
         h = ctx.db.get(M.ExpenseHead, l.expense_id)
         if h:
@@ -943,15 +884,27 @@ def _link_out(ctx, l):
     if l.link_type == "CUST_INV" and l.invoice_id:
         inv = ctx.db.get(M.Invoice, l.invoice_id)
         if inv:
-            d.update(ref_id=inv.id, ref=inv.doc_no, party=inv.customer.name)
+            from ..service import invoice_tax
+            total = invoice_tax(ctx, inv).rounded
+            d.update(ref_id=inv.id, ref=inv.doc_no, party=inv.customer.name,
+                     invoice_total=float(total), invoice_open=float(_cust_open(ctx, inv)),
+                     payment_id=l.payment_id)
     elif l.link_type == "VEND_INV" and l.vinv_id:
         vi = ctx.db.get(M.VendorInvoice, l.vinv_id)
         if vi:
-            d.update(ref_id=vi.id, ref=vi.doc_no, party=vi.vendor.name)
+            from ..service import vinv_tax
+            total = vinv_tax(ctx, vi).rounded
+            d.update(ref_id=vi.id, ref=vi.doc_no, party=vi.vendor.name,
+                     invoice_total=float(total),
+                     invoice_open=float(total - _booked(ctx, vinv_id=vi.id)))
     elif l.link_type == "EMPLOYEE" and l.employee_id:
         e = ctx.db.get(M.Employee, l.employee_id)
         if e:
             d.update(ref_id=e.id, ref=e.emp_code, party=f"{e.first_name} {e.last_name}")
+    elif l.link_type == "DIRECTOR_LOAN" and l.director_id:
+        dr = ctx.db.get(M.Director, l.director_id)
+        if dr:
+            d.update(ref_id=dr.id, ref=dr.din or "Director", party=dr.name)
     return d
 
 def _vinv_attached(ctx, txn_ids) -> dict[int, float]:
@@ -974,11 +927,87 @@ def _vinv_attached(ctx, txn_ids) -> dict[int, float]:
 
     return {k: float(v or 0) for k, v in rows}
 def _attached_sum(ctx, **where) -> Decimal:
+    """Money attached (the cash that moved), excluding any TDS."""
     q = select(func.coalesce(func.sum(M.StmtTxnLink.amount), 0)).where(
         M.StmtTxnLink.tenant_id == ctx.tenant.id)
     for k, v in where.items():
         q = q.where(getattr(M.StmtTxnLink, k) == v)
     return Decimal(str(ctx.db.execute(q).scalar_one()))
+
+
+def _tds_sum(ctx, **where) -> Decimal:
+    q = select(func.coalesce(func.sum(M.StmtTxnLink.tds), 0)).where(
+        M.StmtTxnLink.tenant_id == ctx.tenant.id)
+    for k, v in where.items():
+        q = q.where(getattr(M.StmtTxnLink, k) == v)
+    return Decimal(str(ctx.db.execute(q).scalar_one()))
+
+
+def _booked(ctx, **where) -> Decimal:
+    """What is settled on an invoice from bank attachments: money collected
+    or paid plus TDS deducted."""
+    return _attached_sum(ctx, **where) + _tds_sum(ctx, **where)
+
+
+# ------------------------------------------------ receipts from the bank (v4.9)
+
+def _guess_mode(descr: str) -> str:
+    """The payment mode a bank narration points to; NEFT when it says none."""
+    d = (descr or "").upper()
+    for key, mode in (("UPI", "UPI"), ("IMPS", "IMPS"), ("RTGS", "RTGS"),
+                      ("CHQ", "Cheque"), ("CHEQUE", "Cheque"), ("CLG", "Cheque")):
+        if key in d:
+            return mode
+    return "NEFT"
+
+
+def _legacy_booked(ctx, invoice_id) -> Decimal:
+    """Money and TDS attached to a customer invoice by attachments made
+    before v4.9, which posted no receipt. Counted so nothing is settled twice."""
+    q = select(func.coalesce(func.sum(M.StmtTxnLink.amount + M.StmtTxnLink.tds), 0)).where(
+        M.StmtTxnLink.tenant_id == ctx.tenant.id,
+        M.StmtTxnLink.invoice_id == invoice_id,
+        M.StmtTxnLink.payment_id.is_(None))
+    return Decimal(str(ctx.db.execute(q).scalar_one()))
+
+
+def _cust_open(ctx, inv) -> Decimal:
+    """What is still to be received on a customer invoice: its total less
+    every receipt on Customer Payments (including those posted from the bank
+    statement) and less older attachments that posted none."""
+    from ..service import invoice_tax, settled
+    return (invoice_tax(ctx, inv).rounded - settled(ctx, invoice_id=inv.id)
+            - _legacy_booked(ctx, inv.id))
+
+
+def _post_receipt(ctx, link, t, a):
+    """Record the receipt on Customer Payments for a customer invoice
+    attached to a bank credit, so the invoice shows as paid or part paid."""
+    ctx.db.flush()                      # link.id, for the narration
+    p = M.Payment(tenant_id=ctx.tenant.id, pay_type="REC", pay_date=t.txn_date,
+                  invoice_id=link.invoice_id, amount=link.amount, tds=link.tds or 0,
+                  mode=_guess_mode(t.descr), bank_ref=(t.descr or "")[:60] or None,
+                  bank_acct=(a.label or "")[:80] or None,
+                  narration=f"Bank statement attachment #{link.id}")
+    ctx.db.add(p)
+    ctx.db.flush()
+    link.payment_id = p.id
+    return p
+
+
+def _drop_receipts(ctx, payment_ids) -> int:
+    """Delete receipts posted from the bank statement, with any reversal an
+    invoice cancellation made of them."""
+    ids = [i for i in payment_ids if i]
+    if not ids:
+        return 0
+    ctx.db.execute(delete(M.Payment).where(
+        M.Payment.tenant_id == ctx.tenant.id,
+        M.Payment.reverses_id.in_(ids)).execution_options(synchronize_session=False))
+    ctx.db.execute(delete(M.Payment).where(
+        M.Payment.tenant_id == ctx.tenant.id,
+        M.Payment.id.in_(ids)).execution_options(synchronize_session=False))
+    return len(ids)
 
 
 def _link_txn(ctx, tid):
@@ -1012,16 +1041,28 @@ def _link_txn(ctx, tid):
     return t, a
 
 
+def _director_out(dr):
+    return {"id": dr.id, "name": dr.name, "din": dr.din, "pan": dr.pan,
+            "active": dr.active}
+
+
+def _active_directors(ctx):
+    return ctx.db.execute(ctx.scope(select(M.Director), M.Director)
+                          .where(M.Director.active.is_(True))
+                          .order_by(M.Director.name)).scalars().all()
+
+
 @router.get("/txns/{tid}/attachables")
 def attachables(
     tid: int,
     ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))
 ):
     """What this transaction can be attached to. A credit lists customer tax
-    invoices; a debit lists vendor invoices and employees. Each invoice shows
-    its total, the receipts or payments recorded against it on the Money
-    screens, and what is already attached from bank transactions, so the open
-    amount is plain. An invoice matching the transaction exactly comes first."""
+    invoices, employees (money paid back) and directors (a loan received); a
+    debit lists vendor invoices, employees and directors (a loan repaid).
+    Each invoice shows its total, what is already collected or paid against
+    it from bank transactions, any TDS already booked, and the open amount.
+    An invoice matching the transaction exactly comes first."""
     from ..service import invoice_tax, vinv_tax, settled
     t, a = _link_txn(ctx, tid)
     card = a.kind == "CARD"
@@ -1033,15 +1074,19 @@ def attachables(
         "remaining": float(remaining),
         "customer_invoices": [],
         "vendor_invoices": [],
-        "employees": []
+        "employees": [],
+        "directors": [],
+        "expense_heads": []
     }
 
     def _row(doc, total, booked, party):
-        attached = float(_attached_sum(ctx, **booked))
-        open_amt = round(float(total) - attached, 2)
+        collected = float(_attached_sum(ctx, **booked))
+        tds = float(_tds_sum(ctx, **booked))
+        open_amt = round(float(total) - collected - tds, 2)
         return {"id": doc.id, "doc_no": doc.doc_no, "doc_date": doc.doc_date.isoformat(),
-                "party": party, "total": float(total), "attached": attached,
-                "open": open_amt, "exact": abs(open_amt - float(remaining)) < 0.005}
+                "party": party, "total": float(total), "attached": collected,
+                "tds": tds, "open": open_amt,
+                "exact": abs(open_amt - float(remaining)) < 0.005}
 
     if t.credit > 0:
         invs = ctx.db.execute(ctx.scope(select(M.Invoice), M.Invoice).where(
@@ -1050,7 +1095,12 @@ def attachables(
         for inv in invs:
             r = _row(inv, invoice_tax(ctx, inv).rounded, {"invoice_id": inv.id},
                      inv.customer.name)
-            r["receipts"] = float(settled(ctx, invoice_id=inv.id))
+            # Receipts recorded by hand on Customer Payments count too: an
+            # invoice already paid there is not offered again.
+            r["open"] = round(float(_cust_open(ctx, inv)), 2)
+            r["exact"] = abs(r["open"] - float(remaining)) < 0.005
+            linked = float(_booked(ctx, invoice_id=inv.id) - _legacy_booked(ctx, inv.id))
+            r["receipts"] = round(float(settled(ctx, invoice_id=inv.id)) - linked, 2)
             if r["open"] > 0:
                 out["customer_invoices"].append(r)
         out["customer_invoices"].sort(key=lambda r: not r["exact"])
@@ -1063,15 +1113,17 @@ def attachables(
             if r["open"] > 0:
                 out["vendor_invoices"].append(r)
         out["vendor_invoices"].sort(key=lambda r: not r["exact"])
-        if card:
-            out["expense_heads"] = []
-            return out
-        emps = ctx.db.execute(ctx.scope(select(M.Employee), M.Employee)
-                              .where(M.Employee.active.is_(True))
-                              .order_by(M.Employee.emp_code)).scalars().all()
-        out["employees"] = [{"id": e.id, "emp_code": e.emp_code,
-                             "name": f"{e.first_name} {e.last_name}", "email": e.email}
-                            for e in emps]
+    if card:
+        return out
+    emps = ctx.db.execute(ctx.scope(select(M.Employee), M.Employee)
+                          .where(M.Employee.active.is_(True))
+                          .order_by(M.Employee.emp_code)).scalars().all()
+    out["employees"] = [{"id": e.id, "emp_code": e.emp_code,
+                         "name": f"{e.first_name} {e.last_name}", "email": e.email}
+                        for e in emps]
+    out["directors"] = [{**_director_out(dr), **_director_balance(ctx, dr.id)}
+                        for dr in _active_directors(ctx)]
+    if t.debit > 0:
         from .expenses import active_heads
         out["expense_heads"] = [{"id": h.id, "exp_code": h.exp_code, "name": h.name}
                                 for h in active_heads(ctx)]
@@ -1079,10 +1131,13 @@ def attachables(
 
 
 class LinkIn(BaseModel):
-    link_type: str = Field(pattern="^(CUST_INV|VEND_INV|EMPLOYEE)$")
+    link_type: str = Field(pattern="^(CUST_INV|VEND_INV|EMPLOYEE|DIRECTOR_LOAN)$")
     ref_id: int
     amount: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
-    purpose: str | None = Field(default=None, pattern="^(SALARY|EXPENSE)$")
+    # v4.8 — TDS on an invoice attachment: the part of the invoice settled by
+    # tax deducted at source rather than by money.
+    tds: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    purpose: str | None = Field(default=None, pattern="^(SALARY|EXPENSE|REFUND)$")
     expense_id: int | None = None
     notes: str | None = Field(default=None, max_length=200)
 
@@ -1093,9 +1148,15 @@ def add_link(
     body: LinkIn,
     ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))
 ):
-    """Attach a customer invoice to a credit, or a vendor invoice or an
-    employee to a debit. With no amount, the smaller of what is left on the
-    transaction and what is open on the invoice is attached."""
+    """Attach a transaction to what it was for.
+
+    Credit: a customer invoice, an employee paying money back, or a loan
+    received from a director. Debit: a vendor invoice, an employee's salary
+    or expense, or a loan repaid to a director.
+
+    With no amount, the smaller of what is left on the transaction and what
+    is open on the invoice is attached. On an invoice, TDS may be given as
+    well: amount plus TDS can never exceed what is open on the invoice."""
     from ..service import invoice_tax, vinv_tax
     t, a = _link_txn(ctx, tid)
 
@@ -1103,16 +1164,20 @@ def add_link(
         raise HTTPException(
             422,
             "A card spend is attached to the vendor invoice it paid. "
-            "Customer invoices and employees are attached on Bank Statements."
+            "Customer invoices, employees and director loans are attached on "
+            "Bank Statements."
         )
     is_credit = t.credit > 0
     remaining = (t.credit or t.debit) - _attached_sum(ctx, txn_id=t.id)
     if remaining <= 0:
         raise HTTPException(409, "The whole of this transaction is already attached. "
                             "Remove an attachment first to change it.")
+    if body.tds and body.link_type not in ("CUST_INV", "VEND_INV"):
+        raise HTTPException(422, "TDS is recorded against an invoice only")
     link = M.StmtTxnLink(tenant_id=ctx.tenant.id, txn_id=t.id, link_type=body.link_type,
                          notes=(body.notes or "").strip() or None, linked_by=ctx.user.name)
     cap = remaining
+    open_amt = None
 
     if body.link_type == "CUST_INV":
         if not is_credit:
@@ -1123,12 +1188,16 @@ def add_link(
             raise HTTPException(404, "No such customer invoice")
         if inv.doc_type != "TAX" or inv.status != "ACTIVE":
             raise HTTPException(422, f"{inv.doc_no} is not an active tax invoice")
-        if _attached_sum(ctx, txn_id=t.id, invoice_id=inv.id) > 0:
+        if ctx.db.execute(select(func.count()).select_from(M.StmtTxnLink).where(
+                M.StmtTxnLink.tenant_id == ctx.tenant.id, M.StmtTxnLink.txn_id == t.id,
+                M.StmtTxnLink.invoice_id == inv.id)).scalar_one():
             raise HTTPException(409, f"{inv.doc_no} is already attached to this transaction")
-        open_amt = invoice_tax(ctx, inv).rounded - _attached_sum(ctx, invoice_id=inv.id)
+        open_amt = _cust_open(ctx, inv)
         if open_amt <= 0:
-            raise HTTPException(409, f"{inv.doc_no} is already fully attached to bank credits")
+            raise HTTPException(409, f"{inv.doc_no} is already fully paid — by bank credits, "
+                                "receipts on Customer Payments or TDS")
         link.invoice_id, cap = inv.id, min(remaining, open_amt)
+        doc_no = inv.doc_no
     elif body.link_type == "VEND_INV":
         if is_credit:
             raise HTTPException(422, "A vendor invoice is attached to money paid out — "
@@ -1136,45 +1205,70 @@ def add_link(
         vi = ctx.get(M.VendorInvoice, body.ref_id)
         if not vi:
             raise HTTPException(404, "No such vendor invoice")
-        if _attached_sum(ctx, txn_id=t.id, vinv_id=vi.id) > 0:
+        if ctx.db.execute(select(func.count()).select_from(M.StmtTxnLink).where(
+                M.StmtTxnLink.tenant_id == ctx.tenant.id, M.StmtTxnLink.txn_id == t.id,
+                M.StmtTxnLink.vinv_id == vi.id)).scalar_one():
             raise HTTPException(409, f"{vi.doc_no} is already attached to this transaction")
-        open_amt = vinv_tax(ctx, vi).rounded - _attached_sum(ctx, vinv_id=vi.id)
+        open_amt = vinv_tax(ctx, vi).rounded - _booked(ctx, vinv_id=vi.id)
         if open_amt <= 0:
             raise HTTPException(
                 409,
-                f"{vi.doc_no} is already fully attached to bank debits or card spends"
+                f"{vi.doc_no} is already fully settled by bank debits, card spends and TDS"
             )
         link.vinv_id, cap = vi.id, min(remaining, open_amt)
-    else:
-        if is_credit:
-            raise HTTPException(422, "Salary and expenses paid to an employee are debits — "
-                                "pick a debit in the statement, not a credit.")
+        doc_no = vi.doc_no
+    elif body.link_type == "EMPLOYEE":
         e = ctx.get(M.Employee, body.ref_id)
         if not e:
             raise HTTPException(404, "No such employee")
         if not e.active:
             raise HTTPException(422, f"{e.first_name} {e.last_name} is marked inactive")
-        if not body.purpose:
-            raise HTTPException(422, "Say whether this is salary or an expense")
-        link.employee_id, link.purpose = e.id, body.purpose
-        if body.purpose == "EXPENSE":
-            if not body.expense_id:
-                raise HTTPException(422, "Pick the expense head this employee expense "
-                                    "belongs to. Heads are kept on the Expenses screen.")
-            h = ctx.get(M.ExpenseHead, body.expense_id)
-            if not h:
-                raise HTTPException(404, "No such expense head")
-            if not h.active:
-                raise HTTPException(422, f"{h.name} is marked inactive")
-            link.expense_id = h.id
+        link.employee_id = e.id
+        if is_credit:
+            # Money received from an employee: an advance or excess paid back.
+            if body.purpose not in (None, "REFUND"):
+                raise HTTPException(422, "Money received from an employee is recorded as "
+                                    "a refund — salary and expenses are paid out as debits.")
+            link.purpose = "REFUND"
+        else:
+            if body.purpose not in ("SALARY", "EXPENSE"):
+                raise HTTPException(422, "Say whether this is salary or an expense")
+            link.purpose = body.purpose
+            if body.purpose == "EXPENSE":
+                if not body.expense_id:
+                    raise HTTPException(422, "Pick the expense head this employee expense "
+                                        "belongs to. Heads are kept on the Expenses screen.")
+                h = ctx.get(M.ExpenseHead, body.expense_id)
+                if not h:
+                    raise HTTPException(404, "No such expense head")
+                if not h.active:
+                    raise HTTPException(422, f"{h.name} is marked inactive")
+                link.expense_id = h.id
+    else:  # DIRECTOR_LOAN — credit: loan received; debit: loan repaid
+        dr = ctx.get(M.Director, body.ref_id)
+        if not dr:
+            raise HTTPException(404, "No such director")
+        if not dr.active:
+            raise HTTPException(422, f"{dr.name} is marked inactive")
+        link.director_id = dr.id
 
     amount = Decimal(str(body.amount)) if body.amount is not None else cap
+    tds = Decimal(str(body.tds)) if body.tds else Decimal("0")
     if amount > remaining:
         raise HTTPException(422, f"Only {remaining:.2f} of this transaction is left to attach")
-    if amount > cap:
-        raise HTTPException(422, f"Only {cap:.2f} is open on that invoice")
+    if open_amt is not None:
+        if amount > open_amt:
+            raise HTTPException(422, f"Only {open_amt:.2f} is open on that invoice")
+        if amount + tds > open_amt + CENT:
+            raise HTTPException(
+                422,
+                f"Amount {amount:.2f} plus TDS {tds:.2f} is more than the "
+                f"{open_amt:.2f} open on {doc_no}")
     link.amount = amount
+    link.tds = tds
     ctx.db.add(link)
+    if link.link_type == "CUST_INV":
+        _post_receipt(ctx, link, t, a)
 
     if a.kind == "CARD" and t.allocation != "COMPANY":
         # Paying a vendor's invoice is spending for the company.
@@ -1184,6 +1278,56 @@ def add_link(
 
     ctx.db.commit()
     return _link_out(ctx, link)
+
+
+class LinkTdsIn(BaseModel):
+    # None: book the whole balance still open on the invoice as TDS.
+    tds: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+
+
+@router.put("/links/{lid}/tds")
+def set_link_tds(
+    lid: int,
+    body: LinkTdsIn,
+    ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))
+):
+    """Set the TDS on an invoice attachment after the fact — for when the
+    last payment on an invoice was attached before it was known that the
+    shortfall was tax deducted at source. With no figure, the balance still
+    open on the invoice is booked as TDS; 0 clears it."""
+    from ..service import invoice_tax, vinv_tax
+    l = ctx.get(M.StmtTxnLink, lid)
+    if not l:
+        raise HTTPException(404, "No such attachment")
+    t = ctx.get(M.StmtTxn, l.txn_id)
+    ctx.require(_perm_for(ctx.get(M.StmtAccount, t.account_id).kind))
+    if l.link_type == "CUST_INV":
+        inv = ctx.get(M.Invoice, l.invoice_id)
+        # what is open, with this link's own TDS put back
+        total, booked, doc_no = _cust_open(ctx, inv), Decimal("0"), inv.doc_no
+    elif l.link_type == "VEND_INV":
+        vi = ctx.get(M.VendorInvoice, l.vinv_id)
+        total, booked, doc_no = vinv_tax(ctx, vi).rounded, _booked(ctx, vinv_id=vi.id), vi.doc_no
+    else:
+        raise HTTPException(422, "TDS is recorded against an invoice only")
+    current = Decimal(str(l.tds or 0))
+    # booked already counts this link's amount and its current TDS
+    room = total - (booked - current)                            # what this link's TDS may be
+    tds = room if body.tds is None else Decimal(str(body.tds))
+    if tds < 0:
+        tds = Decimal("0")
+    if tds > room + CENT:
+        raise HTTPException(422, f"Only {max(room, Decimal('0')):.2f} is left open on {doc_no} "
+                            "to book as TDS")
+    l.tds = tds
+    if l.link_type == "CUST_INV":
+        p = ctx.db.get(M.Payment, l.payment_id) if l.payment_id else None
+        if p:
+            p.tds = tds                 # the receipt carries the same TDS
+        else:
+            _post_receipt(ctx, l, t, ctx.get(M.StmtAccount, t.account_id))
+    ctx.db.commit()
+    return _link_out(ctx, l)
 
 
 @router.delete("/links/{lid}", status_code=204)
@@ -1204,8 +1348,128 @@ def del_link(
         )
     )
 
+    pid = l.payment_id
     ctx.db.delete(l)
+    ctx.db.flush()
+    _drop_receipts(ctx, [pid])          # the invoice goes back to unpaid
     ctx.db.commit()
+
+
+# --------------------------------------------------------------- directors (v4.8)
+
+class DirectorIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    din: str | None = Field(default=None, max_length=8)
+    pan: str | None = Field(default=None, max_length=10)
+    active: bool = True
+
+
+def _director_balance(ctx, director_id, upto=None) -> dict:
+    """Loans received from and repaid to a director through bank attachments."""
+    def _side(col):
+        q = (select(func.coalesce(func.sum(M.StmtTxnLink.amount), 0))
+             .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
+             .where(M.StmtTxnLink.tenant_id == ctx.tenant.id,
+                    M.StmtTxnLink.link_type == "DIRECTOR_LOAN",
+                    M.StmtTxnLink.director_id == director_id, col > 0))
+        if upto:
+            q = q.where(M.StmtTxn.txn_date < upto)
+        return Decimal(str(ctx.db.execute(q).scalar_one()))
+    received, repaid = _side(M.StmtTxn.credit), _side(M.StmtTxn.debit)
+    return {"received": float(received), "repaid": float(repaid),
+            "balance": float(received - repaid)}
+
+
+def _clean_director(body: DirectorIn) -> dict:
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(422, "Give the director's name")
+    din = (body.din or "").strip() or None
+    if din and not re.fullmatch(r"\d{8}", din):
+        raise HTTPException(422, "A DIN is 8 digits")
+    pan = (body.pan or "").strip().upper() or None
+    if pan and not re.fullmatch(r"[A-Z]{5}\d{4}[A-Z]", pan):
+        raise HTTPException(422, "A PAN is 10 characters, like ABCDE1234F")
+    return {"name": name, "din": din, "pan": pan, "active": body.active}
+
+
+@router.get("/directors")
+def directors(ctx: Ctx = Depends(need("bankstmt"))):
+    rows = ctx.db.execute(ctx.scope(select(M.Director), M.Director)
+                          .order_by(M.Director.name)).scalars().all()
+    return [{**_director_out(d), **_director_balance(ctx, d.id)} for d in rows]
+
+
+@router.post("/directors", status_code=201)
+def add_director(body: DirectorIn, ctx: Ctx = Depends(need("bankstmt"))):
+    v = _clean_director(body)
+    dup = ctx.db.execute(ctx.scope(select(M.Director), M.Director)
+                         .where(func.lower(M.Director.name) == v["name"].lower())).scalars().first()
+    if dup:
+        raise HTTPException(409, f"{dup.name} is already on the list of directors")
+    d = M.Director(tenant_id=ctx.tenant.id, **v)
+    ctx.db.add(d)
+    ctx.db.commit()
+    return {**_director_out(d), **_director_balance(ctx, d.id)}
+
+
+@router.put("/directors/{did}")
+def edit_director(did: int, body: DirectorIn, ctx: Ctx = Depends(need("bankstmt"))):
+    d = ctx.get(M.Director, did)
+    if not d:
+        raise HTTPException(404, "No such director")
+    v = _clean_director(body)
+    dup = ctx.db.execute(ctx.scope(select(M.Director), M.Director)
+                         .where(func.lower(M.Director.name) == v["name"].lower(),
+                                M.Director.id != did)).scalars().first()
+    if dup:
+        raise HTTPException(409, f"{dup.name} is already on the list of directors")
+    for k, val in v.items():
+        setattr(d, k, val)
+    ctx.db.commit()
+    return {**_director_out(d), **_director_balance(ctx, d.id)}
+
+
+@router.get("/director-loans")
+def director_loans(period: str | None = None, ctx: Ctx = Depends(need("bankstmt"))):
+    """Loan account of each director: the balance brought forward, what was
+    received and repaid in the month, and the balance owed at month end.
+    With no month, the whole history."""
+    lo = hi = None
+    if period:
+        if not PERIOD_RE.match(period):
+            raise HTTPException(422, "Give the month as YYYY-MM")
+        lo, hi = _month_bounds(period)
+    out, entries = [], []
+    for d in ctx.db.execute(ctx.scope(select(M.Director), M.Director)
+                            .order_by(M.Director.name)).scalars().all():
+        opening = _director_balance(ctx, d.id, upto=lo)["balance"] if lo else 0.0
+        q = (select(M.StmtTxnLink, M.StmtTxn, M.StmtAccount)
+             .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
+             .join(M.StmtAccount, M.StmtAccount.id == M.StmtTxn.account_id)
+             .where(M.StmtTxnLink.tenant_id == ctx.tenant.id,
+                    M.StmtTxnLink.link_type == "DIRECTOR_LOAN",
+                    M.StmtTxnLink.director_id == d.id))
+        if lo:
+            q = q.where(M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi)
+        received = repaid = 0.0
+        for l, t, a in ctx.db.execute(q.order_by(M.StmtTxn.txn_date, M.StmtTxnLink.id)).all():
+            is_in = t.credit > 0
+            amt = float(l.amount)
+            received += amt if is_in else 0
+            repaid += 0 if is_in else amt
+            entries.append({"date": t.txn_date.isoformat(), "director": d.name,
+                            "account": a.label, "descr": t.descr,
+                            "kind": "RECEIVED" if is_in else "REPAID",
+                            "amount": amt, "notes": l.notes})
+        if not (opening or received or repaid) and not d.active:
+            continue
+        out.append({**_director_out(d), "opening": round(opening, 2),
+                    "received": round(received, 2), "repaid": round(repaid, 2),
+                    "closing": round(opening + received - repaid, 2)})
+    entries.sort(key=lambda e: e["date"])
+    return {"period": period, "directors": out, "entries": entries,
+            "total_owed": round(sum(r["closing"] for r in out), 2)}
 
 # --------------------------------------------------------------- reconciliation
 
@@ -1323,7 +1587,8 @@ def expense_ledger(period: str = Query(...), ctx: Ctx = Depends(
     bank_debits = sum(b["debits"] for b in bank_rows)
 
     # Salary and expenses attached to employees on bank debits this month.
-    emp = {"SALARY": 0.0, "EXPENSE": 0.0}
+    emp = {"SALARY": 0.0, "EXPENSE": 0.0, "REFUND": 0.0}
+    loans = {"received": 0.0, "repaid": 0.0}
     emp_heads = []
     if "bankstmt" in ctx.perms:
         for purpose, amt in ctx.db.execute(
@@ -1334,6 +1599,14 @@ def expense_ledger(period: str = Query(...), ctx: Ctx = Depends(
                        M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi)
                 .group_by(M.StmtTxnLink.purpose)).all():
             emp[purpose] = float(amt or 0)
+        for credit_side, amt in ctx.db.execute(
+                select(M.StmtTxn.credit > 0, func.sum(M.StmtTxnLink.amount))
+                .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
+                .where(M.StmtTxnLink.tenant_id == ctx.tenant.id,
+                       M.StmtTxnLink.link_type == "DIRECTOR_LOAN",
+                       M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi)
+                .group_by(M.StmtTxn.credit > 0)).all():
+            loans["received" if credit_side else "repaid"] = float(amt or 0)
         by_head = ctx.db.execute(
             select(M.ExpenseHead.exp_code, M.ExpenseHead.name, func.sum(M.StmtTxnLink.amount))
             .join(M.StmtTxnLink, M.StmtTxnLink.expense_id == M.ExpenseHead.id)
@@ -1355,6 +1628,10 @@ def expense_ledger(period: str = Query(...), ctx: Ctx = Depends(
         "employee_salary": emp["SALARY"],
         "employee_expense": emp["EXPENSE"],
         "employee_expense_by_head": emp_heads,
+        # v4.8 — money employees paid back, and director loans in and out
+        "employee_refunds": emp["REFUND"],
+        "director_loans_received": loans["received"],
+        "director_loans_repaid": loans["repaid"],
         "expense_recognised": inv_total + card_company + emp["SALARY"] + emp["EXPENSE"],
         "cash_out": bank_debits,
         # Payments recorded in the books that the bank statement should contain.

@@ -97,9 +97,81 @@ def gst_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
 
 
 # ======================================================== TDS register
+def _link_tds(ctx, period):
+    """TDS booked on bank statement attachments (v4.8).
+
+    When an invoice is settled from the bank statement, the difference
+    between the invoice and the money that moved is the tax deducted at
+    source. Returns (customer rows, vendor rows), dated by the bank
+    transaction that settled the invoice."""
+    cust, vend = [], []
+    q = (select(M.StmtTxnLink, M.StmtTxn, M.StmtAccount)
+         .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
+         .join(M.StmtAccount, M.StmtAccount.id == M.StmtTxn.account_id)
+         .where(M.StmtTxnLink.tenant_id == ctx.tenant.id, M.StmtTxnLink.tds > 0)
+         .order_by(M.StmtTxn.txn_date, M.StmtTxnLink.id))
+    for l, t, a in ctx.db.execute(q).all():
+        if not in_period(ctx.tenant, t.txn_date, period):
+            continue
+        tds = Decimal(str(l.tds))
+        amt = Decimal(str(l.amount))
+        if l.link_type == "CUST_INV" and l.invoice_id:
+            if l.payment_id:
+                continue    # v4.9: its receipt carries the TDS, counted from receipts
+            inv = ctx.db.get(M.Invoice, l.invoice_id)
+            if not inv:
+                continue
+            tx, c = invoice_tax(ctx, inv), inv.customer
+            rate = (tds / tx.taxable * 100) if tx.taxable else D0
+            cust.append({"date": t.txn_date, "customer": c.name, "customer_code": c.code,
+                         "pan": c.pan, "invoice": inv.doc_no, "invoice_date": inv.doc_date,
+                         "taxable": float(tx.taxable), "invoice_total": float(tx.rounded),
+                         "received": float(amt), "tds": float(tds),
+                         "implied_rate_pct": float(q2(rate)),
+                         "quarter": _quarter(t.txn_date), "reversal": False,
+                         "source": "Bank statement", "bank_account": a.label,
+                         "bank_ref": t.descr})
+        elif l.link_type == "VEND_INV" and l.vinv_id:
+            vi = ctx.db.get(M.VendorInvoice, l.vinv_id)
+            if not vi:
+                continue
+            tx, v = vinv_tax(ctx, vi), vi.vendor
+            rate = (tds / tx.taxable * 100) if tx.taxable else D0
+            vend.append({"pay_date": t.txn_date, "vendor": v.name, "vendor_code": v.code,
+                         "pan": v.pan, "gstin": vi.gstin, "msme": v.msme_registered,
+                         "msme_number": v.msme_number, "section": v.tds_section or "",
+                         "rate": float(v.tds_rate or 0),
+                         "vendor_invoice": vi.doc_no, "invoice_date": vi.doc_date,
+                         "invoice_taxable": float(tx.taxable),
+                         "invoice_total": float(tx.rounded),
+                         "gross": float(amt + tds), "tds": float(tds), "paid": float(amt),
+                         "mode": "Bank", "bank_ref": t.descr,
+                         "implied_rate_pct": float(q2(rate)),
+                         "source": "Bank statement", "bank_account": a.label})
+    return cust, vend
+
+
+def _bank_receipts(ctx) -> dict:
+    """{payment id: bank account label} for receipts posted from Bank
+    Statements (v4.9), so registers can say where each receipt came from."""
+    rows = ctx.db.execute(
+        select(M.StmtTxnLink.payment_id, M.StmtAccount.label)
+        .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
+        .join(M.StmtAccount, M.StmtAccount.id == M.StmtTxn.account_id)
+        .where(M.StmtTxnLink.tenant_id == ctx.tenant.id,
+               M.StmtTxnLink.payment_id.is_not(None))).all()
+    return {pid: label for pid, label in rows}
+
+
 @router.get("/tds")
 def tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers"))):
-    """Tax deducted at source when paying vendors, taken from the payment entries."""
+    """Tax deducted at source, both ways.
+
+    rows      — what we deducted when paying vendors: from payment entries
+                and from vendor invoices settled on the bank statement.
+    customers — what customers deducted when paying us: from receipts and
+                from customer invoices settled on the bank statement, where
+                the invoice amount less the money collected is the TDS."""
     out = []
     for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
                             .where(M.Payment.pay_type == "PAY")
@@ -122,10 +194,38 @@ def tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
                     "invoice_total": float(t.rounded),
                     "gross": float(gross), "tds": float(tds),
                     "paid": float(p.amount), "mode": p.mode, "bank_ref": p.bank_ref,
-                    "implied_rate_pct": float(q2(rate))})
+                    "implied_rate_pct": float(q2(rate)), "source": "Payment entry"})
+    link_cust, link_vend = _link_tds(ctx, period)
+    out = sorted(out + link_vend, key=lambda r: r["pay_date"])
+    # customers: receipts with TDS on the Money screens, plus bank attachments
+    cust = []
+    bank = _bank_receipts(ctx)
+    for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
+                            .where(M.Payment.pay_type == "REC", M.Payment.tds != 0)
+                            .order_by(M.Payment.pay_date)).scalars():
+        if not in_period(ctx.tenant, p.pay_date, period) or not p.invoice_id:
+            continue
+        inv = ctx.db.get(M.Invoice, p.invoice_id)
+        if not inv:
+            continue
+        tx, c = invoice_tax(ctx, inv), inv.customer
+        tds = Decimal(str(p.tds))
+        rate = (tds / tx.taxable * 100) if tx.taxable else D0
+        cust.append({"date": p.pay_date, "customer": c.name, "customer_code": c.code,
+                     "pan": c.pan, "invoice": inv.doc_no, "invoice_date": inv.doc_date,
+                     "taxable": float(tx.taxable), "invoice_total": float(tx.rounded),
+                     "received": float(p.amount), "tds": float(tds),
+                     "implied_rate_pct": float(q2(rate)), "quarter": _quarter(p.pay_date),
+                     "reversal": bool(p.reverses_id),
+                     "source": "Bank statement" if p.id in bank else "Receipt entry",
+                     "bank_account": bank.get(p.id) or p.bank_acct, "bank_ref": p.bank_ref})
+    cust = sorted(cust + link_cust, key=lambda r: r["date"])
     total = float(q2(sum((Decimal(str(r["tds"])) for r in out), D0)))
+    ctotal = float(q2(sum((Decimal(str(r["tds"])) for r in cust), D0)))
     missing_pan = [r["vendor"] for r in out if not r["pan"]]
     return {"period": period, "rows": out, "total_tds": total,
+            "customers": cust, "customer_total_tds": ctotal,
+            "customers_without_pan": sorted({r["customer"] for r in cust if not r["pan"]}),
             "vendors_without_pan": sorted(set(missing_pan)),
             "note": ("Rate shown is the deduction as a percentage of the taxable value, "
                      "worked back from what was entered. It is not a section rate and does "
@@ -266,7 +366,8 @@ def tds_report(period: str | None = None, ctx: Ctx = Depends(need("registers")))
             vrows.append({"pay_date": p.pay_date, "vendor": v.name, "vendor_code": v.code, "pan": v.pan,
                           "section": v.tds_section or "", "rate": float(v.tds_rate or 0),
                           "invoice": vi.doc_no, "invoice_date": vi.doc_date, "taxable": float(t.taxable),
-                          "tds": float(tds), "paid": float(p.amount), "batch_ref": p.batch_ref,
+                          "tds": float(tds), "paid": float(p.amount),
+                          "batch_ref": getattr(p, "batch_ref", None) or p.bank_ref,
                           "month": str(p.pay_date)[:7]})
         elif p.pay_type == "REC" and p.invoice_id:
             inv = ctx.db.get(M.Invoice, p.invoice_id)
@@ -276,6 +377,16 @@ def tds_report(period: str | None = None, ctx: Ctx = Depends(need("registers")))
                           "invoice": inv.doc_no, "invoice_date": inv.doc_date, "taxable": float(t.taxable),
                           "invoice_total": float(t.rounded), "received": float(p.amount), "tds": float(tds),
                           "quarter": _quarter(p.pay_date), "reversal": bool(p.reverses_id)})
+    # v4.8 — invoices settled on the bank statement with TDS booked
+    link_cust, link_vend = _link_tds(ctx, period)
+    crows = sorted(crows + link_cust, key=lambda r: r["date"])
+    vrows = sorted(vrows + [{"pay_date": r["pay_date"], "vendor": r["vendor"],
+                             "vendor_code": r["vendor_code"], "pan": r["pan"],
+                             "section": r["section"], "rate": r["rate"],
+                             "invoice": r["vendor_invoice"], "invoice_date": r["invoice_date"],
+                             "taxable": r["invoice_taxable"], "tds": r["tds"], "paid": r["paid"],
+                             "batch_ref": r["bank_ref"], "month": str(r["pay_date"])[:7]}
+                            for r in link_vend], key=lambda r: r["pay_date"])
     # vendors: by month (deposit) and by section
     months = {}
     for r in vrows:
@@ -301,7 +412,14 @@ def tds_report(period: str | None = None, ctx: Ctx = Depends(need("registers")))
         expected = (t.taxable * rate / 100).quantize(Decimal("1"))
         done = Decimal(str(ctx.db.execute(select(func.coalesce(func.sum(M.Payment.tds), 0)).where(
             M.Payment.tenant_id == ctx.tenant.id, M.Payment.vinv_id == vi.id)).scalar_one()))
-        if expected - done > Decimal("0.5") and t.rounded - settled(ctx, vinv_id=vi.id) > Decimal("0.5"):
+        linked_amt, linked_tds = (Decimal(str(x)) for x in ctx.db.execute(
+            select(func.coalesce(func.sum(M.StmtTxnLink.amount), 0),
+                   func.coalesce(func.sum(M.StmtTxnLink.tds), 0)).where(
+                M.StmtTxnLink.tenant_id == ctx.tenant.id,
+                M.StmtTxnLink.vinv_id == vi.id)).one())
+        done += linked_tds
+        unpaid = t.rounded - settled(ctx, vinv_id=vi.id) - linked_amt - linked_tds
+        if expected - done > Decimal("0.5") and unpaid > Decimal("0.5"):
             pending.append({"invoice": vi.doc_no, "invoice_date": vi.doc_date, "vendor": vi.vendor.name,
                             "pan": vi.vendor.pan, "section": vi.vendor.tds_section or "",
                             "rate": float(rate), "taxable": float(t.taxable),
@@ -381,7 +499,23 @@ def register_csv(
             rows.append([gd(r["pay_date"]), r["vendor_code"], r["vendor"], r["pan"] or "",
                 "Yes" if r["msme"] else "No", r["msme_number"] or "", r["vendor_invoice"],
                 gd(r["invoice_date"]), r["invoice_taxable"], r["gross"], r["tds"],
-                r["paid"], r["implied_rate_pct"], r["mode"], r["bank_ref"] or ""])
+                r["paid"], r["implied_rate_pct"], r["mode"], r["bank_ref"] or "",
+                r.get("source", "")])
+        rows[0].append("Source")
+        rows.append(["Total TDS deducted from vendors", "", "", "", "", "", "", "", "", "",
+                     d["total_tds"], "", "", "", "", ""])
+        rows.append([])
+        rows.append(["TDS deducted by customers"])
+        rows.append(["Date","Customer code","Customer","PAN","Invoice","Invoice date",
+                     "Taxable","Invoice value","Received","TDS","Implied rate %","Quarter",
+                     "Source","Bank account","Reference"])
+        for r in d["customers"]:
+            rows.append([gd(r["date"]), r["customer_code"], r["customer"], r["pan"] or "",
+                         r["invoice"], gd(r["invoice_date"]), r["taxable"], r["invoice_total"],
+                         r["received"], r["tds"], r["implied_rate_pct"], r["quarter"],
+                         r["source"], r["bank_account"] or "", r["bank_ref"] or ""])
+        rows.append(["Total TDS deducted by customers", "", "", "", "", "", "", "", "",
+                     d["customer_total_tds"], "", "", "", "", ""])
     elif which == "gst-sales":
         d = gst_sales(period, ctx)
         rows = [["Invoice","Date","Customer code","Customer","GSTIN","PAN","B2B/B2C","Place of supply",

@@ -42,6 +42,7 @@ useEffect(() => {
 }, [aid])
   const txns = useLoad(() => aid ? api.stmtTxns(aid, period) : [], [aid, period])
   const ledger = useLoad(() => api.expenseLedger(period), [period])
+  const loans = useLoad(() => api.directorLoans(period), [period])
 
   async function addAccount(e) {
     e.preventDefault()
@@ -65,6 +66,7 @@ useEffect(() => {
       loadUploads()
       txns.reload()
       ledger.reload()
+      loans.reload()
     } catch (x) { showFlash(x.message, 'bad') }
     finally { setBusy(false) }
   }
@@ -79,6 +81,7 @@ useEffect(() => {
     loadUploads()
     txns.reload()
     ledger.reload()
+    loans.reload()
   } catch (x) {
     showFlash(x.message, 'bad')
   }
@@ -152,6 +155,7 @@ useEffect(() => {
       accounts.reload()
       txns.reload()
       ledger.reload()
+      loans.reload()
     } catch (x) {
       showFlash(x.message, 'bad')
     } finally {
@@ -160,9 +164,25 @@ useEffect(() => {
   }
 
   async function removeLink(l) {
-    if (!window.confirm(`Remove ${l.ref} (${inr(l.amount)}) from this transaction?`)) return
-    try { await api.delTxnLink(l.id); txns.reload(); ledger.reload() }
+    const what = l.link_type === 'DIRECTOR_LOAN' ? `the loan entry for ${l.party}` : l.ref
+    const tds = l.tds > 0 ? ` and its TDS of ${inr(l.tds)}` : ''
+    const rec = l.payment_id ? '\n\nThe receipt it recorded on Customer Payments is removed too, ' +
+      'so the invoice shows as unpaid (or part paid) again.' : ''
+    if (!window.confirm(`Remove ${what} (${inr(l.amount)})${tds} from this transaction?${rec}`)) return
+    try { await api.delTxnLink(l.id); txns.reload(); ledger.reload(); loans.reload() }
     catch (x) { showFlash(x.message, 'bad') }
+  }
+
+  // Book what is still open on an invoice as TDS, after the fact.
+  async function bookTds(l) {
+    if (!window.confirm(`Book the ${inr(l.invoice_open)} still open on ${l.ref} as TDS ` +
+      `${l.link_type === 'CUST_INV' ? 'deducted by the customer' : 'we deducted'}? ` +
+      'It will show in the TDS register.')) return
+    try {
+      await api.setLinkTds(l.id, null)
+      showFlash(`${inr(l.invoice_open)} booked as TDS on ${l.ref}.`)
+      txns.reload()
+    } catch (x) { showFlash(x.message, 'bad') }
   }
 
   if (accounts.loading) return <Loading />
@@ -180,8 +200,13 @@ useEffect(() => {
     <Alert kind="ok"><b>Every transaction is saved, once.</b> Upload the account's monthly
       statement (the bank's PDF, or its CSV export) and each transaction in it is stored.
       Uploading the same statement again cannot double anything — rows already on record are
-      recognised and skipped. Then attach each credit to the customer invoice it settles, and
-      each debit to the vendor invoice it pays or the employee it was paid to.</Alert>
+      recognised and skipped. Then attach each credit to the customer invoice it settles, an
+      employee paying money back, or a loan from a director — and each debit to the vendor
+      invoice it pays, the employee it was paid to, or a director whose loan it repays.
+      An invoice can be settled across several transactions; on the last one, whatever the
+      invoice is still short is booked as <b>TDS</b> and appears in the TDS register. Attaching a
+      customer invoice also records the receipt on Customer Payments, so the invoice is marked
+      paid — no separate entry is needed.</Alert>
 
     {!banks.length && <Panel title="Add the company's bank account first">
       <form onSubmit={addAccount}><div className="row">
@@ -276,23 +301,27 @@ useEffect(() => {
                 <td>{gd(t.date)}</td><td>{t.descr}</td>
                 <td className="r mono">{t.debit ? inr(t.debit) : ''}</td>
                 <td className="r mono">{t.credit ? inr(t.credit) : ''}</td>
-                <td><LinkChips links={t.links} onRemove={removeLink} />
+                <td><LinkChips links={t.links} onRemove={removeLink} onTds={bookTds} />
                   {t.links.length > 0 && t.unattached > 0.005 &&
                     <Tag kind="warn">{inr(t.unattached)} not attached</Tag>}</td>
                 <td className="r">{(t.unattached > 0.005 || open === t.id) &&
                   <button type="button" className="btn btn-sm"
                     onClick={() => setOpen(open === t.id ? null : t.id)}>
-                    {open === t.id ? 'Close' : t.credit ? 'Attach invoice' : 'Attach'}</button>}</td>
+                    {open === t.id ? 'Close' : 'Attach'}</button>}</td>
               </tr>
               {open === t.id && <tr className="row-attach"><td colSpan={6}>
                 <TxnAttach txn={t} onClose={() => setOpen(null)}
                   onError={m => showFlash(m, 'bad')}
-                  onDone={() => { showFlash('Attached.'); setOpen(null); txns.reload(); ledger.reload() }} />
+                  onDone={k => { showFlash(k === 'CUST_INV'
+                    ? 'Attached — the receipt is recorded on Customer Payments and the invoice is marked paid (or part paid).'
+                    : 'Attached.'); setOpen(null); txns.reload(); ledger.reload(); loans.reload() }} />
               </td></tr>}
             </Fragment>)}
           </Table>}
       </Panel>
     </>}
+
+    {banks.length > 0 && <DirectorLoans loans={loans} period={period} />}
 
     <Panel title={`Monthly expense ledger — tally for ${period}`}>
       {ledger.loading ? <Loading /> : ledger.error ? <ErrorBox>{ledger.error}</ErrorBox> : L && <>
@@ -318,10 +347,17 @@ useEffect(() => {
             <td style={{ paddingLeft: 26, color: 'var(--muted)' }}>{h.exp_code} {h.name}</td>
             <td className="r" /><td className="r mono" style={{ color: 'var(--muted)' }}>
               {inr(h.amount)}</td><td /></tr>)}
+          {L.employee_refunds > 0 && <tr><td>Received back from employees (attached bank credits)</td>
+            <td className="r" /><td className="r mono">{inr(L.employee_refunds)}</td>
+            <td className="fine">not netted off above</td></tr>}
           <tr style={{ fontWeight: 600 }}>
             <td>Expense recognised this month (invoices + company card spend + employees)</td>
             <td className="r" /><td className="r mono">{inr(L.expense_recognised)}</td><td /></tr>
         </Table>
+        {(L.director_loans_received > 0 || L.director_loans_repaid > 0) &&
+          <div className="fine" style={{ marginTop: 8 }}>Director loans this month are not
+            expenses: {inr(L.director_loans_received)} received, {inr(L.director_loans_repaid)} repaid.
+            See the loan account above.</div>}
         <div style={{ marginTop: 10 }}>
           {Math.abs(L.payments_vs_bank_gap) > 0.5
             ? <Alert kind="warn">Vendor payments recorded in the books differ from the bank
@@ -338,4 +374,39 @@ useEffect(() => {
       </>}
     </Panel>
   </>)
+}
+
+/** Each director's loan account for the month: brought forward, received,
+ *  repaid and owed at month end, from bank transactions attached to them. */
+function DirectorLoans({ loans, period }) {
+  if (loans.loading && !loans.data) return null
+  if (loans.error) return <ErrorBox>{loans.error}</ErrorBox>
+  const D = loans.data
+  if (!D || (!D.directors.length && !D.entries.length)) return null
+  return (
+    <Panel title={`Loans from directors — ${period}`}
+      right={<span className="fine">Owed at month end {money(D.total_owed)}</span>} bodyless>
+      <Table head={['Director', 'DIN', { label: 'Brought forward', align: 'r' },
+        { label: 'Received', align: 'r' }, { label: 'Repaid', align: 'r' },
+        { label: 'Owed at month end', align: 'r' }]}
+        empty="No director loans yet.">
+        {D.directors.map(d => <tr key={d.id}>
+          <td>{d.name}{!d.active && <> <Tag>inactive</Tag></>}</td>
+          <td className="mono">{d.din || '—'}</td>
+          <td className="r mono">{inr(d.opening)}</td>
+          <td className="r mono">{d.received ? inr(d.received) : ''}</td>
+          <td className="r mono">{d.repaid ? inr(d.repaid) : ''}</td>
+          <td className="r mono"><b>{inr(d.closing)}</b></td>
+        </tr>)}
+      </Table>
+      {D.entries.length > 0 && <Table head={['Date', 'Director', 'Bank account', 'Description',
+        '', { label: 'Amount', align: 'r' }]}>
+        {D.entries.map((e, i) => <tr key={i}>
+          <td>{gd(e.date)}</td><td>{e.director}</td><td>{e.account}</td>
+          <td>{e.descr}{e.notes && <div className="fine">{e.notes}</div>}</td>
+          <td>{e.kind === 'RECEIVED' ? <Tag kind="ok">received</Tag> : <Tag>repaid</Tag>}</td>
+          <td className="r mono">{inr(e.amount)}</td>
+        </tr>)}
+      </Table>}
+    </Panel>)
 }

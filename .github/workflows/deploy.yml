@@ -162,6 +162,36 @@ jobs:
 
           echo "v4.6 migration applied successfully."
 
+          echo ""
+          echo "======================================"
+          echo "5C. Applying v4.8 bank links, director loans and TDS migration"
+          echo "======================================"
+
+          MIGRATION_FILE="$RELEASE_DIR/db/20_v48_bank_links_tds_directors.sql"
+
+          test -s "$MIGRATION_FILE"
+
+          docker compose exec -T db \
+            sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" aequm_billing' \
+            < "$MIGRATION_FILE"
+
+          echo "v4.8 migration applied successfully."
+
+          echo ""
+          echo "======================================"
+          echo "5D. Applying v4.9 bank receipts migration"
+          echo "======================================"
+
+          MIGRATION_FILE="$RELEASE_DIR/db/21_v49_bank_receipts.sql"
+
+          test -s "$MIGRATION_FILE"
+
+          docker compose exec -T db \
+            sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" aequm_billing' \
+            < "$MIGRATION_FILE"
+
+          echo "v4.9 migration applied successfully."
+
 
           echo "======================================"
 

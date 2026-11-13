@@ -90,12 +90,15 @@ export default function Receipts() {
               ? <Tag kind="bad">Reversal</Tag> : p.mode}</td>
             <td className="mono fine">{p.bank_ref || '—'}</td>
             <td className="fine">{p.bank_acct || '—'}</td>
-            <td className="r mono"><b>{inr(p.amount)}</b></td>
+            <td className="r mono"><b>{inr(p.amount)}</b>
+              {p.tds > 0 && <div className="fine">+ TDS {inr(p.tds)}</div>}</td>
             <td className="c">{!p.reverses_id && <PrintButtons kind="receipts" id={p.id} variant={variant}
               onError={m => showFlash(m, 'bad')} />}</td>
-            <td className="r"><button className="rm" onClick={async () => {
+            <td className="r">{p.from_bank
+              ? <span title="Posted from Bank Statements. Remove the invoice from its bank transaction to undo it."><Tag>bank</Tag></span>
+              : <button className="rm" onClick={async () => {
               try { await api.delPayment(p.id); list.reload(); invoices.reload(); outstanding.reload() }
-              catch (x) { showFlash(x.message, 'bad') } }}>×</button></td>
+              catch (x) { showFlash(x.message, 'bad') } }}>×</button>}</td>
           </tr>))}
       </Table>
     </Panel>

@@ -788,12 +788,36 @@ class ExpenseHead(Base):
     created_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
 
 
+class Director(Base):
+    """A director who lends money to the company (v4.8). A bank credit can be
+    attached to a director as a loan received, and a bank debit as a loan
+    repaid, so the balance owed to each director is always known."""
+    __tablename__="directors"
+    __table_args__=(UniqueConstraint("tenant_id","name",name="uq_dir_name"),)
+
+    id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
+    tenant_id: Mapped[int]=mapped_column(
+        ForeignKey("tenants.id",ondelete="CASCADE")
+    )
+    name: Mapped[str]=mapped_column(String(120))
+    din: Mapped[str|None]=mapped_column(String(8),nullable=True)
+    pan: Mapped[str|None]=mapped_column(String(10),nullable=True)
+    active: Mapped[bool]=mapped_column(Boolean,default=True)
+    created_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())
+
+
 class StmtTxnLink(Base):
     """What a bank transaction is for (v4.2).
 
-    A credit can carry one or more customer invoices it settles; a debit can
-    carry vendor invoices it pays, or an employee's salary or expense. The
-    amounts attached to one transaction never exceed the transaction itself.
+    A credit can carry one or more customer invoices it settles, money an
+    employee paid back, or a loan received from a director; a debit can carry
+    vendor invoices it pays, an employee's salary or expense, or a loan
+    repaid to a director. The amounts attached to one transaction never
+    exceed the transaction itself.
+
+    v4.8 — an invoice attachment can also carry TDS: the part of the invoice
+    that was not paid because tax was deducted at source. Amount plus TDS
+    across all attachments never exceeds the invoice.
     """
     __tablename__="stmt_txn_links"
 
@@ -805,7 +829,7 @@ class StmtTxnLink(Base):
         ForeignKey("stmt_txns.id",ondelete="CASCADE")
     )
     link_type: Mapped[str]=mapped_column(
-        Enum("CUST_INV","VEND_INV","EMPLOYEE",name="sltype")
+        Enum("CUST_INV","VEND_INV","EMPLOYEE","DIRECTOR_LOAN",name="sltype")
     )
     invoice_id: Mapped[int|None]=mapped_column(
         ForeignKey("invoices.id",ondelete="CASCADE"),nullable=True
@@ -817,13 +841,24 @@ class StmtTxnLink(Base):
         ForeignKey("employees.id"),nullable=True
     )
     purpose: Mapped[str|None]=mapped_column(
-        Enum("SALARY","EXPENSE",name="slpurpose"),nullable=True
+        Enum("SALARY","EXPENSE","REFUND",name="slpurpose"),nullable=True
+    )
+    # v4.8 — a loan received from (credit) or repaid to (debit) a director
+    director_id: Mapped[int|None]=mapped_column(
+        ForeignKey("directors.id"),nullable=True
     )
     # v4.3 — the expense head an employee expense is booked to
     expense_id: Mapped[int|None]=mapped_column(
         ForeignKey("expense_heads.id"),nullable=True
     )
     amount: Mapped[Decimal]=mapped_column(Numeric(14,2))
+    # v4.8 — TDS deducted on an invoice attachment (not money that moved)
+    tds: Mapped[Decimal]=mapped_column(Numeric(14,2),default=0)
+    # v4.9 — the receipt this attachment posted on Customer Payments, so the
+    # invoice shows as paid. Removed with the attachment.
+    payment_id: Mapped[int|None]=mapped_column(
+        ForeignKey("payments.id",ondelete="SET NULL"),nullable=True
+    )
     notes: Mapped[str|None]=mapped_column(String(200),nullable=True)
     linked_by: Mapped[str|None]=mapped_column(String(120),nullable=True)
     linked_at: Mapped[datetime]=mapped_column(DateTime,server_default=func.now())

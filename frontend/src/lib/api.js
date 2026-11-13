@@ -336,6 +336,17 @@ export function makeApi(token, tenantId) {
       body: b
     }),
     delTxnLink: (id) => call(`/statements/links/${id}`, { method: 'DELETE' }),
+    // v4.8 — TDS on an invoice attachment; tds null books the invoice balance
+    setLinkTds: (id, tds) => call(`/statements/links/${id}/tds`, {
+      method: 'PUT',
+      body: tds == null ? {} : { tds }
+    }),
+    // v4.8 — directors who lend money to the company
+    directors: () => call('/statements/directors'),
+    addDirector: (b) => call('/statements/directors', { method: 'POST', body: b }),
+    editDirector: (id, b) => call(`/statements/directors/${id}`, { method: 'PUT', body: b }),
+    directorLoans: (period) =>
+      call('/statements/director-loans' + (period ? `?period=${encodeURIComponent(period)}` : '')),
 
     // Supporting documents for a bank/card statement transaction
     stmtDocuments: (txnId) =>

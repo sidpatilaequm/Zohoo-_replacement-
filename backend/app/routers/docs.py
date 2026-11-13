@@ -943,6 +943,10 @@ def add_vinv(body: S.VendorInvoiceIn, ctx: Ctx = Depends(need("vinv"))):
 # ============================================================== payments
 def _pay_rows(ctx, kind):
     out = []
+    from_bank = {pid for (pid,) in ctx.db.execute(
+        select(M.StmtTxnLink.payment_id).where(
+            M.StmtTxnLink.tenant_id == ctx.tenant.id,
+            M.StmtTxnLink.payment_id.is_not(None))).all()}
     for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
                             .where(M.Payment.pay_type == kind)
                             .order_by(M.Payment.pay_date.desc())).scalars():
@@ -956,7 +960,7 @@ def _pay_rows(ctx, kind):
                     "reverses_id": p.reverses_id,
                     "amount": float(p.amount), "tds": float(p.tds), "mode": p.mode,
                     "bank_ref": p.bank_ref, "bank_acct": p.bank_acct,
-                    "narration": p.narration})
+                    "narration": p.narration, "from_bank": p.id in from_bank})
     return out
 
 
@@ -1010,5 +1014,13 @@ def del_payment(pid: int, ctx: Ctx = Depends(need("crec"))):
     p = ctx.get(M.Payment, pid)
     if not p:
         raise HTTPException(404, "No such entry")
+    # v4.9 — a receipt posted by attaching an invoice on Bank Statements goes
+    # with that attachment; deleting it here would leave the two out of step.
+    if ctx.db.execute(select(M.StmtTxnLink.id).where(
+            M.StmtTxnLink.tenant_id == ctx.tenant.id,
+            M.StmtTxnLink.payment_id == p.id)).first():
+        raise HTTPException(
+            409, "This receipt was posted from the bank statement. Remove the invoice "
+                 "from its transaction on Bank Statements and the receipt goes with it.")
     ctx.db.delete(p)
     ctx.db.commit()
