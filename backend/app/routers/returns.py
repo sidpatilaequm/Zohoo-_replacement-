@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from .. import models as M
-from ..deps import Ctx, need, need_any
+from ..deps import Ctx, current, need, need_any
 from ..service import invoice_tax, vinv_tax, settled, live_invoices
 from ..tax import q2
 from ..fy import in_period
@@ -43,27 +43,20 @@ def periods(ctx: Ctx = Depends(need_any("gstr", "registers", "reports"))):
 
 
 @router.get("/financial-years")
-def financial_years(ctx: Ctx = Depends(need_any("gstr", "registers", "reports"))):
-    years = set()
-
-    invoices = ctx.db.execute(
-        ctx.scope(select(M.Invoice), M.Invoice)
-    ).scalars()
-
-    vendor_invoices = ctx.db.execute(
-        ctx.scope(select(M.VendorInvoice), M.VendorInvoice)
-    ).scalars()
-
-    for doc in list(invoices) + list(vendor_invoices):
-        if doc.doc_date:
-            y = doc.doc_date.year
-            m = doc.doc_date.month
-            years.add(
-                f"{y}-{str(y + 1)[-2:]}" if m >= 4
-                else f"{y - 1}-{str(y)[-2:]}"
-            )
-
-    return sorted(years, reverse=True)
+def financial_years(ctx: Ctx = Depends(current)):
+    """Financial years with documents, newest first, always including the
+    current one (v5.0). Each is {label, current, start, end}, following the
+    company's own year start (Company profile; 1 April by default). Open to
+    every signed-in user: every screen defaults to the current year."""
+    from ..fy import current_fy, fy_bounds, fy_labels_for
+    dates = [d for (d,) in ctx.db.execute(ctx.scope(select(M.Invoice.doc_date), M.Invoice))]
+    dates += [d for (d,) in ctx.db.execute(ctx.scope(select(M.VendorInvoice.doc_date), M.VendorInvoice))]
+    cur = current_fy(ctx.tenant)
+    out = []
+    for label in fy_labels_for(ctx.tenant, dates):
+        lo, hi = fy_bounds(ctx.tenant, label)
+        out.append({"label": label, "current": label == cur, "start": lo.isoformat(), "end": hi.isoformat()})
+    return out
 
 
 @router.get("/gstr1")

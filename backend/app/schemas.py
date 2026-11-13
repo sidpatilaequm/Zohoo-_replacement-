@@ -341,7 +341,8 @@ class PaymentIn(BaseModel):
     invoice_id: int | None = None
     vinv_id: int | None = None
     amount: Decimal = Field(gt=0)
-    tds: Decimal = Decimal("0")
+    tds: Decimal = Field(default=Decimal("0"), ge=0)
+    gst_tds: Decimal = Field(default=Decimal("0"), ge=0)   # v5.0 GST withheld
     mode: str = "NEFT"
     bank_ref: str | None = None
     bank_acct: str | None = None

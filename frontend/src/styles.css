@@ -271,3 +271,21 @@ tr.sr-docs-total td{font-weight:600;border-top:1.5px solid var(--line2)}
 .f label.check{display:flex;align-items:center;gap:6px;padding-top:7px;margin:0;
   font-size:13px;letter-spacing:0;text-transform:none;color:inherit;font-weight:400}
 .f label.check input{width:auto;margin:0}
+
+/* v5.0 — invoice reconciliation on the bank statement */
+.inv-sum{display:flex;flex-wrap:wrap;gap:6px 18px;padding:8px 10px;margin:4px 0 8px;border:1px solid var(--line);
+  border-radius:7px;background:var(--paper);font-size:12.5px}
+.inv-sum b{font-family:var(--mono);font-weight:600}
+.inv-sum .k{color:var(--muted);margin-right:5px}
+.short{border:1px solid var(--amber-line);background:var(--amber-soft);color:var(--amber);border-radius:7px;
+  padding:8px 10px;margin:6px 0}
+.short.ok{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-dk)}
+.short.bad{border-color:var(--red-line);background:var(--red-soft);color:var(--red)}
+.qf{display:inline-flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+.qf button{font-size:11px;padding:1px 7px;border:1px solid var(--line2);border-radius:10px;background:#fff;cursor:pointer}
+.qf button:hover{border-color:var(--accent)}
+.paylist{width:100%;border-collapse:collapse;font-size:12px;margin:4px 0 8px}
+.paylist td,.paylist th{padding:3px 6px;border-bottom:1px solid var(--line);text-align:left}
+.paylist .r{text-align:right;font-family:var(--mono)}
+.chip.govt{border-color:var(--accent-line);background:var(--accent-soft)}
+.chip .gst{color:var(--amber)}

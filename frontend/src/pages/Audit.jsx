@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useFy } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, Alert, useLoad, Loading, ErrorBox } from '../components/ui'
 import { inr, gd } from '../lib/fmt'
@@ -10,12 +11,16 @@ const signed = v => (v > 0 ? '+' : '') + inr(v)
 export default function Audit() {
   const { api } = useAuth()
   const periods = useLoad(() => api.periods())
+  const top = useFy()
   const [period, setPeriod] = useState('')
   // GSTR-1 and GSTR-3B are monthly, so the GST half of this only means
   // something against a period. Land on the most recent one.
   useEffect(() => {
-    if (!period && periods.data && periods.data.length) setPeriod(periods.data[0])
-  }, [periods.data, period])
+    if (!periods.data?.length) return
+    // v5.0: the latest month with documents in the year chosen at the top
+    const inYear = periods.data.filter(m => top.inFy(m + '-01'))
+    setPeriod(inYear[0] || periods.data[0])
+  }, [periods.data, top.fy]) // eslint-disable-line
   const p = period || null
   const rec = useLoad(() => api.auditReconcile(p), [p])
   const txns = useLoad(() => api.auditTxns(p), [p])

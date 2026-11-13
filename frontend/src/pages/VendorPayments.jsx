@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import { useFyRows, FyCount } from '../lib/fy'
 import { useAuth } from '../lib/auth'
-import { Panel, Field, Table, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
+import { Panel, Field, Table, Alert, Tag, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr, money, gd, today } from '../lib/fmt'
 
 const MODES = ['NEFT', 'RTGS', 'IMPS', 'UPI', 'Cheque', 'Adjustment']
@@ -9,8 +10,9 @@ export default function VendorPayments() {
   const { api } = useAuth()
   const vinvs = useLoad(() => api.vinvs())
   const list = useLoad(() => api.vendorPayments())
+  const fyRows = useFyRows()   // v5.0: the year chosen at the top
   const outstanding = useLoad(() => api.payables())
-  const [f, setF] = useState({ vinv_id: '', pay_date: today(), amount: '', tds: '0',
+  const [f, setF] = useState({ vinv_id: '', pay_date: today(), amount: '', tds: '0', gst_tds: '',
     mode: 'NEFT', bank_ref: '', bank_acct: '', narration: '' })
   const [queue, setQueue] = useState([])
   const [err, setErr] = useState(null)
@@ -25,10 +27,11 @@ export default function VendorPayments() {
     try {
       await api.addVendorPay({ pay_type: 'PAY', vinv_id: Number(f.vinv_id),
         pay_date: f.pay_date, amount: Number(f.amount), tds: Number(f.tds || 0),
+        gst_tds: Number(f.gst_tds || 0),
         mode: f.mode, bank_ref: f.bank_ref || null, bank_acct: f.bank_acct || null,
         narration: f.narration || null })
       showFlash('Payment recorded.')
-      setF(s => ({ ...s, vinv_id: '', amount: '', tds: '0', bank_ref: '', narration: '' }))
+      setF(s => ({ ...s, vinv_id: '', amount: '', tds: '0', gst_tds: '', bank_ref: '', narration: '' }))
       list.reload(); vinvs.reload(); outstanding.reload()
     } catch (x) { setErr(x.message) }
   }
@@ -72,6 +75,9 @@ export default function VendorPayments() {
           <Field label="TDS withheld" hint="Deducted from the payment, still settles the invoice">
             <input className="mono" type="number" step="0.01" value={f.tds}
               onChange={e => set('tds', e.target.value)} /></Field>
+          <Field label="GST withheld (GST TDS)" hint="Only if we are a GST TDS deductor · 2% of taxable">
+            <input className="mono" type="number" step="0.01" min="0" value={f.gst_tds}
+              onChange={e => set('gst_tds', e.target.value)} /></Field>
         </div>
         <div className="row" style={{ marginTop: 12 }}>
           <Field label="Mode"><select value={f.mode} onChange={e => set('mode', e.target.value)}>
@@ -97,22 +103,25 @@ export default function VendorPayments() {
       </Panel>
     </form>
 
-    <Panel title={`Payments — ${list.data.length}`} right={
+    <Panel title={<>Payments — <FyCount shown={fyRows(list.data).length} total={(list.data || []).length} /></>} right={
       <button className="btn btn-sm" onClick={downloadBankFile}>Download bank upload file</button>}
       bodyless>
       <Table head={['Date', 'Vendor', 'Against', { label: 'Mode', align: 'c' }, 'Reference',
-        { label: 'TDS', align: 'r' }, { label: 'Amount', align: 'r' }, '']}
+        { label: 'TDS', align: 'r' }, { label: 'GST withheld', align: 'r' }, { label: 'Amount', align: 'r' }, '']}
         empty="No payments recorded.">
-        {list.data.map(p => (
+        {fyRows(list.data).map(p => (
           <tr key={p.id}>
             <td className="mono">{gd(p.pay_date)}</td><td>{p.party}</td>
             <td className="mono">{p.doc}</td><td className="c">{p.mode}</td>
             <td className="mono fine">{p.bank_ref || '—'}</td>
             <td className="r mono">{p.tds ? inr(p.tds) : '—'}</td>
+            <td className="r mono">{p.gst_tds ? inr(p.gst_tds) : '—'}</td>
             <td className="r mono"><b>{inr(p.amount)}</b></td>
-            <td className="r"><button className="rm" onClick={async () => {
+            <td className="r">{p.from_bank
+              ? <span title="Posted from Bank Statements. Remove the invoice from its bank transaction to undo it."><Tag>bank</Tag></span>
+              : <button className="rm" onClick={async () => {
               try { await api.delPayment(p.id); list.reload(); vinvs.reload(); outstanding.reload() }
-              catch (x) { showFlash(x.message, 'bad') } }}>×</button></td>
+              catch (x) { showFlash(x.message, 'bad') } }}>×</button>}</td>
           </tr>))}
       </Table>
     </Panel>

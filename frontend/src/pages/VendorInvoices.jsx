@@ -1,4 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
+import { useFyRows, FyCount } from '../lib/fy'
+import InvoicePayments from '../components/InvoicePayments'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr, money, gd, today } from '../lib/fmt'
@@ -14,6 +16,8 @@ export default function VendorInvoices() {
   const materials = useLoad(() => api.materials())
   const caps = useLoad(() => api.extractCaps())
   const list = useLoad(() => api.vinvs())
+  const fyRows = useFyRows()
+  const [paysFor, setPaysFor] = useState(null)      // v5.0: invoice whose payments are open
   const [h, setH] = useState({ po_id: '', vendor_id: '', doc_no: '', doc_date: today(), due_date: '' })
   const [lines, setLines] = useState([])
   const [err, setErr] = useState(null)
@@ -207,12 +211,12 @@ export default function VendorInvoices() {
       </div>
     </form>
 
-    <Panel title={`Vendor invoice register — ${list.data.length}`} bodyless>
+    <Panel title={<>Vendor invoice register — <FyCount shown={fyRows(list.data).length} total={(list.data || []).length} /></>} bodyless>
       <Table head={['Invoice', 'Our no.', 'Date', 'Vendor', 'Against PO', { label: 'Supply', align: 'c' },
         { label: 'Taxable', align: 'r' }, { label: 'Input tax', align: 'r' },
         { label: 'Total', align: 'r' }, { label: 'Paid', align: 'r' },
         { label: 'Status', align: 'c' }]} empty="No vendor invoices yet.">
-        {list.data.map(v => (
+        {fyRows(list.data).map(v => (
           <tr key={v.id}>
             <td className="mono"><b>{v.doc_no}</b></td>
             <td className="mono fine">{v.our_no || '—'}</td>
@@ -229,6 +233,8 @@ export default function VendorInvoices() {
             <td className="c" style={{ whiteSpace: 'nowrap' }}>
               {v.outstanding <= 0.5 ? <Tag kind="ok">Settled</Tag>
                 : v.paid > 0.5 ? <Tag kind="warn">Part paid</Tag> : <Tag>Unpaid</Tag>}
+              <button className="btn btn-sm" style={{ marginLeft: 5 }} title="Payments, TDS and GST withheld; attach bank debits"
+                onClick={() => setPaysFor(v.id)}>Payments</button>
 
               <button
                 className="btn btn-sm"
@@ -249,5 +255,7 @@ export default function VendorInvoices() {
         id={documentsFor}
       />
     )}
+    {paysFor && <InvoicePayments linkType="VEND_INV" id={paysFor} onClose={() => setPaysFor(null)}
+      onChanged={() => list.reload()} />}
   </>)
 }

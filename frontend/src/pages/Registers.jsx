@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useFy } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
   usePrintVariant, VariantPicker, PrintButtons, PeriodPicker, useDefaultFy,
@@ -13,9 +14,11 @@ export default function Registers() {
   const { api } = useAuth()
   const periods = useLoad(() => api.periods())
   const fys = useLoad(() => api.financialYears())
-  const [period, setPeriod] = useState(undefined)
-  useDefaultFy(fys.data, period, setPeriod)
-  const [financialYear, setFinancialYear] = useState('')
+  // v5.0: both open on the year chosen at the top, and follow it
+  const top = useFy()
+  const [period, setPeriod] = useState(top.param)
+  const [financialYear, setFinancialYear] = useState(top.param)
+  useEffect(() => { setPeriod(top.param); setFinancialYear(top.param) }, [top.param])
   const [dateRange, setDateRange] = useState('')
   const today = (() => {
     const d = new Date()
@@ -33,13 +36,29 @@ export default function Registers() {
   )
   const gst = useLoad(() => api.gstRegister(p), [p])
   const tds = useLoad(() => api.tdsRegister(p), [p])
+  const gtds = useLoad(() => api.gstTdsRegister(p), [p])       // v5.0 GST withheld
+  const govt = useLoad(() => api.govtPayments(p), [p])          // v5.0 statutory payments
 
   if (periods.loading || fys.loading || period === undefined) return <Loading />
-  const busy = inv.loading || gst.loading || tds.loading
-  const anyErr = inv.error || gst.error || tds.error
+  const busy = inv.loading || gst.loading || tds.loading || gtds.loading || govt.loading
+  const anyErr = inv.error || gst.error || tds.error || gtds.error || govt.error
   if (anyErr) return <ErrorBox>{anyErr}</ErrorBox>
 
   const csv = w => api.registerCsv(w, p).catch(x => showFlash(x.message, 'bad'))
+  // v5.0: the two new registers are exported from what is on screen
+  const localCsv = w => {
+    const rows = w === 'govt'
+      ? [['Date', 'Paid towards', 'For month', 'Challan', 'Details', 'Amount', 'Bank account', 'Bank narration'],
+         ...govt.data.rows.map(r => [r.date, r.kind_label, r.for_month || '', r.challan_ref || '', r.descr || '', r.amount, r.account, r.bank_ref || ''])]
+      : [['Side', 'Date', 'Party', 'GSTIN', 'Invoice', 'Invoice date', 'Taxable', 'Paid', 'TDS', 'GST withheld', 'Implied rate %', 'Source'],
+         ...[['Customer', gtds.data.customers], ['Vendor', gtds.data.vendors]].flatMap(([side, rs]) => rs.map(r =>
+           [side, r.date, r.party, r.gstin || '', r.invoice, r.invoice_date, r.taxable, r.paid, r.tds, r.gst_tds, r.implied_rate_pct, r.source]))]
+    const text = rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }))
+    a.download = `${w === 'govt' ? 'statutory-payments' : 'gst-withheld'}-${p || 'all'}.csv`
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000)
+  }
   const controls = (<>
     <select value={which} onChange={e => setWhich(e.target.value)}
       style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
@@ -49,6 +68,8 @@ export default function Registers() {
       <option value="gst-sales">GST register — sales</option>
       <option value="gst-purchases">GST register — purchases</option>
       <option value="tds-report">TDS report — vendors and customers</option>
+      <option value="gst-tds">GST withheld (GST TDS)</option>
+      <option value="govt">Statutory payments — GST, TDS, PF, ESI</option>
     </select>
     {which === 'invoices' ? (
       <>
@@ -70,7 +91,9 @@ export default function Registers() {
     {which === 'tds-report'
       ? <><button type="button" className="btn btn-sm" onClick={() => csv('tds-vendors')}>CSV — vendors</button>
           <button type="button" className="btn btn-sm" onClick={() => csv('tds-customers')}>CSV — customers</button></>
-      : <button type="button" className="btn btn-sm" onClick={() => csv(which)}>Export CSV</button>}</>)
+      : ['gst-tds', 'govt'].includes(which)
+        ? <button type="button" className="btn btn-sm" onClick={() => localCsv(which)}>Export CSV</button>
+        : <button type="button" className="btn btn-sm" onClick={() => csv(which)}>Export CSV</button>}</>)
 
   if (busy) return <><Panel title="Registers" right={controls} /><Loading /></>
 
@@ -180,6 +203,63 @@ export default function Registers() {
     {which === 'gst-sales' && <GstSales period={p} />}
     {which === 'gst-purchases' && <GstPurchases period={p} />}
     {which === 'tds-report' && <TdsReport period={p} />}
+
+    {which === 'gst-tds' && (<>
+      <Panel title={`GST withheld by customers — ${money(gtds.data.customer_total)} to claim`} bodyless>
+        <Table head={['Date', 'Customer', 'GSTIN', 'Invoice', { label: 'Taxable', align: 'r' },
+          { label: 'Received', align: 'r' }, { label: 'TDS', align: 'r' }, { label: 'GST withheld', align: 'r' },
+          { label: 'Implied rate', align: 'r' }, 'Source']}
+          empty="No customer withheld GST in this period.">
+          {gtds.data.customers.map((r, i) => (
+            <tr key={i}>
+              <td className="mono">{gd(r.date)}</td><td>{r.party}</td><td className="mono">{r.gstin || '—'}</td>
+              <td className="mono">{r.invoice}<div className="fine">{gd(r.invoice_date)}</div></td>
+              <td className="r mono">{inr(r.taxable)}</td><td className="r mono">{inr(r.paid)}</td>
+              <td className="r mono">{inr(r.tds)}</td><td className="r mono"><b>{inr(r.gst_tds)}</b></td>
+              <td className="r mono">{r.implied_rate_pct}%</td>
+              <td className="fine">{r.source}{r.bank_account && <div>{r.bank_account}</div>}</td>
+            </tr>))}
+        </Table>
+        <div className="panel-bd"><div className="fine">Claim this in GSTR-2X; it then comes into the
+          electronic cash ledger.</div></div>
+      </Panel>
+      <Panel title={`GST we withheld from vendors — ${money(gtds.data.vendor_total)} to pay over`} bodyless>
+        <Table head={['Date', 'Vendor', 'GSTIN', 'Vendor invoice', { label: 'Taxable', align: 'r' },
+          { label: 'Paid', align: 'r' }, { label: 'TDS', align: 'r' }, { label: 'GST withheld', align: 'r' },
+          { label: 'Implied rate', align: 'r' }, 'Source']}
+          empty="No GST was withheld from a vendor in this period.">
+          {gtds.data.vendors.map((r, i) => (
+            <tr key={i}>
+              <td className="mono">{gd(r.date)}</td><td>{r.party}</td><td className="mono">{r.gstin || '—'}</td>
+              <td className="mono">{r.invoice}<div className="fine">{gd(r.invoice_date)}</div></td>
+              <td className="r mono">{inr(r.taxable)}</td><td className="r mono">{inr(r.paid)}</td>
+              <td className="r mono">{inr(r.tds)}</td><td className="r mono"><b>{inr(r.gst_tds)}</b></td>
+              <td className="r mono">{r.implied_rate_pct}%</td>
+              <td className="fine">{r.source}{r.bank_account && <div>{r.bank_account}</div>}</td>
+            </tr>))}
+        </Table>
+        <div className="panel-bd"><Alert kind="warn">{gtds.data.note}</Alert></div>
+      </Panel></>)}
+
+    {which === 'govt' && (
+      <Panel title={`Statutory payments — ${money(govt.data.total)}`} bodyless>
+        <div className="panel-bd" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {govt.data.by_kind.map(k => <span key={k.kind} className="chip"><span className="chip-k">{k.label}</span>
+            <span className="mono">{inr(k.amount)}</span></span>)}
+        </div>
+        <Table head={['Date', 'Paid towards', 'For month', 'Challan', 'Details', { label: 'Amount', align: 'r' },
+          'Bank account']}
+          empty="No payment to the government is attached on Bank Statements in this period. Attach a challan payment to its bank debit under Government filings.">
+          {govt.data.rows.map(r => (
+            <tr key={r.id}>
+              <td className="mono">{gd(r.date)}</td><td><b>{r.kind_label}</b></td>
+              <td className="mono">{r.for_month || '—'}</td><td className="mono">{r.challan_ref || '—'}</td>
+              <td className="fine">{r.descr}{r.notes && <div>{r.notes}</div>}</td>
+              <td className="r mono"><b>{inr(r.amount)}</b></td>
+              <td className="fine">{r.account}<div className="mono">{r.bank_ref}</div></td>
+            </tr>))}
+        </Table>
+      </Panel>)}
 
     {which === 'tds' && (
       <Panel title={`TDS we deducted from vendors — ${money(tds.data.total_tds)} to deposit`} bodyless>

@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { useFy } from '../lib/fy'
+import { ViewPicker, viewName } from './BankStatements'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Alert, Tag, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr, money, gd } from '../lib/fmt'
@@ -11,7 +13,12 @@ export default function CardStatements() {
   const accounts = useLoad(() => api.stmtAccounts())
   const cats = useLoad(() => api.stmtCategories())
   const [acct, setAcct] = useState('')
-  const [period, setPeriod] = useState(thisMonth())
+  const [period, setPeriod] = useState(thisMonth())     // the statement month uploaded under
+  // v5.0: what is shown opens on the financial year chosen at the top
+  const top = useFy()
+  const [view, setView] = useState(top.param)
+  useEffect(() => { setView(top.param) }, [top.param])
+  const monthView = /^\d{4}-\d{2}$/.test(view || '')
   const [file, setFile] = useState(null)
   const [busy, setBusy] = useState(false)
   const [flash, showFlash] = useFlash()
@@ -57,8 +64,8 @@ useEffect(() => {
   loadUploads()
 }, [aid])
 
-  const txns = useLoad(() => aid ? api.stmtTxns(aid, period) : [], [aid, period])
-  const recon = useLoad(() => api.stmtReconcile(period), [period])
+  const txns = useLoad(() => aid ? api.stmtTxns(aid, view) : [], [aid, view])
+  const recon = useLoad(() => api.stmtReconcile(view), [view])
 
   async function addCard(e) {
     e.preventDefault()
@@ -219,9 +226,10 @@ async function uploadTxnDocument(txnId, file) {
 
   async function markAll(allocation) {
     const what = allocation === 'COMPANY' ? `company expense (${bulkCat})` : 'personal'
-    if (!window.confirm(`Mark every unallocated spend on this card for ${period} as ${what}?`)) return
+    if (!monthView) return showFlash('Choose a statement month on the right first: marking all works one month at a time.', 'bad')
+    if (!window.confirm(`Mark every unallocated spend on this card for ${viewName(view)} as ${what}?`)) return
     try {
-      const r = await api.allocateAll(aid, period, { allocation,
+      const r = await api.allocateAll(aid, view, { allocation,
         category: allocation === 'COMPANY' ? bulkCat : null })
       showFlash(r.updated ? `${r.updated} spend(s) marked ${what}.` : 'No unallocated spends left.')
       txns.reload(); recon.reload()
@@ -305,7 +313,8 @@ async function uploadTxnDocument(txnId, file) {
         </div></form>
       </Panel>
 
-      <Panel title={`Allocate — ${card?.label || ''} · ${period}`} right={<>
+      <Panel title={`Allocate — ${card?.label || ''} · ${viewName(view)}`} right={<>
+        <ViewPicker value={view} onChange={setView} />
         {unallocCount > 0 && <span style={{ fontSize: 12, display: 'flex', gap: 5, alignItems: 'center' }}>
           <span className="fine">Mark {unallocCount} undecided as</span>
           <select value={bulkCat} onChange={e => setBulkCat(e.target.value)} style={{ width: 150 }}
@@ -391,7 +400,7 @@ async function uploadTxnDocument(txnId, file) {
           </Table>}
       </Panel>
 
-      {mine && <Panel title={`Reconciliation with the director — ${period}`}>
+      {mine && <Panel title={`Reconciliation with the director — ${viewName(view)}`}>
         <Table head={['', { label: 'Amount', align: 'r' }]}>
           <tr><td>Spent for the company (owed to {card?.holder || 'the director'})</td>
             <td className="r mono">{inr(mine.company)}</td></tr>
@@ -417,7 +426,7 @@ async function uploadTxnDocument(txnId, file) {
           </Table></>}
       </Panel>}
 
-      {(recon.data || []).length > 1 && <Panel title={`All director cards — ${period}`}>
+      {(recon.data || []).length > 1 && <Panel title={`All director cards — ${viewName(view)}`}>
         <Table head={['Card', 'Director', { label: 'Company', align: 'r' },
           { label: 'Personal', align: 'r' }, { label: 'Unallocated', align: 'r' },
           { label: 'Payments', align: 'r' }]}>

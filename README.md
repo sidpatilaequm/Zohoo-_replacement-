@@ -28,6 +28,87 @@ Sign in as `alok@aequm.in` (any password — the demo does not check them, and s
 so on screen).
 
 
+## Version 5.0 changes
+
+**Government filings on the bank statement.** A bank debit can now be attached
+to *Government filings (statutory payment)*, beside vendor invoices, employees
+and director loans. Choose what it paid — **GST payment, TDS payment, PF
+payment, ESI payment or Others (statutory)** — the month the dues are for (it
+defaults to the month before the payment, since a challan paid in August is
+for July) and the challan reference (CPIN/CIN for GST, challan number for TDS,
+TRRN for PF). *Others* must say what it was for: professional tax, labour
+welfare fund and the like. Money received cannot be booked as a government
+payment. Registers has a new **Statutory payments** register for the year,
+with a total for each kind and an Export CSV.
+
+**GST withheld beside TDS when a payment does not tally.** Government
+departments and other notified deductors keep back GST TDS — 2% of the
+taxable value under CGST Act s.51 — as well as income-tax TDS. When the money
+attached to an invoice is less than what is open, the attach form now says so
+plainly (*Does not tally: ₹1,500 short*) and the shortfall can be marked as
+**withheld**, split into **TDS** and **GST withheld**, or left open for a
+later payment. Quick buttons fill TDS at 1%, 2% or 10% of the taxable value,
+GST TDS at 2%, or "the rest"; when the shortfall fits a common pattern (TDS
+10% + GST TDS 2%, say) the split is suggested. The amounts can be changed
+later from the attachment (**TDS / GST**). Receipts entered by hand on
+Customer Payments and payments on Vendor Payments take TDS and GST withheld
+too; Customer Payments warns when a receipt leaves the invoice short. Money
+plus TDS plus GST withheld can never exceed what is open. Registers has a new
+**GST withheld (GST TDS)** register — by customers (to claim in GSTR-2X) and
+from vendors (to pay over and report in GSTR-7).
+
+**An invoice's payments, all in one place, and several attached at once.**
+Picking an invoice on the attach form shows its total, taxable value, what has
+been received or paid so far, the TDS and GST withheld so far, every earlier
+payment with its own TDS and GST, and what is open. The Invoice Register and
+Vendor Invoices have a **Payments** button that opens the same history, and —
+for someone who works Bank Statements — lists the bank lines that could still
+settle the invoice, exact amounts first. Tick one or several, adjust an
+amount if needed, mark any shortfall as withheld, and attach them together.
+It is all or nothing: if one line cannot be attached, none is.
+
+**Vendor invoices paid from the bank now show on Vendor Payments.** Attaching
+a vendor invoice to a bank debit (or a card spend) now records the payment on
+Vendor Payments, with its TDS and GST withheld, as attaching a customer
+invoice has posted the receipt on Customer Payments since v4.9. Until now the
+two kept separate counts, so a bill paid from the bank still showed as unpaid
+in Payables and on Vendor Payments, and a payment entered by hand was offered
+again on the statement. Both now count everywhere. A payment posted from the
+bank is marked *bank* and goes only with its attachment. The TDS register
+counts each deduction once.
+
+**Every screen opens on the current financial year.** The top bar has a
+financial-year selector beside the organisation: it starts on the current year
+(FY 2026-27 from 1 April 2026), follows the company's own year start (Company
+profile), and offers *All years*. Screens with their own year or period picker
+— Invoice Register, Proforma Register, Registers, Reports, Sales report,
+customer and vendor transactions — start on it and follow it. GST Returns and
+Audit land on the latest month with documents in that year. Lists without a
+picker — Customer Payments, Vendor Payments, Vendor Invoices, Purchase Orders,
+Sales Orders, Deliveries, posted counts and released discrepancies — show that
+year and say how many are in other years (held discrepancies always show, as
+they await action). Bank Statements and Director Cards show the whole year,
+with a picker for its months; the month a statement is uploaded under is set
+separately, and marking a whole card month as company or personal still works
+one month at a time. Behind this, the list of financial years returned by the
+server was a list of plain labels, which the pickers could not read, so
+Registers opened on all periods; it now returns each year with its dates and
+which one is current, always including the current year.
+
+**Upgrading.** Run `db/22_v50_govt_filings_gst_withheld.sql` after a backup.
+It is additive and safe to run more than once. It also posts the Vendor
+Payments entry for vendor invoices attached on the statement before v5.0 —
+only where the invoice has no payment entered by hand yet (otherwise the money
+would count twice), and lists the ones left alone so they can be reviewed.
+
+**Noticed while testing (not changed).** A database built only from the
+numbered files in `db/` lacks thirteen `tenants` columns (the financial-year
+start, the document-number settings) and the `password_reset_tokens` table;
+the v2.4 part of `aequm_safe_upgrade_v24.sql` adds the columns. An existing
+installation that has had that upgrade is not affected. A fresh one from
+`db/` alone cannot sign up until it has them.
+
+
 ## Version 4.6 changes
 
 **Discounts on sales invoices and proformas.** Each line can carry a discount

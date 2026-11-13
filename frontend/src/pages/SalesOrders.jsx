@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useFyRows, FyCount } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr, money, gd, today } from '../lib/fmt'
@@ -8,6 +9,7 @@ export default function SalesOrders() {
   const customers = useLoad(() => api.customers())
   const materials = useLoad(() => api.materials())
   const list = useLoad(() => api.salesOrders())
+  const fyRows = useFyRows()   // v5.0: the year chosen at the top
   const stock = useLoad(() => api.stockSummary())
   const [h, setH] = useState({ doc_no: '', doc_date: today(), req_date: '',
     customer_id: '', cust_ref: '' })
@@ -135,12 +137,12 @@ export default function SalesOrders() {
         <span className="err">{err || problems[0] || ''}</span></div>
     </form>
 
-    <Panel title={`Sales orders — ${list.data.length}`} bodyless>
+    <Panel title={<>Sales orders — <FyCount shown={fyRows(list.data).length} total={(list.data || []).length} /></>} bodyless>
       <Table head={['Order', 'Date', 'Customer', 'Reference', { label: 'Lines', align: 'r' },
         { label: 'Ordered', align: 'r' }, { label: 'Delivered', align: 'r' },
         { label: 'Value', align: 'r' }, { label: 'Status', align: 'c' }, '']}
         empty="No sales orders yet.">
-        {list.data.map(o => {
+        {fyRows(list.data).map(o => {
           const ord = o.lines.reduce((a, b) => a + b.qty, 0)
           const del = o.lines.reduce((a, b) => a + b.delivered, 0)
           return (<tr key={o.id}>

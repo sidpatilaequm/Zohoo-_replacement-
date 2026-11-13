@@ -2,6 +2,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { MENU, TRADING_ONLY } from '../lib/menu'
 import { initials } from '../lib/fmt'
+import { FyProvider, TopFyPicker } from '../lib/fy'
 
 export default function Shell({ children }) {
   const { me, can, logout, switchTenant, session } = useAuth()
@@ -19,6 +20,7 @@ export default function Shell({ children }) {
     .find(i => loc.pathname.startsWith(i.path))?.label || ''
 
   return (
+    <FyProvider>
     <div className="app">
       <nav className="side">
         <div className="brand">
@@ -43,6 +45,7 @@ export default function Shell({ children }) {
         <div className="topbar">
           <h1>{title}</h1>
           <div className="sp">
+            <TopFyPicker />
             <select className="tsel" value={session?.tenantId || ''}
               disabled={tenants.length < 2}
               onChange={e => switchTenant(Number(e.target.value))}>
@@ -59,5 +62,6 @@ export default function Shell({ children }) {
         <div className="wrap">{children}</div>
       </div>
     </div>
+    </FyProvider>
   )
 }

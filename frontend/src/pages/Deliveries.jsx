@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useFyRows, FyCount } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { stockMeta } from '../lib/stock'
@@ -8,6 +9,7 @@ export default function Deliveries() {
   const { api } = useAuth()
   const orders = useLoad(() => api.salesOrders())
   const list = useLoad(() => api.deliveries())
+  const fyRows = useFyRows()   // v5.0: the year chosen at the top
   const [h, setH] = useState({ so_id: '', doc_no: '', doc_date: today(), ship_to: '' })
   const [plan, setPlan] = useState(null)
   const [picks, setPicks] = useState({})
@@ -130,11 +132,11 @@ export default function Deliveries() {
         <span className="err">{err}</span></div>
     </form>
 
-    <Panel title={`Deliveries posted — ${list.data.length}`} bodyless>
+    <Panel title={<>Deliveries posted — <FyCount shown={fyRows(list.data).length} total={(list.data || []).length} /></>} bodyless>
       <Table head={['Delivery', 'Date', 'Against order', 'Customer', 'Material', 'Batch',
         'Expiry', { label: 'Stock type', align: 'c' }, { label: 'Issued', align: 'r' }]}
         empty="Nothing issued yet.">
-        {list.data.map((d, i) => (
+        {fyRows(list.data).map((d, i) => (
           <tr key={i}>
             <td className="mono"><b>{d.doc_no}</b></td><td className="mono">{gd(d.doc_date)}</td>
             <td className="mono">{d.so_no}</td><td>{d.customer}</td>

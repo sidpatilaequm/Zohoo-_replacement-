@@ -245,7 +245,8 @@ vinv_tax = _purchase_tax
 
 
 def settled(ctx, *, invoice_id=None, vinv_id=None) -> Decimal:
-    q = select(func.coalesce(func.sum(M.Payment.amount + M.Payment.tds), 0)).where(
+    """Money paid plus TDS and GST withheld (v5.0) on an invoice."""
+    q = select(func.coalesce(func.sum(M.Payment.amount + M.Payment.tds + M.Payment.gst_tds), 0)).where(
         M.Payment.tenant_id == ctx.tenant.id)
     q = q.where(M.Payment.invoice_id == invoice_id) if invoice_id \
         else q.where(M.Payment.vinv_id == vinv_id)

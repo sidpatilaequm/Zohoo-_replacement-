@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useFy } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import {
   Panel,
@@ -27,7 +28,10 @@ export default function Reports() {
   const [kind, setKind] = useState('crec')
   const fys = useLoad(() => api.financialYears())
 
-  const [financialYear, setFinancialYear] = useState('')
+  // v5.0: opens on the year chosen at the top, and follows it
+  const top = useFy()
+  const [financialYear, setFinancialYear] = useState(top.param)
+  useEffect(() => { setFinancialYear(top.param) }, [top.param])
   const [dateRange, setDateRange] = useState('')
 
   // Empty selection means all financial years.

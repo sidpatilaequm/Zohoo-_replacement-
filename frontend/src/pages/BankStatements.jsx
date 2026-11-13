@@ -3,14 +3,40 @@ import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Alert, Tag, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import TxnAttach, { LinkChips } from '../components/TxnAttach'
 import { inr, money, gd } from '../lib/fmt'
+import { useFy } from '../lib/fy'
 
 const thisMonth = () => new Date().toISOString().slice(0, 7)
+
+/** v5.0 — the months of a financial year, for the view picker. */
+export function fyMonths(info) {
+  if (!info) return []
+  const out = []; let [y, m] = info.start.slice(0, 7).split('-').map(Number)
+  const last = info.end.slice(0, 7)
+  for (;;) { const k = `${y}-${String(m).padStart(2, '0')}`; out.push(k); if (k >= last) break; m === 12 ? (y++, m = 1) : m++ }
+  return out
+}
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+export const viewName = v => !v ? 'all years' : /^FY/i.test(v) ? `FY ${v.slice(2)}` : `${MON[+v.slice(5) - 1]} ${v.slice(0, 4)}`
+
+/** v5.0 — show the whole financial year chosen at the top, or one of its months. */
+export function ViewPicker({ value, onChange }) {
+  const top = useFy()
+  const info = top.years.find(y => y.label === top.fy)
+  return (<select value={value} onChange={e => onChange(e.target.value)} style={{ fontSize: 12 }} aria-label="Show">
+    {top.fy ? <option value={top.param}>Whole {top.name}</option> : <option value="">All years</option>}
+    {fyMonths(info).map(m => <option key={m} value={m}>{viewName(m)}</option>)}
+  </select>)
+}
 
 export default function BankStatements() {
   const { api } = useAuth()
   const accounts = useLoad(() => api.stmtAccounts())
   const [acct, setAcct] = useState('')
-  const [period, setPeriod] = useState(thisMonth())
+  const [period, setPeriod] = useState(thisMonth())     // the month a statement is uploaded under
+  // v5.0: what is shown opens on the financial year chosen at the top
+  const top = useFy()
+  const [view, setView] = useState(top.param)
+  useEffect(() => { setView(top.param) }, [top.param])
   const [file, setFile] = useState(null)
   const [busy, setBusy] = useState(false)
   const [flash, showFlash] = useFlash()
@@ -40,9 +66,9 @@ export default function BankStatements() {
 useEffect(() => {
   loadUploads()
 }, [aid])
-  const txns = useLoad(() => aid ? api.stmtTxns(aid, period) : [], [aid, period])
-  const ledger = useLoad(() => api.expenseLedger(period), [period])
-  const loans = useLoad(() => api.directorLoans(period), [period])
+  const txns = useLoad(() => aid ? api.stmtTxns(aid, view) : [], [aid, view])
+  const ledger = useLoad(() => view ? api.expenseLedger(view) : null, [view])
+  const loans = useLoad(() => api.directorLoans(view), [view])
 
   async function addAccount(e) {
     e.preventDefault()
@@ -174,6 +200,17 @@ useEffect(() => {
   }
 
   // Book what is still open on an invoice as TDS, after the fact.
+  // v5.0 — change the TDS and GST withheld on an invoice attachment
+  async function setWithheld(l, tds, gst_tds) {
+    try {
+      const r = await api.setLinkWithheld(l.id, { tds, gst_tds })
+      showFlash(`${l.ref}: TDS ${inr(r.tds)}, GST withheld ${inr(r.gst_tds)}` +
+        (r.invoice_open > 0.005 ? ` · ${inr(r.invoice_open)} still open.` : ' · the invoice is settled.'))
+      txns.reload()
+      return true
+    } catch (x) { showFlash(x.message, 'bad'); return false }
+  }
+
   async function bookTds(l) {
     if (!window.confirm(`Book the ${inr(l.invoice_open)} still open on ${l.ref} as TDS ` +
       `${l.link_type === 'CUST_INV' ? 'deducted by the customer' : 'we deducted'}? ` +
@@ -284,8 +321,9 @@ useEffect(() => {
     </Table>
   )}
 </Panel>
-      <Panel title={`Saved transactions — ${period}`}
+      <Panel title={`Saved transactions — ${viewName(view)}`}
         right={<>
+          <ViewPicker value={view} onChange={setView} />
           <span className="fine">Debits {money(deb)} · Credits {money(cred)}</span>
           <select value={show} onChange={e => setShow(e.target.value)} style={{ fontSize: 12 }}>
             <option value="ALL">All transactions</option>
@@ -294,14 +332,14 @@ useEffect(() => {
         {txns.loading ? <Loading /> : txns.error ? <ErrorBox>{txns.error}</ErrorBox> :
           <Table head={['Date', 'Description', { label: 'Debit', align: 'r' },
             { label: 'Credit', align: 'r' }, 'Attached to', '']}
-            empty={show === 'OPEN' ? 'Every transaction this month is attached.'
-              : 'No transactions saved for this month yet.'}>
+            empty={show === 'OPEN' ? `Every transaction in ${viewName(view)} is attached.`
+              : `No transactions saved for ${viewName(view)} yet.`}>
             {rows.map(t => <Fragment key={t.id}>
               <tr className={open === t.id ? 'row-open' : ''}>
                 <td>{gd(t.date)}</td><td>{t.descr}</td>
                 <td className="r mono">{t.debit ? inr(t.debit) : ''}</td>
                 <td className="r mono">{t.credit ? inr(t.credit) : ''}</td>
-                <td><LinkChips links={t.links} onRemove={removeLink} onTds={bookTds} />
+                <td><LinkChips links={t.links} onRemove={removeLink} onTds={bookTds} onWithheld={setWithheld} />
                   {t.links.length > 0 && t.unattached > 0.005 &&
                     <Tag kind="warn">{inr(t.unattached)} not attached</Tag>}</td>
                 <td className="r">{(t.unattached > 0.005 || open === t.id) &&
@@ -321,9 +359,9 @@ useEffect(() => {
       </Panel>
     </>}
 
-    {banks.length > 0 && <DirectorLoans loans={loans} period={period} />}
+    {banks.length > 0 && <DirectorLoans loans={loans} period={viewName(view)} />}
 
-    <Panel title={`Monthly expense ledger — tally for ${period}`}>
+    <Panel title={view ? `Expense ledger — tally for ${viewName(view)}` : 'Expense ledger — choose a year at the top'}>
       {ledger.loading ? <Loading /> : ledger.error ? <ErrorBox>{ledger.error}</ErrorBox> : L && <>
         <Table head={['Source', { label: 'Count', align: 'r' }, { label: 'Amount', align: 'r' }, '']}>
           <tr><td>Vendor invoices booked (purchases)</td>
@@ -385,10 +423,10 @@ function DirectorLoans({ loans, period }) {
   if (!D || (!D.directors.length && !D.entries.length)) return null
   return (
     <Panel title={`Loans from directors — ${period}`}
-      right={<span className="fine">Owed at month end {money(D.total_owed)}</span>} bodyless>
+      right={<span className="fine">Owed at the end {money(D.total_owed)}</span>} bodyless>
       <Table head={['Director', 'DIN', { label: 'Brought forward', align: 'r' },
         { label: 'Received', align: 'r' }, { label: 'Repaid', align: 'r' },
-        { label: 'Owed at month end', align: 'r' }]}
+        { label: 'Owed at the end', align: 'r' }]}
         empty="No director loans yet.">
         {D.directors.map(d => <tr key={d.id}>
           <td>{d.name}{!d.active && <> <Tag>inactive</Tag></>}</td>

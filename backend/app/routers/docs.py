@@ -734,10 +734,11 @@ def cancel_invoice(iid: int, body: S.CancelIn, ctx: Ctx = Depends(need("invoice"
     reversed_entries = []
     for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
                             .where(M.Payment.invoice_id == inv.id)).scalars():
-        if p.reverses_id or Decimal(str(p.amount)) + Decimal(str(p.tds)) == 0:
+        if p.reverses_id or Decimal(str(p.amount)) + Decimal(str(p.tds)) + Decimal(str(p.gst_tds or 0)) == 0:
             continue
         r = M.Payment(tenant_id=ctx.tenant.id, pay_type="REC", pay_date=today,
-                      invoice_id=inv.id, amount=-p.amount, tds=-p.tds, mode="Adjustment",
+                      invoice_id=inv.id, amount=-p.amount, tds=-p.tds,
+                      gst_tds=-(p.gst_tds or 0), mode="Adjustment",
                       bank_ref=p.bank_ref, bank_acct=p.bank_acct, reverses_id=p.id,
                       narration=f"Reversal of RCPT/{p.id:05d} — {inv.doc_no} cancelled")
         ctx.db.add(r)
@@ -958,7 +959,8 @@ def _pay_rows(ctx, kind):
             party, doc = d.vendor.name, d.doc_no
         out.append({"id": p.id, "pay_date": p.pay_date, "party": party, "doc": doc,
                     "reverses_id": p.reverses_id,
-                    "amount": float(p.amount), "tds": float(p.tds), "mode": p.mode,
+                    "amount": float(p.amount), "tds": float(p.tds),
+                    "gst_tds": float(p.gst_tds or 0), "mode": p.mode,
                     "bank_ref": p.bank_ref, "bank_acct": p.bank_acct,
                     "narration": p.narration, "from_bank": p.id in from_bank})
     return out
@@ -987,14 +989,17 @@ def _make_payment(body: S.PaymentIn, ctx: Ctx):
         if not vi:
             raise HTTPException(422, "No such vendor invoice")
         due = vinv_tax(ctx, vi).rounded - settled(ctx, vinv_id=vi.id)
-    if body.amount + body.tds > due + Decimal("0.50"):
+    withheld = body.tds + body.gst_tds
+    if body.amount + withheld > due + Decimal("0.50"):
         raise HTTPException(422,
-            f"Amount {body.amount} plus TDS {body.tds} exceeds the outstanding {due}")
+            f"Amount {body.amount} plus TDS {body.tds}"
+            + (f" plus GST withheld {body.gst_tds}" if body.gst_tds else "")
+            + f" exceeds the outstanding {due}")
     p = M.Payment(tenant_id=ctx.tenant.id, **body.model_dump())
     ctx.db.add(p)
     ctx.db.commit()
     ctx.db.refresh(p)
-    return {"id": p.id, "outstanding_after": float(due - body.amount - body.tds)}
+    return {"id": p.id, "outstanding_after": float(due - body.amount - withheld)}
 
 
 @router.post("/receipts", status_code=201)
@@ -1019,8 +1024,9 @@ def del_payment(pid: int, ctx: Ctx = Depends(need("crec"))):
     if ctx.db.execute(select(M.StmtTxnLink.id).where(
             M.StmtTxnLink.tenant_id == ctx.tenant.id,
             M.StmtTxnLink.payment_id == p.id)).first():
+        what = "receipt" if p.pay_type == "REC" else "payment"
         raise HTTPException(
-            409, "This receipt was posted from the bank statement. Remove the invoice "
-                 "from its transaction on Bank Statements and the receipt goes with it.")
+            409, f"This {what} was posted from the bank statement. Remove the invoice "
+                 f"from its transaction on Bank Statements and the {what} goes with it.")
     ctx.db.delete(p)
     ctx.db.commit()

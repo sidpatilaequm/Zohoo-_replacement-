@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
+import { useFy } from '../lib/fy'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, useLoad, Loading, ErrorBox, useFlash,
@@ -15,7 +16,11 @@ export default function ProformaInvoices() {
   const navigate = useNavigate()
   const list = useLoad(() => api.invoices('PRO'))
   const [filter, setFilter] = useState('ALL')
-  const [fy, setFy] = useState('')
+  // v5.0: opens on the year chosen at the top, and follows it
+  const top = useFy()
+  const [fyPick, setFy] = useState(undefined)
+  useEffect(() => { setFy(undefined) }, [top.param])
+  const fy = fyPick === undefined ? top.param : fyPick
   const [flash, showFlash] = useFlash()
   const [variant, setVariant] = usePrintVariant()
   const [mailing, setMailing] = useState(null)
@@ -48,13 +53,10 @@ export default function ProformaInvoices() {
   if (list.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
 
-  const now = new Date()
-  const curY = now.getFullYear()
-  const curM = now.getMonth() + 1
-  const currentFyStr = curM >= 4 ? `${curY}-${String(curY + 1).slice(-2)}` : `${curY - 1}-${String(curY).slice(-2)}`
+  const currentFyStr = top.current     // follows the company's own year start
 
   const rawYears = Array.from(new Set([
-    currentFyStr,
+    ...top.years.map(y => y.label),
     ...(list.data || []).map(v => v.fy).filter(Boolean)
   ])).sort().reverse()
   const years = rawYears.map(y => ({ label: y, current: y === currentFyStr }))

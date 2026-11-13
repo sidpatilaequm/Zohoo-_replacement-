@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { useLoad } from './ui'
 
@@ -38,6 +38,12 @@ export default function RangePicker({ value, onChange, ranges, allowAll = false 
   const today = localToday()
   const [start, setStart] = useState(value.start || today.slice(0, 8) + '01')
   const [end, setEnd] = useState(value.end || today)
+  // v5.0: when the screen sets a new value (the year at the top changed), show it
+  useEffect(() => {
+    setPick(value.range)
+    if (value.start) setStart(value.start)
+    if (value.end) setEnd(value.end)
+  }, [value.range, value.start, value.end])
 
   const sections = []
   for (const r of ranges.list) {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useFy } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { inr, money } from '../lib/fmt'
@@ -11,13 +12,17 @@ export default function GstReturns() {
   const { api } = useAuth()
   const [flash, showFlash] = useFlash()
   const periods = useLoad(() => api.periods())
+  const top = useFy()
   const [period, setPeriod] = useState('')
   const [data, setData] = useState(null)
   const [err, setErr] = useState(null)
 
   useEffect(() => {
-    if (!period && periods.data?.length) setPeriod(periods.data[0])
-  }, [periods.data, period])
+    if (!periods.data?.length) return
+    // v5.0: the latest month with documents in the year chosen at the top
+    const inYear = periods.data.filter(m => top.inFy(m + '-01'))
+    setPeriod(inYear[0] || periods.data[0])
+  }, [periods.data, top.fy]) // eslint-disable-line
 
   useEffect(() => {
     if (!period) return

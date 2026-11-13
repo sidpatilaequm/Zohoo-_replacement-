@@ -132,6 +132,8 @@ def _link_tds(ctx, period):
                          "source": "Bank statement", "bank_account": a.label,
                          "bank_ref": t.descr})
         elif l.link_type == "VEND_INV" and l.vinv_id:
+            if l.payment_id:
+                continue    # v5.0: its payment entry carries the TDS, counted from payments
             vi = ctx.db.get(M.VendorInvoice, l.vinv_id)
             if not vi:
                 continue
@@ -163,6 +165,51 @@ def _bank_receipts(ctx) -> dict:
     return {pid: label for pid, label in rows}
 
 
+@router.get("/gst-tds")
+def gst_tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers"))):
+    """GST withheld (v5.0): GST TDS under CGST Act s.51, both ways.
+
+    customers — GST a customer (a government department or other notified
+                deductor) kept back from what it paid us. It is claimed in
+                GSTR-2X and comes into the electronic cash ledger.
+    vendors   — GST we kept back when paying a vendor, to be paid over and
+                reported in GSTR-7."""
+    bank = _bank_receipts(ctx)
+    cust, vend = [], []
+    for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
+                            .where(M.Payment.gst_tds != 0)
+                            .order_by(M.Payment.pay_date, M.Payment.id)).scalars():
+        if not in_period(ctx.tenant, p.pay_date, period):
+            continue
+        gst = Decimal(str(p.gst_tds))
+        if p.pay_type == "REC" and p.invoice_id:
+            inv = ctx.db.get(M.Invoice, p.invoice_id)
+            if not inv:
+                continue
+            tx, party, gstin, doc = invoice_tax(ctx, inv), inv.customer.name, inv.gstin, inv
+        elif p.pay_type == "PAY" and p.vinv_id:
+            vi = ctx.db.get(M.VendorInvoice, p.vinv_id)
+            if not vi:
+                continue
+            tx, party, gstin, doc = vinv_tax(ctx, vi), vi.vendor.name, vi.gstin, vi
+        else:
+            continue
+        rate = (gst / tx.taxable * 100) if tx.taxable else D0
+        row = {"date": p.pay_date, "party": party, "gstin": gstin, "invoice": doc.doc_no,
+               "invoice_date": doc.doc_date, "taxable": float(tx.taxable), "invoice_total": float(tx.rounded),
+               "paid": float(p.amount), "tds": float(p.tds or 0), "gst_tds": float(gst),
+               "implied_rate_pct": float(q2(rate)), "reversal": bool(p.reverses_id),
+               "source": "Bank statement" if p.id in bank else "Payment entry",
+               "bank_account": bank.get(p.id) or p.bank_acct}
+        (cust if p.pay_type == "REC" else vend).append(row)
+    tot = lambda rows: float(q2(sum((Decimal(str(r["gst_tds"])) for r in rows), D0)))  # noqa: E731
+    return {"period": period, "customers": cust, "customer_total": tot(cust),
+            "vendors": vend, "vendor_total": tot(vend),
+            "note": ("GST TDS is 2% of the taxable value (1% CGST + 1% SGST, or 2% IGST) on "
+                     "contracts above ₹2.5 lakh with government and notified deductors. The rate "
+                     "shown is worked back from what was entered and does not decide the correct one.")}
+
+
 @router.get("/tds")
 def tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers"))):
     """Tax deducted at source, both ways.
@@ -173,6 +220,7 @@ def tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
                 from customer invoices settled on the bank statement, where
                 the invoice amount less the money collected is the TDS."""
     out = []
+    bank = _bank_receipts(ctx)
     for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
                             .where(M.Payment.pay_type == "PAY")
                             .order_by(M.Payment.pay_date)).scalars():
@@ -194,12 +242,13 @@ def tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
                     "invoice_total": float(t.rounded),
                     "gross": float(gross), "tds": float(tds),
                     "paid": float(p.amount), "mode": p.mode, "bank_ref": p.bank_ref,
-                    "implied_rate_pct": float(q2(rate)), "source": "Payment entry"})
+                    "implied_rate_pct": float(q2(rate)),
+                    "source": "Bank statement" if p.id in bank else "Payment entry",
+                    "bank_account": bank.get(p.id) or p.bank_acct})
     link_cust, link_vend = _link_tds(ctx, period)
     out = sorted(out + link_vend, key=lambda r: r["pay_date"])
     # customers: receipts with TDS on the Money screens, plus bank attachments
     cust = []
-    bank = _bank_receipts(ctx)
     for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
                             .where(M.Payment.pay_type == "REC", M.Payment.tds != 0)
                             .order_by(M.Payment.pay_date)).scalars():
@@ -416,7 +465,8 @@ def tds_report(period: str | None = None, ctx: Ctx = Depends(need("registers")))
             select(func.coalesce(func.sum(M.StmtTxnLink.amount), 0),
                    func.coalesce(func.sum(M.StmtTxnLink.tds), 0)).where(
                 M.StmtTxnLink.tenant_id == ctx.tenant.id,
-                M.StmtTxnLink.vinv_id == vi.id)).one())
+                M.StmtTxnLink.vinv_id == vi.id,
+                M.StmtTxnLink.payment_id.is_(None))).one())    # v5.0: newer ones post a payment
         done += linked_tds
         unpaid = t.rounded - settled(ctx, vinv_id=vi.id) - linked_amt - linked_tds
         if expected - done > Decimal("0.5") and unpaid > Decimal("0.5"):

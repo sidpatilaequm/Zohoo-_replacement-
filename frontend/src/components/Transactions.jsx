@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useFyRange } from '../lib/fy'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { inr, gd } from '../lib/fmt'
@@ -115,7 +116,10 @@ function useEsc(fn) {
 export function CustomerTransactions({ customer, docType, onClose }) {
   const { api } = useAuth()
   const ranges = useRanges()
-  const [period, setPeriod] = useState({ range: 'all' })
+  // v5.0: opens on the year chosen at the top, and follows it
+  const fyRange = useFyRange()
+  const [period, setPeriod] = useState(fyRange)
+  useEffect(() => { setPeriod(fyRange) }, [fyRange.key]) // eslint-disable-line
   const [status, setStatus] = useState('LIVE')
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(null)

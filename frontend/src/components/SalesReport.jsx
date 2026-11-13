@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
+import { useFyRange } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import { inr, gd } from '../lib/fmt'
 import { Panel, Table, useLoad, Loading, ErrorBox } from './ui'
@@ -37,7 +38,11 @@ export default function SalesReport({ kind, selector }) {
   const group = SALES_REPORTS.find(r => r.key === kind).group
   const ranges = useRanges()
 
-  const [period, setPeriod] = useState({ range: 'this_month' })
+  // v5.0: opens on the year chosen at the top, and follows it
+  const fyRaw = useFyRange()
+  const fyRange = fyRaw.range === 'all' ? { key: 'all', range: 'this_year' } : fyRaw   // no "all dates" here
+  const [period, setPeriod] = useState(fyRange)
+  useEffect(() => { setPeriod(fyRange) }, [fyRange.key]) // eslint-disable-line
   const [compare, setCompare] = useState(false)
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(null)      // row whose transactions are shown

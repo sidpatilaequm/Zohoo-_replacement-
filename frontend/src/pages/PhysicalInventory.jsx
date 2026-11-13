@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useFyRows, FyCount } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { stockMeta } from '../lib/stock'
@@ -8,6 +9,7 @@ export default function PhysicalInventory() {
   const { api } = useAuth()
   const sheet = useLoad(() => api.countSheet())
   const history = useLoad(() => api.counts())
+  const fyRows = useFyRows()   // v5.0: the year chosen at the top
   const [counts, setCounts] = useState({})
   const [h, setH] = useState({ doc_no: '', count_date: today(), counted_by: '', reason: '' })
   const [scope, setScope] = useState('ALL')
@@ -117,12 +119,12 @@ export default function PhysicalInventory() {
       </Panel>
     </form>
 
-    <Panel title={`Posted counts — ${(history.data || []).length}`} bodyless>
+    <Panel title={<>Posted counts — <FyCount shown={fyRows(history.data).length} total={(history.data || []).length} /></>} bodyless>
       <Table head={['Document', 'Date', 'Counted by', 'Material', 'Batch',
         { label: 'Stock type', align: 'c' }, { label: 'Book', align: 'r' },
         { label: 'Counted', align: 'r' }, { label: 'Posted difference', align: 'r' }, 'Reason']}
         empty="Nothing posted yet.">
-        {(history.data || []).map((p, i) => (
+        {fyRows(history.data).map((p, i) => (
           <tr key={i}>
             <td className="mono"><b>{p.doc_no}</b></td><td className="mono">{gd(p.count_date)}</td>
             <td>{p.counted_by || '—'}</td>

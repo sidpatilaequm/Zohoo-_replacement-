@@ -35,7 +35,7 @@ invoices booked, vendor payments made, bank debits, card spend allocated to
 the company — so purchases can be tallied to the monthly expense ledger.
 """
 import csv, hashlib, io, re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from pydantic import BaseModel, Field
@@ -756,9 +756,8 @@ def txns(aid: int, period: str | None = None,
     q = select(M.StmtTxn).where(M.StmtTxn.tenant_id == ctx.tenant.id,
                                 M.StmtTxn.account_id == aid)
     if period:
-        if not PERIOD_RE.match(period):
-            raise HTTPException(422, "Give the month as YYYY-MM")
-        q = _in_period(q, a, period)
+        _view_bounds(ctx, period)                       # a month or a financial year
+        q = _in_period(q, a, period, ctx)
     rows = ctx.db.execute(q.order_by(M.StmtTxn.txn_date, M.StmtTxn.id)).scalars().all()
     links = _links_for(ctx, [t.id for t in rows])
     out = []
@@ -873,7 +872,10 @@ def _links_for(ctx, txn_ids):
 
 def _link_out(ctx, l):
     d = {"id": l.id, "txn_id": l.txn_id, "link_type": l.link_type,
-         "amount": float(l.amount), "tds": float(l.tds or 0), "notes": l.notes,
+         "amount": float(l.amount), "tds": float(l.tds or 0),
+         "gst_tds": float(l.gst_tds or 0), "notes": l.notes,
+         "govt_kind": l.govt_kind, "govt_period": l.govt_period,
+         "challan_ref": l.challan_ref, "govt_descr": l.govt_descr,
          "purpose": l.purpose, "linked_by": l.linked_by, "ref_id": None, "ref": None,
          "party": None, "expense_id": l.expense_id, "expense": None,
          "invoice_total": None, "invoice_open": None}
@@ -896,7 +898,7 @@ def _link_out(ctx, l):
             total = vinv_tax(ctx, vi).rounded
             d.update(ref_id=vi.id, ref=vi.doc_no, party=vi.vendor.name,
                      invoice_total=float(total),
-                     invoice_open=float(total - _booked(ctx, vinv_id=vi.id)))
+                     invoice_open=float(_vend_open(ctx, vi)), payment_id=l.payment_id)
     elif l.link_type == "EMPLOYEE" and l.employee_id:
         e = ctx.db.get(M.Employee, l.employee_id)
         if e:
@@ -905,7 +907,24 @@ def _link_out(ctx, l):
         dr = ctx.db.get(M.Director, l.director_id)
         if dr:
             d.update(ref_id=dr.id, ref=dr.din or "Director", party=dr.name)
+    elif l.link_type == "GOVT":
+        d.update(ref=GOVT_LABEL.get(l.govt_kind, "Government"),
+                 party=" · ".join(x for x in (
+                     l.govt_descr, _month_label(l.govt_period),
+                     f"challan {l.challan_ref}" if l.challan_ref else None) if x))
     return d
+
+
+# v5.0 — payments to the government (statutory compliance)
+GOVT_LABEL = {"GST": "GST payment", "TDS": "TDS payment", "PF": "PF payment",
+              "ESI": "ESI payment", "OTHER": "Other statutory payment"}
+
+
+def _month_label(period):
+    if not period:
+        return None
+    mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    return f"for {mon[int(period[5:]) - 1]} {period[:4]}"
 
 def _vinv_attached(ctx, txn_ids) -> dict[int, float]:
     """{txn id: amount attached to vendor invoices} for the given rows."""
@@ -943,10 +962,19 @@ def _tds_sum(ctx, **where) -> Decimal:
     return Decimal(str(ctx.db.execute(q).scalar_one()))
 
 
+def _gst_sum(ctx, **where) -> Decimal:
+    """GST withheld on attachments (v5.0)."""
+    q = select(func.coalesce(func.sum(M.StmtTxnLink.gst_tds), 0)).where(
+        M.StmtTxnLink.tenant_id == ctx.tenant.id)
+    for k, v in where.items():
+        q = q.where(getattr(M.StmtTxnLink, k) == v)
+    return Decimal(str(ctx.db.execute(q).scalar_one()))
+
+
 def _booked(ctx, **where) -> Decimal:
     """What is settled on an invoice from bank attachments: money collected
-    or paid plus TDS deducted."""
-    return _attached_sum(ctx, **where) + _tds_sum(ctx, **where)
+    or paid plus TDS deducted plus GST withheld."""
+    return _attached_sum(ctx, **where) + _tds_sum(ctx, **where) + _gst_sum(ctx, **where)
 
 
 # ------------------------------------------------ receipts from the bank (v4.9)
@@ -961,13 +989,16 @@ def _guess_mode(descr: str) -> str:
     return "NEFT"
 
 
-def _legacy_booked(ctx, invoice_id) -> Decimal:
-    """Money and TDS attached to a customer invoice by attachments made
-    before v4.9, which posted no receipt. Counted so nothing is settled twice."""
-    q = select(func.coalesce(func.sum(M.StmtTxnLink.amount + M.StmtTxnLink.tds), 0)).where(
+def _legacy_booked(ctx, invoice_id=None, vinv_id=None) -> Decimal:
+    """Money and TDS attached to an invoice by attachments that posted no
+    payment entry: customer invoices attached before v4.9, vendor invoices
+    attached before v5.0. Counted so nothing is settled twice."""
+    q = select(func.coalesce(func.sum(
+        M.StmtTxnLink.amount + M.StmtTxnLink.tds + M.StmtTxnLink.gst_tds), 0)).where(
         M.StmtTxnLink.tenant_id == ctx.tenant.id,
-        M.StmtTxnLink.invoice_id == invoice_id,
         M.StmtTxnLink.payment_id.is_(None))
+    q = q.where(M.StmtTxnLink.invoice_id == invoice_id) if invoice_id \
+        else q.where(M.StmtTxnLink.vinv_id == vinv_id)
     return Decimal(str(ctx.db.execute(q).scalar_one()))
 
 
@@ -977,15 +1008,31 @@ def _cust_open(ctx, inv) -> Decimal:
     statement) and less older attachments that posted none."""
     from ..service import invoice_tax, settled
     return (invoice_tax(ctx, inv).rounded - settled(ctx, invoice_id=inv.id)
-            - _legacy_booked(ctx, inv.id))
+            - _legacy_booked(ctx, invoice_id=inv.id))
+
+
+def _vend_open(ctx, vi) -> Decimal:
+    """What is still to be paid on a vendor invoice (v5.0): its total less
+    every payment on Vendor Payments (including those posted from the bank
+    statement) and less older attachments that posted none. Before v5.0 the
+    bank statement and Vendor Payments each kept their own count."""
+    from ..service import vinv_tax, settled
+    return (vinv_tax(ctx, vi).rounded - settled(ctx, vinv_id=vi.id)
+            - _legacy_booked(ctx, vinv_id=vi.id))
 
 
 def _post_receipt(ctx, link, t, a):
-    """Record the receipt on Customer Payments for a customer invoice
-    attached to a bank credit, so the invoice shows as paid or part paid."""
+    """Record the payment entry for an invoice attached on the statement, so
+    the invoice shows as paid or part paid everywhere: a receipt on Customer
+    Payments for a customer invoice (v4.9), a payment on Vendor Payments for
+    a vendor invoice (v5.0). It carries the TDS and GST withheld."""
     ctx.db.flush()                      # link.id, for the narration
-    p = M.Payment(tenant_id=ctx.tenant.id, pay_type="REC", pay_date=t.txn_date,
-                  invoice_id=link.invoice_id, amount=link.amount, tds=link.tds or 0,
+    vend = link.link_type == "VEND_INV"
+    p = M.Payment(tenant_id=ctx.tenant.id, pay_type="PAY" if vend else "REC",
+                  pay_date=t.txn_date,
+                  invoice_id=None if vend else link.invoice_id,
+                  vinv_id=link.vinv_id if vend else None,
+                  amount=link.amount, tds=link.tds or 0, gst_tds=link.gst_tds or 0,
                   mode=_guess_mode(t.descr), bank_ref=(t.descr or "")[:60] or None,
                   bank_acct=(a.label or "")[:80] or None,
                   narration=f"Bank statement attachment #{link.id}")
@@ -1079,13 +1126,14 @@ def attachables(
         "expense_heads": []
     }
 
-    def _row(doc, total, booked, party):
+    def _row(doc, tx, booked, party):
         collected = float(_attached_sum(ctx, **booked))
         tds = float(_tds_sum(ctx, **booked))
-        open_amt = round(float(total) - collected - tds, 2)
+        gst = float(_gst_sum(ctx, **booked))
+        open_amt = round(float(tx.rounded) - collected - tds - gst, 2)
         return {"id": doc.id, "doc_no": doc.doc_no, "doc_date": doc.doc_date.isoformat(),
-                "party": party, "total": float(total), "attached": collected,
-                "tds": tds, "open": open_amt,
+                "party": party, "total": float(tx.rounded), "taxable": float(tx.taxable),
+                "attached": collected, "tds": tds, "gst_tds": gst, "open": open_amt,
                 "exact": abs(open_amt - float(remaining)) < 0.005}
 
     if t.credit > 0:
@@ -1093,14 +1141,15 @@ def attachables(
             M.Invoice.doc_type == "TAX", M.Invoice.status == "ACTIVE")
             .order_by(M.Invoice.doc_date.desc())).scalars().all()
         for inv in invs:
-            r = _row(inv, invoice_tax(ctx, inv).rounded, {"invoice_id": inv.id},
+            r = _row(inv, invoice_tax(ctx, inv), {"invoice_id": inv.id},
                      inv.customer.name)
             # Receipts recorded by hand on Customer Payments count too: an
             # invoice already paid there is not offered again.
             r["open"] = round(float(_cust_open(ctx, inv)), 2)
             r["exact"] = abs(r["open"] - float(remaining)) < 0.005
-            linked = float(_booked(ctx, invoice_id=inv.id) - _legacy_booked(ctx, inv.id))
+            linked = float(_booked(ctx, invoice_id=inv.id) - _legacy_booked(ctx, invoice_id=inv.id))
             r["receipts"] = round(float(settled(ctx, invoice_id=inv.id)) - linked, 2)
+            r.update(_withheld_totals(ctx, invoice_id=inv.id))
             if r["open"] > 0:
                 out["customer_invoices"].append(r)
         out["customer_invoices"].sort(key=lambda r: not r["exact"])
@@ -1108,8 +1157,15 @@ def attachables(
         vis = ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)
                              .order_by(M.VendorInvoice.doc_date.desc())).scalars().all()
         for vi in vis:
-            r = _row(vi, vinv_tax(ctx, vi).rounded, {"vinv_id": vi.id}, vi.vendor.name)
-            r["payments"] = float(settled(ctx, vinv_id=vi.id))
+            r = _row(vi, vinv_tax(ctx, vi), {"vinv_id": vi.id}, vi.vendor.name)
+            # v5.0: payments entered by hand on Vendor Payments count too, as
+            # receipts do on the customer side.
+            r["open"] = round(float(_vend_open(ctx, vi)), 2)
+            r["exact"] = abs(r["open"] - float(remaining)) < 0.005
+            linked = float(_booked(ctx, vinv_id=vi.id) - _legacy_booked(ctx, vinv_id=vi.id))
+            r["payments"] = round(float(settled(ctx, vinv_id=vi.id)) - linked, 2)
+            r["receipts"] = r["payments"]
+            r.update(_withheld_totals(ctx, vinv_id=vi.id))
             if r["open"] > 0:
                 out["vendor_invoices"].append(r)
         out["vendor_invoices"].sort(key=lambda r: not r["exact"])
@@ -1131,8 +1187,8 @@ def attachables(
 
 
 class LinkIn(BaseModel):
-    link_type: str = Field(pattern="^(CUST_INV|VEND_INV|EMPLOYEE|DIRECTOR_LOAN)$")
-    ref_id: int
+    link_type: str = Field(pattern="^(CUST_INV|VEND_INV|EMPLOYEE|DIRECTOR_LOAN|GOVT)$")
+    ref_id: int | None = None           # not used for GOVT
     amount: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
     # v4.8 — TDS on an invoice attachment: the part of the invoice settled by
     # tax deducted at source rather than by money.
@@ -1140,6 +1196,13 @@ class LinkIn(BaseModel):
     purpose: str | None = Field(default=None, pattern="^(SALARY|EXPENSE|REFUND)$")
     expense_id: int | None = None
     notes: str | None = Field(default=None, max_length=200)
+    # v5.0 — GST withheld on an invoice attachment (GST TDS, CGST Act s.51)
+    gst_tds: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    # v5.0 — a payment to the government (statutory compliance)
+    govt_kind: str | None = Field(default=None, pattern="^(GST|TDS|PF|ESI|OTHER)$")
+    govt_period: str | None = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    challan_ref: str | None = Field(default=None, max_length=40)
+    govt_descr: str | None = Field(default=None, max_length=120)
 
 
 @router.post("/txns/{tid}/links", status_code=201)
@@ -1157,9 +1220,15 @@ def add_link(
     With no amount, the smaller of what is left on the transaction and what
     is open on the invoice is attached. On an invoice, TDS may be given as
     well: amount plus TDS can never exceed what is open on the invoice."""
-    from ..service import invoice_tax, vinv_tax
     t, a = _link_txn(ctx, tid)
+    link = _add_link(ctx, t, a, body)
+    ctx.db.commit()
+    return _link_out(ctx, link)
 
+
+def _add_link(ctx, t, a, body: LinkIn):
+    """Attach one transaction (not committed, so several can go together)."""
+    from ..service import invoice_tax, vinv_tax
     if a.kind == "CARD" and body.link_type != "VEND_INV":
         raise HTTPException(
             422,
@@ -1172,8 +1241,10 @@ def add_link(
     if remaining <= 0:
         raise HTTPException(409, "The whole of this transaction is already attached. "
                             "Remove an attachment first to change it.")
-    if body.tds and body.link_type not in ("CUST_INV", "VEND_INV"):
-        raise HTTPException(422, "TDS is recorded against an invoice only")
+    if (body.tds or body.gst_tds) and body.link_type not in ("CUST_INV", "VEND_INV"):
+        raise HTTPException(422, "TDS and GST withheld are recorded against an invoice only")
+    if body.link_type != "GOVT" and body.ref_id is None:
+        raise HTTPException(422, "Pick what this transaction is for")
     link = M.StmtTxnLink(tenant_id=ctx.tenant.id, txn_id=t.id, link_type=body.link_type,
                          notes=(body.notes or "").strip() or None, linked_by=ctx.user.name)
     cap = remaining
@@ -1209,11 +1280,12 @@ def add_link(
                 M.StmtTxnLink.tenant_id == ctx.tenant.id, M.StmtTxnLink.txn_id == t.id,
                 M.StmtTxnLink.vinv_id == vi.id)).scalar_one():
             raise HTTPException(409, f"{vi.doc_no} is already attached to this transaction")
-        open_amt = vinv_tax(ctx, vi).rounded - _booked(ctx, vinv_id=vi.id)
+        open_amt = _vend_open(ctx, vi)
         if open_amt <= 0:
             raise HTTPException(
                 409,
-                f"{vi.doc_no} is already fully settled by bank debits, card spends and TDS"
+                f"{vi.doc_no} is already fully paid — by bank debits, card spends, "
+                "payments on Vendor Payments or TDS"
             )
         link.vinv_id, cap = vi.id, min(remaining, open_amt)
         doc_no = vi.doc_no
@@ -1244,6 +1316,22 @@ def add_link(
                 if not h.active:
                     raise HTTPException(422, f"{h.name} is marked inactive")
                 link.expense_id = h.id
+    elif body.link_type == "GOVT":
+        # v5.0 — money paid to the government: GST, TDS, PF, ESI or another
+        # statutory due, with the month it is for and the challan reference.
+        if is_credit:
+            raise HTTPException(422, "A government payment is money paid out — pick a debit "
+                                "in the statement, not a credit.")
+        if not body.govt_kind:
+            raise HTTPException(422, "Say what was paid: GST, TDS, PF, ESI or other")
+        descr = (body.govt_descr or "").strip()
+        if body.govt_kind == "OTHER" and not descr:
+            raise HTTPException(422, "Say what the other statutory payment was for "
+                                "(professional tax, labour welfare fund, …)")
+        link.govt_kind = body.govt_kind
+        link.govt_period = body.govt_period
+        link.challan_ref = (body.challan_ref or "").strip() or None
+        link.govt_descr = descr or None
     else:  # DIRECTOR_LOAN — credit: loan received; debit: loan repaid
         dr = ctx.get(M.Director, body.ref_id)
         if not dr:
@@ -1254,20 +1342,23 @@ def add_link(
 
     amount = Decimal(str(body.amount)) if body.amount is not None else cap
     tds = Decimal(str(body.tds)) if body.tds else Decimal("0")
+    gst = Decimal(str(body.gst_tds)) if body.gst_tds else Decimal("0")
     if amount > remaining:
         raise HTTPException(422, f"Only {remaining:.2f} of this transaction is left to attach")
     if open_amt is not None:
         if amount > open_amt:
             raise HTTPException(422, f"Only {open_amt:.2f} is open on that invoice")
-        if amount + tds > open_amt + CENT:
+        if amount + tds + gst > open_amt + CENT:
             raise HTTPException(
                 422,
-                f"Amount {amount:.2f} plus TDS {tds:.2f} is more than the "
-                f"{open_amt:.2f} open on {doc_no}")
+                f"Amount {amount:.2f} plus TDS {tds:.2f}"
+                + (f" plus GST withheld {gst:.2f}" if gst else "")
+                + f" is more than the {open_amt:.2f} open on {doc_no}")
     link.amount = amount
     link.tds = tds
+    link.gst_tds = gst
     ctx.db.add(link)
-    if link.link_type == "CUST_INV":
+    if link.link_type in ("CUST_INV", "VEND_INV"):
         _post_receipt(ctx, link, t, a)
 
     if a.kind == "CARD" and t.allocation != "COMPANY":
@@ -1276,13 +1367,15 @@ def add_link(
         t.allocated_by = ctx.user.name
         t.allocated_at = datetime.utcnow()
 
-    ctx.db.commit()
-    return _link_out(ctx, link)
+    ctx.db.flush()
+    return link
 
 
 class LinkTdsIn(BaseModel):
-    # None: book the whole balance still open on the invoice as TDS.
+    # Neither given: book the whole balance still open on the invoice as TDS.
+    # Either given: set it (0 clears it) and leave the other as it is.
     tds: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    gst_tds: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
 
 
 @router.put("/links/{lid}/tds")
@@ -1295,37 +1388,38 @@ def set_link_tds(
     last payment on an invoice was attached before it was known that the
     shortfall was tax deducted at source. With no figure, the balance still
     open on the invoice is booked as TDS; 0 clears it."""
-    from ..service import invoice_tax, vinv_tax
     l = ctx.get(M.StmtTxnLink, lid)
     if not l:
         raise HTTPException(404, "No such attachment")
     t = ctx.get(M.StmtTxn, l.txn_id)
     ctx.require(_perm_for(ctx.get(M.StmtAccount, t.account_id).kind))
     if l.link_type == "CUST_INV":
-        inv = ctx.get(M.Invoice, l.invoice_id)
-        # what is open, with this link's own TDS put back
-        total, booked, doc_no = _cust_open(ctx, inv), Decimal("0"), inv.doc_no
+        doc = ctx.get(M.Invoice, l.invoice_id)
+        open_now = _cust_open(ctx, doc)
     elif l.link_type == "VEND_INV":
-        vi = ctx.get(M.VendorInvoice, l.vinv_id)
-        total, booked, doc_no = vinv_tax(ctx, vi).rounded, _booked(ctx, vinv_id=vi.id), vi.doc_no
+        doc = ctx.get(M.VendorInvoice, l.vinv_id)
+        open_now = _vend_open(ctx, doc)
     else:
-        raise HTTPException(422, "TDS is recorded against an invoice only")
-    current = Decimal(str(l.tds or 0))
-    # booked already counts this link's amount and its current TDS
-    room = total - (booked - current)                            # what this link's TDS may be
-    tds = room if body.tds is None else Decimal(str(body.tds))
-    if tds < 0:
-        tds = Decimal("0")
-    if tds > room + CENT:
-        raise HTTPException(422, f"Only {max(room, Decimal('0')):.2f} is left open on {doc_no} "
-                            "to book as TDS")
-    l.tds = tds
-    if l.link_type == "CUST_INV":
-        p = ctx.db.get(M.Payment, l.payment_id) if l.payment_id else None
-        if p:
-            p.tds = tds                 # the receipt carries the same TDS
-        else:
-            _post_receipt(ctx, l, t, ctx.get(M.StmtAccount, t.account_id))
+        raise HTTPException(422, "TDS and GST withheld are recorded against an invoice only")
+    cur_tds, cur_gst = Decimal(str(l.tds or 0)), Decimal(str(l.gst_tds or 0))
+    # what this link's TDS and GST withheld may come to together: what is
+    # open on the invoice with this link's own withholding put back
+    room = open_now + cur_tds + cur_gst
+    if body.tds is None and body.gst_tds is None:
+        tds, gst = room - cur_gst, cur_gst                   # the balance as TDS
+    else:
+        tds = cur_tds if body.tds is None else Decimal(str(body.tds))
+        gst = cur_gst if body.gst_tds is None else Decimal(str(body.gst_tds))
+    tds, gst = max(tds, Decimal("0")), max(gst, Decimal("0"))
+    if tds + gst > room + CENT:
+        raise HTTPException(422, f"Only {max(room, Decimal('0')):.2f} is left open on "
+                            f"{doc.doc_no} to book as TDS and GST withheld")
+    l.tds, l.gst_tds = tds, gst
+    p = ctx.db.get(M.Payment, l.payment_id) if l.payment_id else None
+    if p:
+        p.tds, p.gst_tds = tds, gst     # the payment entry carries the same
+    else:
+        _post_receipt(ctx, l, t, ctx.get(M.StmtAccount, t.account_id))
     ctx.db.commit()
     return _link_out(ctx, l)
 
@@ -1353,6 +1447,187 @@ def del_link(
     ctx.db.flush()
     _drop_receipts(ctx, [pid])          # the invoice goes back to unpaid
     ctx.db.commit()
+
+
+# ------------------------------------------- an invoice's payments (v5.0)
+
+def _withheld_totals(ctx, *, invoice_id=None, vinv_id=None) -> dict:
+    """TDS and GST withheld on an invoice so far, from every payment entry
+    (bank-posted or entered by hand) and older attachments without one."""
+    col = M.Payment.invoice_id if invoice_id else M.Payment.vinv_id
+    key = invoice_id or vinv_id
+    tds, gst = ctx.db.execute(select(
+        func.coalesce(func.sum(M.Payment.tds), 0), func.coalesce(func.sum(M.Payment.gst_tds), 0))
+        .where(M.Payment.tenant_id == ctx.tenant.id, col == key)).one()
+    lcol = M.StmtTxnLink.invoice_id if invoice_id else M.StmtTxnLink.vinv_id
+    ltds, lgst = ctx.db.execute(select(
+        func.coalesce(func.sum(M.StmtTxnLink.tds), 0), func.coalesce(func.sum(M.StmtTxnLink.gst_tds), 0))
+        .where(M.StmtTxnLink.tenant_id == ctx.tenant.id, lcol == key,
+               M.StmtTxnLink.payment_id.is_(None))).one()
+    return {"tds_total": round(float(tds) + float(ltds), 2),
+            "gst_tds_total": round(float(gst) + float(lgst), 2)}
+
+
+def _invoice_doc(ctx, link_type, ref_id):
+    from ..service import invoice_tax, vinv_tax
+    if link_type == "CUST_INV":
+        inv = ctx.get(M.Invoice, ref_id)
+        if not inv or inv.doc_type != "TAX":
+            raise HTTPException(404, "No such customer tax invoice")
+        return inv, invoice_tax(ctx, inv), inv.customer.name, _cust_open(ctx, inv), {"invoice_id": inv.id}
+    vi = ctx.get(M.VendorInvoice, ref_id)
+    if not vi:
+        raise HTTPException(404, "No such vendor invoice")
+    return vi, vinv_tax(ctx, vi), vi.vendor.name, _vend_open(ctx, vi), {"vinv_id": vi.id}
+
+
+def _invoice_summary(ctx, link_type, ref_id) -> dict:
+    """An invoice with every payment against it — from the bank statement and
+    entered by hand — and the TDS and GST withheld on each."""
+    doc, tx, party, open_amt, key = _invoice_doc(ctx, link_type, ref_id)
+    from_bank = {pid: (lbl, descr) for pid, lbl, descr in ctx.db.execute(
+        select(M.StmtTxnLink.payment_id, M.StmtAccount.label, M.StmtTxn.descr)
+        .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
+        .join(M.StmtAccount, M.StmtAccount.id == M.StmtTxn.account_id)
+        .where(M.StmtTxnLink.tenant_id == ctx.tenant.id,
+               M.StmtTxnLink.payment_id.is_not(None))).all()}
+    col = M.Payment.invoice_id if link_type == "CUST_INV" else M.Payment.vinv_id
+    rows = []
+    for p in ctx.db.execute(select(M.Payment).where(
+            M.Payment.tenant_id == ctx.tenant.id, col == doc.id)
+            .order_by(M.Payment.pay_date, M.Payment.id)).scalars():
+        b = from_bank.get(p.id)
+        rows.append({"date": p.pay_date.isoformat(), "amount": float(p.amount), "tds": float(p.tds or 0),
+                     "gst_tds": float(p.gst_tds or 0),
+                     "source": f"Bank statement · {b[0]}" if b else
+                               ("Reversal" if p.reverses_id else f"Entered by hand · {p.mode}"),
+                     "ref": (b[1] if b else p.bank_ref) or "", "from_bank": bool(b),
+                     "reversal": bool(p.reverses_id)})
+    lcol = M.StmtTxnLink.invoice_id if link_type == "CUST_INV" else M.StmtTxnLink.vinv_id
+    for l, t, a in ctx.db.execute(
+            select(M.StmtTxnLink, M.StmtTxn, M.StmtAccount)
+            .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
+            .join(M.StmtAccount, M.StmtAccount.id == M.StmtTxn.account_id)
+            .where(M.StmtTxnLink.tenant_id == ctx.tenant.id, lcol == doc.id,
+                   M.StmtTxnLink.payment_id.is_(None))).all():
+        rows.append({"date": t.txn_date.isoformat(), "amount": float(l.amount), "tds": float(l.tds or 0),
+                     "gst_tds": float(l.gst_tds or 0), "source": f"Bank statement · {a.label}",
+                     "ref": t.descr or "", "from_bank": True, "reversal": False})
+    rows.sort(key=lambda r: r["date"])
+    paid = round(sum(r["amount"] for r in rows), 2)
+    tds = round(sum(r["tds"] for r in rows), 2)
+    gst = round(sum(r["gst_tds"] for r in rows), 2)
+    return {"link_type": link_type, "id": doc.id, "doc_no": doc.doc_no, "doc_date": doc.doc_date.isoformat(),
+            "party": party, "total": float(tx.rounded), "taxable": float(tx.taxable),
+            "gst": round(float(tx.rounded) - float(tx.taxable), 2),
+            "paid": paid, "tds": tds, "gst_tds": gst, "open": round(float(open_amt), 2),
+            "payments": rows}
+
+
+def _candidates(ctx, link_type, doc, open_amt) -> list:
+    """Bank lines (and, for a vendor invoice, company card spends) with money
+    still to attach, on the right side, from 90 days before the invoice."""
+    credit = link_type == "CUST_INV"
+    q = (select(M.StmtTxn, M.StmtAccount)
+         .join(M.StmtAccount, M.StmtAccount.id == M.StmtTxn.account_id)
+         .where(M.StmtTxn.tenant_id == ctx.tenant.id,
+                M.StmtTxn.txn_date >= doc.doc_date - timedelta(days=90)))
+    q = q.where(M.StmtTxn.credit > 0, M.StmtAccount.kind == "BANK") if credit \
+        else q.where(M.StmtTxn.debit > 0)
+    allowed = {k for k in ("BANK", "CARD") if _perm_for(k) in ctx.perms}
+    out = []
+    for t, a in ctx.db.execute(q.order_by(M.StmtTxn.txn_date)).all():
+        if a.kind not in allowed or (a.kind == "CARD" and t.allocation == "PERSONAL"):
+            continue
+        left = float((t.credit or t.debit) - _attached_sum(ctx, txn_id=t.id))
+        if left <= 0.005:
+            continue
+        out.append({"txn_id": t.id, "date": t.txn_date.isoformat(), "descr": t.descr,
+                    "account": a.label, "account_kind": a.kind,
+                    "amount": float(t.credit or t.debit), "remaining": round(left, 2),
+                    "exact": abs(left - float(open_amt)) < 0.005})
+    out.sort(key=lambda r: (not r["exact"], abs(r["remaining"] - float(open_amt))))
+    return out[:100]
+
+
+@router.get("/invoice-payments")
+def invoice_payments(
+    link_type: str = Query(..., pattern="^(CUST_INV|VEND_INV)$"), id: int = Query(...),
+    ctx: Ctx = Depends(need_any("bankstmt", "cardstmt", "saved", "vinv", "crec", "vpay"))
+):
+    """An invoice's payments with TDS and GST withheld on each, and — for
+    someone who can work Bank Statements — the bank lines that could still
+    be attached to it."""
+    out = _invoice_summary(ctx, link_type, id)
+    can_attach = bool({"bankstmt", "cardstmt"} & ctx.perms)
+    out["can_attach"] = can_attach
+    out["candidates"] = []
+    if can_attach and out["open"] > 0.005:
+        doc = _invoice_doc(ctx, link_type, id)[0]
+        out["candidates"] = _candidates(ctx, link_type, doc, out["open"])
+    return out
+
+
+class MatchItem(BaseModel):
+    txn_id: int
+    amount: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+
+
+class MatchIn(BaseModel):
+    link_type: str = Field(pattern="^(CUST_INV|VEND_INV)$")
+    ref_id: int
+    items: list[MatchItem] = Field(min_length=1, max_length=50)
+    tds: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    gst_tds: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    notes: str | None = Field(default=None, max_length=200)
+
+
+@router.post("/invoice-payments", status_code=201)
+def match_invoice_payments(body: MatchIn, ctx: Ctx = Depends(need_any("bankstmt", "cardstmt"))):
+    """Attach several bank lines to one invoice at once (v5.0). The TDS and
+    GST withheld go on the last line, which closes the invoice. All or
+    nothing: if any line cannot be attached, none is."""
+    if len({i.txn_id for i in body.items}) != len(body.items):
+        raise HTTPException(422, "The same bank line is listed twice")
+    try:
+        for n, it in enumerate(body.items):
+            t, a = _link_txn(ctx, it.txn_id)
+            last = n == len(body.items) - 1
+            _add_link(ctx, t, a, LinkIn(
+                link_type=body.link_type, ref_id=body.ref_id, amount=it.amount,
+                tds=body.tds if last else None, gst_tds=body.gst_tds if last else None,
+                notes=body.notes))
+    except HTTPException as e:
+        ctx.db.rollback()
+        raise HTTPException(e.status_code, f"Line {n + 1}: {e.detail} — nothing was attached.") from None
+    ctx.db.commit()
+    return _invoice_summary(ctx, body.link_type, body.ref_id)
+
+
+# ------------------------------------------- statutory payments (v5.0)
+
+@router.get("/govt-payments")
+def govt_payments(period: str | None = None, ctx: Ctx = Depends(need_any("bankstmt", "registers"))):
+    """Payments to the government attached on Bank Statements — GST, TDS,
+    PF, ESI and other statutory dues — for a month or a financial year."""
+    q = (select(M.StmtTxnLink, M.StmtTxn, M.StmtAccount)
+         .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
+         .join(M.StmtAccount, M.StmtAccount.id == M.StmtTxn.account_id)
+         .where(M.StmtTxnLink.tenant_id == ctx.tenant.id, M.StmtTxnLink.link_type == "GOVT"))
+    if period:
+        lo, hi = _view_bounds(ctx, period)
+        q = q.where(M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi)
+    rows, by_kind = [], {k: 0.0 for k in GOVT_LABEL}
+    for l, t, a in ctx.db.execute(q.order_by(M.StmtTxn.txn_date, M.StmtTxnLink.id)).all():
+        amt = float(l.amount)
+        by_kind[l.govt_kind] = round(by_kind[l.govt_kind] + amt, 2)
+        rows.append({"id": l.id, "date": t.txn_date.isoformat(), "kind": l.govt_kind,
+                     "kind_label": GOVT_LABEL[l.govt_kind], "for_month": l.govt_period,
+                     "challan_ref": l.challan_ref, "descr": l.govt_descr, "amount": amt,
+                     "account": a.label, "bank_ref": t.descr, "notes": l.notes})
+    return {"period": period, "rows": rows,
+            "by_kind": [{"kind": k, "label": GOVT_LABEL[k], "amount": v} for k, v in by_kind.items()],
+            "total": round(sum(r["amount"] for r in rows), 2)}
 
 
 # --------------------------------------------------------------- directors (v4.8)
@@ -1437,9 +1712,7 @@ def director_loans(period: str | None = None, ctx: Ctx = Depends(need("bankstmt"
     With no month, the whole history."""
     lo = hi = None
     if period:
-        if not PERIOD_RE.match(period):
-            raise HTTPException(422, "Give the month as YYYY-MM")
-        lo, hi = _month_bounds(period)
+        lo, hi = _view_bounds(ctx, period)              # a month or a financial year
     out, entries = [], []
     for d in ctx.db.execute(ctx.scope(select(M.Director), M.Director)
                             .order_by(M.Director.name)).scalars().all():
@@ -1473,17 +1746,47 @@ def director_loans(period: str | None = None, ctx: Ctx = Depends(need("bankstmt"
 
 # --------------------------------------------------------------- reconciliation
 
-def _in_period(q, account, period):
+FY_VIEW_RE = re.compile(r"^(?:FY)?\d{4}-\d{2}$", re.I)
+
+
+def _is_fy(period) -> bool:
+    """A financial-year label (FY2026-27 / 2026-27), not a month (2026-04)."""
+    return bool(period) and not PERIOD_RE.match(period) and bool(FY_VIEW_RE.match(period))
+
+
+def _view_bounds(ctx, period):
+    """(first day, day after the last) of a month "YYYY-MM" or a financial
+    year "FY2026-27" (v5.0: Bank Statements open on the financial year)."""
+    if PERIOD_RE.match(period or ""):
+        return _month_bounds(period)
+    if _is_fy(period):
+        from ..fy import fy_bounds
+        lo, hi = fy_bounds(ctx.tenant, period.upper().removeprefix("FY"))
+        return lo, hi + timedelta(days=1)
+    raise HTTPException(422, "Give a month as YYYY-MM or a financial year as FY2026-27")
+
+
+def _months_between(lo, hi):
+    """The YYYY-MM months from lo up to (not including) hi."""
+    out, y, m = [], lo.year, lo.month
+    while date(y, m, 1) < hi:
+        out.append(f"{y}-{m:02d}")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def _in_period(q, account, period, ctx=None):
     """A bank statement follows the calendar month, so its rows are picked by
     date. A card statement runs from one billing date to the next (13 Aug to
     12 Sep, say), so its rows belong to the statement month they were
     uploaded under, whatever their dates."""
     if account.kind == "CARD":
+        months = [period] if PERIOD_RE.match(period) else _months_between(*_view_bounds(ctx, period))
         ups = select(M.StmtUpload.id).where(M.StmtUpload.tenant_id == account.tenant_id,
                                             M.StmtUpload.account_id == account.id,
-                                            M.StmtUpload.period == period)
+                                            M.StmtUpload.period.in_(months))
         return q.where(M.StmtTxn.upload_id.in_(ups))
-    lo, hi = _month_bounds(period)
+    lo, hi = _view_bounds(ctx, period) if ctx else _month_bounds(period)
     return q.where(M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi)
 
 
@@ -1504,7 +1807,7 @@ def reconcile(period: str | None = None, ctx: Ctx = Depends(need("cardstmt"))):
         q = select(M.StmtTxn).where(M.StmtTxn.tenant_id == ctx.tenant.id,
                                     M.StmtTxn.account_id == a.id)
         if period:
-            q = _in_period(q, a, period)
+            q = _in_period(q, a, period, ctx)          # v5.0: a month or a financial year
         rows = ctx.db.execute(q).scalars().all()
         inv_paid = _vinv_attached(ctx, [t.id for t in rows])
 
@@ -1540,9 +1843,7 @@ def expense_ledger(period: str = Query(...), ctx: Ctx = Depends(
     be tallied against what actually moved: vendor invoices booked, vendor
     payments recorded, bank statement debits, and card spend allocated to the
     company."""
-    if not PERIOD_RE.match(period):
-        raise HTTPException(422, "Give the month as YYYY-MM")
-    lo, hi = _month_bounds(period)
+    lo, hi = _view_bounds(ctx, period)                  # a month or a financial year
 
     vinvs = ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)
                            .where(M.VendorInvoice.doc_date >= lo,

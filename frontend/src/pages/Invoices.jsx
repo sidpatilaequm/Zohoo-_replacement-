@@ -1,4 +1,6 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useState, useEffect } from 'react'
+import { useFy } from '../lib/fy'
+import InvoicePayments from '../components/InvoicePayments'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, useLoad, Loading, ErrorBox, useFlash,
@@ -12,25 +14,27 @@ export default function Invoices() {
   const navigate = useNavigate()
   const list = useLoad(() => api.invoices('TAX'))
   const [filter, setFilter] = useState('ALL')
-  const [fy, setFy] = useState('')
+  // v5.0: opens on the year chosen at the top, and follows it
+  const top = useFy()
+  const [fyPick, setFy] = useState(undefined)
+  useEffect(() => { setFy(undefined) }, [top.param])
+  const fy = fyPick === undefined ? top.param : fyPick
   const [flash, showFlash] = useFlash()
   const [variant, setVariant] = usePrintVariant()
   const [printAs, setPrintAs] = useState('')   // '' = as the document is, 'PRO' = proforma layout
   const [documentsFor, setDocumentsFor] = useState(null)
   const [open, setOpen] = useState(null)       // invoice whose lines are shown
   const [mailing, setMailing] = useState(null)
+  const [paysFor, setPaysFor] = useState(null)      // v5.0: invoice whose payments are open
   if (list.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
 
   const canEdit = can ? can('invoice') : true
 
-  const now = new Date()
-  const curY = now.getFullYear()
-  const curM = now.getMonth() + 1
-  const currentFyStr = curM >= 4 ? `${curY}-${String(curY + 1).slice(-2)}` : `${curY - 1}-${String(curY).slice(-2)}`
+  const currentFyStr = top.current     // follows the company's own year start
 
   const rawYears = Array.from(new Set([
-    currentFyStr,
+    ...top.years.map(y => y.label),
     ...(list.data || []).map(v => v.fy).filter(Boolean)
   ])).sort().reverse()
   const years = rawYears.map(y => ({ label: y, current: y === currentFyStr }))
@@ -144,6 +148,9 @@ export default function Invoices() {
                 >
                   Docs
                 </button>
+              {!pro && !dead && <button className="btn btn-sm" style={{ marginLeft: 5 }}
+                title="Payments, TDS and GST withheld; attach bank credits"
+                onClick={() => setPaysFor(v.id)}>Payments</button>}
               <button className="btn btn-sm" style={{ marginLeft: 5 }} onClick={() => setMailing(v)}>Email</button>
               {!dead && (
                 <button className="btn btn-sm" style={{ marginLeft: 5 }}
@@ -163,6 +170,8 @@ export default function Invoices() {
       </Table>
         </Panel>
 
+    {paysFor && <InvoicePayments linkType="CUST_INV" id={paysFor} onClose={() => setPaysFor(null)}
+      onChanged={() => list.reload()} />}
     {documentsFor && (
       <DocFiles
         kind="invoice"

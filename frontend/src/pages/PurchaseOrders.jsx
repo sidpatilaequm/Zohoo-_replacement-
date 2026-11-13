@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useFyRows, FyCount } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
   usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
@@ -9,6 +10,7 @@ export default function PurchaseOrders() {
   const vendors = useLoad(() => api.vendors())
   const materials = useLoad(() => api.materials())
   const list = useLoad(() => api.pos())
+  const fyRows = useFyRows()   // v5.0: the year chosen at the top
   const t = me?.tenant
   const orgAddr = t ? `${t.name}\nGSTIN ${t.gstin || '—'}` : ''
   const [h, setH] = useState({ vendor_id: '', gstin: '', doc_date: today(), req_date: '',
@@ -164,14 +166,14 @@ export default function PurchaseOrders() {
       </div>
     </form>
 
-    <Panel title={`Saved purchase orders — ${list.data.length}`}
+    <Panel title={<>Saved purchase orders — <FyCount shown={fyRows(list.data).length} total={(list.data || []).length} /></>}
       right={<VariantPicker value={variant} onChange={setVariant} />} bodyless>
       <Table head={['PO', 'Date', 'Vendor', 'Delivery', { label: 'Status', align: 'c' },
         { label: 'Supply', align: 'c' }, { label: 'Taxable', align: 'r' },
         { label: 'Input tax', align: 'r' }, { label: 'Total', align: 'r' },
         { label: 'Print', align: 'c' }]}
         empty="No purchase orders yet.">
-        {list.data.map(o => (
+        {fyRows(list.data).map(o => (
           <tr key={o.id}>
             <td className="mono"><b>{o.doc_no}</b></td>
             <td className="mono">{gd(o.doc_date)}</td>

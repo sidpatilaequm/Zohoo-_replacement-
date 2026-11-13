@@ -431,6 +431,8 @@ class Payment(Base):
     vinv_id: Mapped[int|None]=mapped_column(ForeignKey("vendor_invoices.id",ondelete="CASCADE"),nullable=True)
     amount: Mapped[Decimal]=mapped_column(Numeric(14,2))
     tds: Mapped[Decimal]=mapped_column(Numeric(14,2),default=0)
+    # v5.0 — GST withheld by the payer (GST TDS, CGST Act s.51)
+    gst_tds: Mapped[Decimal]=mapped_column(Numeric(14,2),default=0)
     mode: Mapped[str]=mapped_column(Enum("NEFT","RTGS","IMPS","UPI","Cheque","Cash","Adjustment",name="pmode"))
     bank_ref: Mapped[str|None]=mapped_column(String(60),nullable=True)
     bank_acct: Mapped[str|None]=mapped_column(String(80),nullable=True)
@@ -829,7 +831,7 @@ class StmtTxnLink(Base):
         ForeignKey("stmt_txns.id",ondelete="CASCADE")
     )
     link_type: Mapped[str]=mapped_column(
-        Enum("CUST_INV","VEND_INV","EMPLOYEE","DIRECTOR_LOAN",name="sltype")
+        Enum("CUST_INV","VEND_INV","EMPLOYEE","DIRECTOR_LOAN","GOVT",name="sltype")
     )
     invoice_id: Mapped[int|None]=mapped_column(
         ForeignKey("invoices.id",ondelete="CASCADE"),nullable=True
@@ -854,6 +856,18 @@ class StmtTxnLink(Base):
     amount: Mapped[Decimal]=mapped_column(Numeric(14,2))
     # v4.8 — TDS deducted on an invoice attachment (not money that moved)
     tds: Mapped[Decimal]=mapped_column(Numeric(14,2),default=0)
+    # v5.0 — GST withheld on an invoice attachment: GST TDS under CGST Act
+    # s.51 (government and notified deductors keep 2% of the taxable value
+    # and pay it to the government in the supplier's name)
+    gst_tds: Mapped[Decimal]=mapped_column(Numeric(14,2),default=0)
+    # v5.0 — a payment to the government (statutory compliance): which
+    # liability it pays, the month it is for, and the challan reference
+    govt_kind: Mapped[str|None]=mapped_column(
+        Enum("GST","TDS","PF","ESI","OTHER",name="slgovt"),nullable=True
+    )
+    govt_period: Mapped[str|None]=mapped_column(String(7),nullable=True)
+    challan_ref: Mapped[str|None]=mapped_column(String(40),nullable=True)
+    govt_descr: Mapped[str|None]=mapped_column(String(120),nullable=True)
     # v4.9 — the receipt this attachment posted on Customer Payments, so the
     # invoice shows as paid. Removed with the attachment.
     payment_id: Mapped[int|None]=mapped_column(

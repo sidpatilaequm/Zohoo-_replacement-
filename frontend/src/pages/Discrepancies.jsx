@@ -2,12 +2,14 @@ import { useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { gd } from '../lib/fmt'
+import { useFyRows, FyCount } from '../lib/fy'
 
 export default function Discrepancies() {
   const { api } = useAuth()
   const [status, setStatus] = useState('HELD')
   const list = useLoad(() => api.discrepancies(status === 'ALL' ? null : status), [status])
   const inv = useLoad(() => api.discInvoiceable())
+  const fyRows = useFyRows()   // v5.0: released ones by year; held ones always (they await action)
   const [flash, showFlash] = useFlash()
 
   if (list.loading) return <Loading />
@@ -29,7 +31,8 @@ export default function Discrepancies() {
       released, the <b>received</b> quantity becomes what they may invoice, not the ordered
       quantity. There is no approval workflow yet — anyone with access to this screen can release.</Alert>
 
-    <Panel title="Discrepancies" right={
+    <Panel title={status === 'HELD' ? 'Discrepancies — held, all years'
+      : <>Discrepancies — <FyCount shown={fyRows(list.data).length} total={list.data.length} /></>} right={
       <select value={status} onChange={e => setStatus(e.target.value)}
         style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }}>
         <option value="HELD">Held — awaiting release</option>
@@ -41,7 +44,7 @@ export default function Discrepancies() {
         { label: 'Difference', align: 'r' }, { label: 'Type', align: 'c' },
         { label: 'Status', align: 'c' }, { label: 'Action', align: 'c' }]}
         empty="Nothing to show. A line appears here only when the delivered quantity differs from the ordered quantity.">
-        {list.data.map(d => (
+        {(status === 'HELD' ? list.data : fyRows(list.data)).map(d => (
           <tr key={d.id}>
             <td className="mono"><b>{d.grn_no}</b></td>
             <td className="mono">{gd(d.grn_date)}</td>
