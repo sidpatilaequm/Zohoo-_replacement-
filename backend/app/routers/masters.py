@@ -6,6 +6,7 @@ from ..deps import Ctx, current, need, need_any
 from ..service import next_code
 from ..fy import current_fy
 from sqlalchemy.exc import IntegrityError
+from ..microvista import lookup_gstin
 router = APIRouter(tags=["masters"])
 
 
@@ -93,6 +94,12 @@ def list_customers(ctx: Ctx = Depends(need("customers"))):
                            "ship_city": c.ship_city, "ship_state": c.ship_state,
                            "ship_pin": c.ship_pin},
                        _contacts_for(ctx, "CUSTOMER", c.id))} for c in rows]
+
+
+@router.get("/gstin/lookup/{gstin}")
+def gstin_lookup(gstin: str, ctx: Ctx = Depends(need_any("customers", "vendors", "invoice", "bills"))):
+    """Fetch registered taxpayer details from GSTN via Microvista API."""
+    return lookup_gstin(gstin)
 
 
 @router.post("/customers", status_code=201)

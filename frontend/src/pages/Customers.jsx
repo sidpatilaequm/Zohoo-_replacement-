@@ -28,6 +28,9 @@ export default function Customers() {
   const [err, setErr] = useState(null)
   const [editing, setEditing] = useState(null)   // id of the customer being edited
   const [flash, showFlash] = useFlash()
+  const [gstQuery, setGstQuery] = useState('')
+  const [gstLoading, setGstLoading] = useState(false)
+  const [gstStatus, setGstStatus] = useState(null)
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
 
   function pickLogo(e) {
@@ -56,7 +59,38 @@ export default function Customers() {
       designation_id: x.designation_id || '', phone: x.phone || '', email: x.email || '', is_primary: x.is_primary })))
     setErr(null); window.scrollTo({ top: 0 })
   }
-  function cancelEdit() { setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setErr(null) }
+  function cancelEdit() { setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setGstQuery(''); setGstStatus(null); setErr(null) }
+
+  async function fetchGstin(query) {
+    const v = (query || '').trim().toUpperCase()
+    if (!v || v.length !== 15) return setErr('A GSTIN is exactly 15 characters (e.g. 29AAACI4798L1ZU)')
+    if (!/^\d{2}/.test(v)) return setErr('A GSTIN begins with a two-digit state code')
+    setGstLoading(true)
+    setErr(null)
+    try {
+      const data = await api.lookupGstin(v)
+      setF(s => ({
+        ...s,
+        party_type: 'B2B',
+        name: data.name || s.name,
+        bill_addr: data.bill_addr || s.bill_addr,
+        bill_city: data.bill_city || s.bill_city,
+        bill_state: data.bill_state || s.bill_state,
+        bill_pin: data.bill_pin || s.bill_pin,
+        pan: data.pan || s.pan,
+      }))
+      setRegs(prev => {
+        if (prev.some(r => r.gstin === data.gstin)) return prev
+        return [...prev, { gstin: data.gstin, label: 'Principal place', is_default: !prev.length }]
+      })
+      setGstStatus(data)
+      showFlash(`GST details loaded for ${data.name} (${data.status})`)
+    } catch (x) {
+      setErr(x.message || 'Failed to fetch GSTIN details')
+    } finally {
+      setGstLoading(false)
+    }
+  }
 
   function addReg() {
     const v = g.gstin.trim().toUpperCase()
@@ -73,7 +107,7 @@ export default function Customers() {
         payment_term_days: Number(f.payment_term_days) || 0,
         payment_terms: (f.payment_terms || '').trim() || null }
       if (editing) await api.editCustomer(editing, body); else await api.addCustomer(body)
-      setEditing(null); setF(BLANK); setRegs([]); setContacts([]); list.reload()
+      setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setGstQuery(''); setGstStatus(null); list.reload()
       showFlash(editing ? 'Customer updated.' : 'Customer saved.')
     } catch (x) { setErr(x.message) }
   }
@@ -94,6 +128,61 @@ export default function Customers() {
     <Panel title={editing ? `Edit customer ${f.code}` : 'Add customer'}
       right={editing && <button type="button" className="btn btn-sm" onClick={cancelEdit}>Cancel edit</button>}>
       <form onSubmit={save}>
+        {/* Quick fill from GSTIN */}
+        <div style={{
+          background: 'var(--panel-subtle, rgba(0, 0, 0, 0.02))',
+          border: '1px solid var(--line2)',
+          borderRadius: 8,
+          padding: '12px 14px',
+          marginBottom: 16,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Auto-fill B2B Customer by GSTIN</div>
+              <div className="fine" style={{ margin: 0 }}>
+                Enter the customer's 15-character GSTIN to auto-fetch trade name, registered address, and state from GSTN.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                className="mono"
+                placeholder="15-character GSTIN"
+                maxLength={15}
+                value={gstQuery}
+                onChange={e => setGstQuery(e.target.value.toUpperCase())}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); fetchGstin(gstQuery); } }}
+                style={{
+                  padding: '7px 11px',
+                  border: '1px solid var(--line2)',
+                  borderRadius: 6,
+                  width: 190,
+                  textTransform: 'uppercase'
+                }}
+              />
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={gstLoading || !gstQuery.trim()}
+                onClick={() => fetchGstin(gstQuery)}
+                style={{ background: 'var(--accent, #2563eb)', color: '#fff', border: 'none' }}
+              >
+                {gstLoading ? 'Fetching...' : 'Fetch details'}
+              </button>
+            </div>
+          </div>
+          {gstStatus && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 4, borderTop: '1px solid var(--line)' }}>
+              <Tag kind={gstStatus.status === 'Active' ? 'ok' : 'warn'}>{gstStatus.status}</Tag>
+              <span className="fine">
+                <b>{gstStatus.legal_name || gstStatus.trade_name}</b> &bull; {gstStatus.taxpayer_type} &bull; {gstStatus.constitution || 'Registered Taxpayer'}
+              </span>
+            </div>
+          )}
+        </div>
+
         <div className="row">
           <Field label="Customer code" hint="Left blank, one is allocated">
             <input className="mono" value={f.code} onChange={e => set('code', e.target.value)} /></Field>
@@ -169,6 +258,8 @@ export default function Customers() {
             <input placeholder="label, e.g. Head office"
               style={{ padding: '8px 11px', border: '1px solid var(--line2)', borderRadius: 7, width: 190 }}
               value={g.label} onChange={e => setG({ ...g, label: e.target.value })} />
+            <button type="button" className="btn btn-sm" disabled={gstLoading || !g.gstin.trim()}
+              onClick={() => fetchGstin(g.gstin)}>Fetch details</button>
             <button type="button" className="btn btn-sm" onClick={addReg}>Add registration</button>
           </div>
         </>) : (

@@ -49,6 +49,7 @@ export function makeApi(token, tenantId) {
     sigSettings: (b) => call('/signatories/settings', { method: 'PUT', body: b }),
 
     customers: () => call('/customers'),
+    lookupGstin: (gstin) => call(`/gstin/lookup/${encodeURIComponent(gstin)}`),
     addCustomer: (b) => call('/customers', { method: 'POST', body: b }),
     customerLogo: (id, logo) => call(`/customers/${id}/logo`, { method: 'PUT', body: { logo } }),
     editCustomer: (id, b) => call(`/customers/${id}`, { method: 'PUT', body: b }),

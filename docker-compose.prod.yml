@@ -35,6 +35,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       EXTRACT_MODEL: ${EXTRACT_MODEL:-claude-sonnet-4-5}
+      MICROVISTA_TOKEN_ID: ${MICROVISTA_TOKEN_ID:-}
+      MICROVISTA_TOKEN_SECRET: ${MICROVISTA_TOKEN_SECRET:-}
     networks:
       - billing_internal
     depends_on:

@@ -29,6 +29,9 @@ services:
       # optional: lets the invoice reader ask Claude for a second reading
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       EXTRACT_MODEL: ${EXTRACT_MODEL:-claude-sonnet-4-5}
+
+      MICROVISTA_TOKEN_ID: ${MICROVISTA_TOKEN_ID:-}
+      MICROVISTA_TOKEN_SECRET: ${MICROVISTA_TOKEN_SECRET:-}
     ports: ["8000:8000"]
     depends_on:
       db: {condition: service_healthy}
