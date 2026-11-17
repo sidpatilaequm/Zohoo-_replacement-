@@ -76,6 +76,10 @@ def _format_address(addr: Dict[str, Any]) -> str:
     return ", ".join(parts)[:255]
 
 
+DEFAULT_TOKEN_ID = "4E622M4X"
+DEFAULT_TOKEN_SECRET = "CDEPGKV9TD2T"
+
+
 def lookup_gstin(gstin: str) -> Dict[str, Any]:
     cleaned = (gstin or "").strip().upper()
     if len(cleaned) != 15:
@@ -83,8 +87,8 @@ def lookup_gstin(gstin: str) -> Dict[str, Any]:
     if not cleaned[:2].isdigit():
         raise HTTPException(400, "GSTIN must start with a 2-digit state code")
 
-    token_id = os.getenv("MICROVISTA_TOKEN_ID", "").strip()
-    token_secret = os.getenv("MICROVISTA_TOKEN_SECRET", "").strip()
+    token_id = os.getenv("MICROVISTA_TOKEN_ID", "").strip() or DEFAULT_TOKEN_ID
+    token_secret = os.getenv("MICROVISTA_TOKEN_SECRET", "").strip() or DEFAULT_TOKEN_SECRET
     if not token_id or not token_secret:
         raise HTTPException(500, "Microvista API credentials are not configured in MICROVISTA_TOKEN_ID / MICROVISTA_TOKEN_SECRET")
 

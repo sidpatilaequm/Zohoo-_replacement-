@@ -31,6 +31,7 @@ export default function Customers() {
   const [gstQuery, setGstQuery] = useState('')
   const [gstLoading, setGstLoading] = useState(false)
   const [gstStatus, setGstStatus] = useState(null)
+  const [gstErr, setGstErr] = useState(null)
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
 
   function pickLogo(e) {
@@ -59,13 +60,20 @@ export default function Customers() {
       designation_id: x.designation_id || '', phone: x.phone || '', email: x.email || '', is_primary: x.is_primary })))
     setErr(null); window.scrollTo({ top: 0 })
   }
-  function cancelEdit() { setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setGstQuery(''); setGstStatus(null); setErr(null) }
+  function cancelEdit() { setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setGstQuery(''); setGstStatus(null); setGstErr(null); setErr(null) }
 
   async function fetchGstin(query) {
     const v = (query || '').trim().toUpperCase()
-    if (!v || v.length !== 15) return setErr('A GSTIN is exactly 15 characters (e.g. 29AAACI4798L1ZU)')
-    if (!/^\d{2}/.test(v)) return setErr('A GSTIN begins with a two-digit state code')
+    if (!v || v.length !== 15) {
+      setGstErr('A GSTIN is exactly 15 characters (e.g. 29AAACI4798L1ZU)')
+      return setErr('A GSTIN is exactly 15 characters (e.g. 29AAACI4798L1ZU)')
+    }
+    if (!/^\d{2}/.test(v)) {
+      setGstErr('A GSTIN begins with a two-digit state code')
+      return setErr('A GSTIN begins with a two-digit state code')
+    }
     setGstLoading(true)
+    setGstErr(null)
     setErr(null)
     try {
       const data = await api.lookupGstin(v)
@@ -84,9 +92,12 @@ export default function Customers() {
         return [...prev, { gstin: data.gstin, label: 'Principal place', is_default: !prev.length }]
       })
       setGstStatus(data)
+      setGstErr(null)
       showFlash(`GST details loaded for ${data.name} (${data.status})`)
     } catch (x) {
-      setErr(x.message || 'Failed to fetch GSTIN details')
+      const msg = x.message || 'Failed to fetch GSTIN details'
+      setGstErr(msg)
+      setErr(msg)
     } finally {
       setGstLoading(false)
     }
@@ -107,7 +118,7 @@ export default function Customers() {
         payment_term_days: Number(f.payment_term_days) || 0,
         payment_terms: (f.payment_terms || '').trim() || null }
       if (editing) await api.editCustomer(editing, body); else await api.addCustomer(body)
-      setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setGstQuery(''); setGstStatus(null); list.reload()
+      setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setGstQuery(''); setGstStatus(null); setGstErr(null); list.reload()
       showFlash(editing ? 'Customer updated.' : 'Customer saved.')
     } catch (x) { setErr(x.message) }
   }
@@ -179,6 +190,12 @@ export default function Customers() {
               <span className="fine">
                 <b>{gstStatus.legal_name || gstStatus.trade_name}</b> &bull; {gstStatus.taxpayer_type} &bull; {gstStatus.constitution || 'Registered Taxpayer'}
               </span>
+            </div>
+          )}
+          {gstErr && (
+            <div style={{ color: 'var(--err, #dc2626)', fontSize: 12, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>⚠️</span>
+              <span>{gstErr}</span>
             </div>
           )}
         </div>
