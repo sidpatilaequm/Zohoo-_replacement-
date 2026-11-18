@@ -21,6 +21,8 @@ export default function ProformaInvoices() {
   const [fyPick, setFy] = useState(undefined)
   useEffect(() => { setFy(undefined) }, [top.param])
   const fy = fyPick === undefined ? top.param : fyPick
+  const fyNorm = fy ? fy.replace(/^FY\s*/i, '') : ''
+  const deletedList = useLoad(() => api.deletedInvoices('PRO', fyNorm), [fyNorm])
   const [flash, showFlash] = useFlash()
   const [variant, setVariant] = usePrintVariant()
   const [mailing, setMailing] = useState(null)
@@ -61,9 +63,7 @@ export default function ProformaInvoices() {
   ])).sort().reverse()
   const years = rawYears.map(y => ({ label: y, current: y === currentFyStr }))
 
-  const fyNorm = fy ? fy.replace(/^FY\s*/i, '') : ''
   const inFy = list.data.filter(v => !fyNorm || (v.fy && v.fy.replace(/^FY\s*/i, '') === fyNorm))
-  const deletedList = useLoad(() => api.deletedInvoices('PRO', fyNorm), [fyNorm])
 
   const rows = inFy.filter(v =>
     filter === 'OPEN' ? !v.converted_to : filter === 'DONE' ? !!v.converted_to : true)
