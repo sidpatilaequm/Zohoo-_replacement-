@@ -1,6 +1,7 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException
+import json
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from .. import models as M, schemas as S
 from ..deps import Ctx, need
@@ -189,6 +190,82 @@ def invoice_check_no(doc_no: str, doc_type: str = "TAX", doc_date: date | None =
             "available": clash is None,
             "taken_by": ({"id": clash.id, "doc_date": clash.doc_date,
                           "customer": clash.customer.name} if clash else None)}
+
+
+@router.get("/invoices/deleted")
+def list_deleted_invoices(
+    doc_type: str | None = None,
+    fy: str | None = None,
+    ctx: Ctx = Depends(need("invoice"))
+):
+    """Retrieve history of all deleted invoices."""
+    q = select(M.DeletedInvoice).where(M.DeletedInvoice.tenant_id == ctx.tenant.id)
+    if doc_type and doc_type != "ALL":
+        q = q.where(M.DeletedInvoice.doc_type == doc_type)
+    if fy:
+        fy_clean = fy.replace("FY", "").strip()
+        q = q.where(M.DeletedInvoice.fy == fy_clean)
+    q = q.order_by(M.DeletedInvoice.deleted_at.desc())
+    rows = ctx.db.execute(q).scalars().all()
+    return [
+        {
+            "id": r.id,
+            "original_invoice_id": r.original_invoice_id,
+            "doc_no": r.doc_no,
+            "doc_type": r.doc_type,
+            "doc_date": r.doc_date,
+            "fy": r.fy,
+            "customer": r.customer_name,
+            "customer_code": r.customer_code,
+            "customer_gstin": r.customer_gstin,
+            "po_no": r.po_no,
+            "taxable": float(r.taxable_amount),
+            "cgst": float(r.cgst_amount),
+            "sgst": float(r.sgst_amount),
+            "igst": float(r.igst_amount),
+            "tax": float(r.cgst_amount + r.sgst_amount + r.igst_amount),
+            "total": float(r.total_amount),
+            "deleted_by": r.deleted_by_name,
+            "deleted_at": r.deleted_at.isoformat() if r.deleted_at else None,
+            "reason": r.deletion_reason,
+            "snapshot": json.loads(r.snapshot_json) if r.snapshot_json else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/invoices/deleted/{did}")
+def get_deleted_invoice_detail(did: int, ctx: Ctx = Depends(need("invoice"))):
+    """Retrieve full snapshot details of a deleted invoice."""
+    r = ctx.db.execute(
+        select(M.DeletedInvoice).where(
+            M.DeletedInvoice.id == did,
+            M.DeletedInvoice.tenant_id == ctx.tenant.id
+        )
+    ).scalar_one_or_none()
+    if not r:
+        raise HTTPException(404, "Deleted invoice record not found")
+    return {
+        "id": r.id,
+        "original_invoice_id": r.original_invoice_id,
+        "doc_no": r.doc_no,
+        "doc_type": r.doc_type,
+        "doc_date": r.doc_date,
+        "fy": r.fy,
+        "customer": r.customer_name,
+        "customer_code": r.customer_code,
+        "customer_gstin": r.customer_gstin,
+        "po_no": r.po_no,
+        "taxable": float(r.taxable_amount),
+        "cgst": float(r.cgst_amount),
+        "sgst": float(r.sgst_amount),
+        "igst": float(r.igst_amount),
+        "total": float(r.total_amount),
+        "deleted_by": r.deleted_by_name,
+        "deleted_at": r.deleted_at.isoformat() if r.deleted_at else None,
+        "reason": r.deletion_reason,
+        "snapshot": json.loads(r.snapshot_json),
+    }
 
 
 @router.get("/invoices/{iid}")
@@ -763,12 +840,22 @@ def cancel_invoice(iid: int, body: S.CancelIn, ctx: Ctx = Depends(need("invoice"
 
 
 @router.delete("/invoices/{iid}", status_code=204)
-def del_invoice(iid: int, ctx: Ctx = Depends(need("invoice"))):
+def del_invoice(
+    iid: int,
+    reason: str | None = Query(None, description="Reason for deleting the invoice"),
+    ctx: Ctx = Depends(need("invoice"))
+):
+    actual_reason = (reason or "").strip()
+    if not actual_reason:
+        actual_reason = "Manual deletion"
+    elif len(actual_reason) < 3:
+        raise HTTPException(422, "Deletion reason must be at least 3 characters")
+
     inv = ctx.get(M.Invoice, iid)
     if not inv:
         raise HTTPException(404, "No such invoice")
-    if settled(ctx, invoice_id=iid) > 0:
-        raise HTTPException(409, "That invoice has receipts against it")
+    if inv.status != "CANCELLED" and settled(ctx, invoice_id=iid) > 0:
+        raise HTTPException(409, "That invoice has receipts against it. Please cancel or reverse payments first.")
 
     if inv.doc_type == "PRO" and inv.converted_to_id:
         linked = ctx.get(M.Invoice, inv.converted_to_id)
@@ -787,9 +874,100 @@ def del_invoice(iid: int, ctx: Ctx = Depends(need("invoice"))):
             pro.converted_to_id = None
             pro.converted_on = None
 
-    if inv.doc_type == "TAX" and tracks_stock(ctx):
+    if inv.doc_type == "TAX" and inv.status != "CANCELLED" and tracks_stock(ctx):
         for line in inv.lines:
             line.material.stock_qty += line.qty
+
+    t = invoice_tax(ctx, inv)
+    lines_data = []
+    for line in inv.lines:
+        lines_data.append({
+            "line_no": line.line_no,
+            "material_id": line.material_id,
+            "material_code": line.material.code if line.material else None,
+            "material_name": line.material.descr if line.material else None,
+            "hsn": line.material.hsn if line.material else None,
+            "qty": float(line.qty),
+            "price": float(line.price),
+            "descr2": line.descr2,
+            "sgst_pct": float(line.sgst_pct) if line.sgst_pct is not None else None,
+            "cgst_pct": float(line.cgst_pct) if line.cgst_pct is not None else None,
+            "igst_pct": float(line.igst_pct) if line.igst_pct is not None else None,
+            "rate_label": line.rate_label,
+            "disc_type": line.disc_type,
+            "disc_value": float(line.disc_value) if line.disc_value else 0,
+            "price_inclusive": line.price_inclusive,
+        })
+
+    snapshot = {
+        "id": inv.id,
+        "doc_no": inv.doc_no,
+        "doc_type": inv.doc_type,
+        "doc_date": str(inv.doc_date),
+        "due_date": str(inv.due_date) if inv.due_date else None,
+        "fy": inv.fy,
+        "status": inv.status,
+        "cancelled_on": str(inv.cancelled_on) if inv.cancelled_on else None,
+        "cancelled_by": inv.cancelled_by,
+        "cancel_reason": inv.cancel_reason,
+        "customer": {
+            "id": inv.customer.id if inv.customer else None,
+            "name": inv.customer.name if inv.customer else None,
+            "code": inv.customer.code if inv.customer else None,
+            "pan": inv.customer.pan if inv.customer else None,
+            "bill_addr": inv.customer.bill_addr if inv.customer else None,
+            "bill_city": inv.customer.bill_city if inv.customer else None,
+            "bill_state": inv.customer.bill_state if inv.customer else None,
+            "bill_pin": inv.customer.bill_pin if inv.customer else None,
+        },
+        "gstin": inv.gstin,
+        "pos_state": inv.pos_state,
+        "po_no": inv.po_no,
+        "po_date": str(inv.po_date) if inv.po_date else None,
+        "reverse_chg": inv.reverse_chg,
+        "subject": inv.subject,
+        "instructions": inv.instructions,
+        "disc_type": inv.disc_type,
+        "disc_value": float(inv.disc_value) if inv.disc_value else 0,
+        "totals": {
+            "taxable": float(t.taxable),
+            "cgst": float(t.cgst),
+            "sgst": float(t.sgst),
+            "igst": float(t.igst),
+            "total": float(t.rounded),
+            "intra": t.intra,
+        },
+        "lines": lines_data,
+        "created_by": inv.created_by.name if inv.created_by else None,
+        "deleted_by": ctx.user.name,
+        "deleted_at": datetime.utcnow().isoformat(),
+        "deletion_reason": actual_reason,
+    }
+
+    del_entry = M.DeletedInvoice(
+        tenant_id=ctx.tenant.id,
+        original_invoice_id=inv.id,
+        doc_no=inv.doc_no,
+        doc_type=inv.doc_type,
+        doc_date=inv.doc_date,
+        fy=inv.fy,
+        customer_id=inv.customer_id,
+        customer_name=inv.customer.name if inv.customer else "Unknown",
+        customer_code=inv.customer.code if inv.customer else None,
+        customer_gstin=inv.gstin,
+        po_no=inv.po_no,
+        taxable_amount=t.taxable,
+        cgst_amount=t.cgst,
+        sgst_amount=t.sgst,
+        igst_amount=t.igst,
+        total_amount=t.rounded,
+        deleted_by_user_id=ctx.user.id,
+        deleted_by_name=ctx.user.name,
+        deletion_reason=actual_reason,
+        deleted_at=datetime.utcnow(),
+        snapshot_json=json.dumps(snapshot),
+    )
+    ctx.db.add(del_entry)
 
     ctx.db.delete(inv)
     ctx.db.commit()

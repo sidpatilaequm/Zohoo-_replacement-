@@ -115,7 +115,16 @@ export function makeApi(token, tenantId) {
     },
 
     cancelInvoice: (id, reason) => call(`/invoices/${id}/cancel`, { method: 'POST', body: { reason } }),
-    delInvoice: (id) => call(`/invoices/${id}`, { method: 'DELETE' }),
+    delInvoice: (id, reason = 'Deleted by user') =>
+      call(`/invoices/${id}?reason=${encodeURIComponent(reason)}`, { method: 'DELETE' }),
+    deletedInvoices: (docType = '', fy = '') => {
+      const q = new URLSearchParams()
+      if (docType && docType !== 'ALL') q.set('doc_type', docType)
+      if (fy) q.set('fy', fy)
+      const qs = q.toString()
+      return call(`/invoices/deleted${qs ? `?${qs}` : ''}`)
+    },
+    deletedInvoiceDetail: (id) => call(`/invoices/deleted/${id}`),
 
     invoiceDocuments: (id) =>
       call(`/invoices/${id}/documents`),

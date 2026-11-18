@@ -358,6 +358,31 @@ class InvoiceLine(Base):
     invoice: Mapped[Invoice]=relationship(back_populates="lines")
     material: Mapped[Material]=relationship(lazy="selectin")
 
+class DeletedInvoice(Base):
+    __tablename__ = "deleted_invoices"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    original_invoice_id: Mapped[int] = mapped_column(Integer)
+    doc_no: Mapped[str] = mapped_column(String(40))
+    doc_type: Mapped[str] = mapped_column(Enum("TAX", "PRO", name="di_dtype"), default="TAX")
+    doc_date: Mapped[date] = mapped_column(Date)
+    fy: Mapped[str] = mapped_column(String(9))
+    customer_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    customer_name: Mapped[str] = mapped_column(String(160))
+    customer_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    customer_gstin: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    po_no: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    taxable_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    cgst_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    sgst_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    igst_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0)
+    deleted_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deleted_by_name: Mapped[str] = mapped_column(String(120))
+    deletion_reason: Mapped[str] = mapped_column(String(255))
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    snapshot_json: Mapped[str] = mapped_column(Text)
+
 class PurchaseOrder(Base):
     __tablename__="purchase_orders"
     __table_args__=(UniqueConstraint("tenant_id","doc_no",name="uq_po"),)
