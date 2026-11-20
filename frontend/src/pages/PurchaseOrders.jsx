@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useFyRows, FyCount } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
@@ -13,13 +13,16 @@ export default function PurchaseOrders() {
   const fyRows = useFyRows()   // v5.0: the year chosen at the top
   const t = me?.tenant
   const orgAddr = t ? `${t.name}\nGSTIN ${t.gstin || '—'}` : ''
-  const [h, setH] = useState({ vendor_id: '', gstin: '', doc_date: today(), req_date: '',
-    bill_addr: '', ship_same: true, ship_addr: '' })
+  const BLANK_H = { vendor_id: '', gstin: '', doc_date: today(), req_date: '',
+    bill_addr: '', ship_same: true, ship_addr: '' }
+  const [h, setH] = useState(BLANK_H)
   const [lines, setLines] = useState([])
   const [pick, setPick] = useState('')
   const [err, setErr] = useState(null)
   const [flash, showFlash] = useFlash()
   const [variant, setVariant] = usePrintVariant()
+  const [editing, setEditing] = useState(null)      // null or { id, doc_no }
+  const [expanded, setExpanded] = useState(null)    // po id whose items are shown
   const set = (k, v) => setH(s => ({ ...s, [k]: v }))
 
   const vend = vendors.data?.find(v => v.id === Number(h.vendor_id))
@@ -54,26 +57,85 @@ export default function PurchaseOrders() {
     if (Number(l.price) <= 0) problems.push(`Line ${i + 1}: cost price must be more than zero.`)
   })
 
+  function edit(o) {
+    setEditing({ id: o.id, doc_no: o.doc_no })
+    setH({
+      vendor_id: String(o.vendor_id || ''),
+      gstin: o.gstin || '',
+      doc_date: String(o.doc_date || '').slice(0, 10),
+      req_date: o.req_date ? String(o.req_date).slice(0, 10) : '',
+      bill_addr: o.bill_addr || '',
+      ship_same: o.ship_same !== false,
+      ship_addr: o.ship_addr || '',
+    })
+    setLines((o.lines || []).map(l => ({
+      material_id: l.material_id,
+      qty: l.qty,
+      price: l.price,
+      descr2: l.descr2 || '',
+    })))
+    setErr(null)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function cancelEdit() {
+    setEditing(null)
+    setH(BLANK_H)
+    setLines([])
+    setErr(null)
+  }
+
   async function save(e) {
     e.preventDefault(); setErr(null)
     try {
-      const d = await api.addPo({ ...h, vendor_id: Number(h.vendor_id),
+      const payload = {
+        ...h, vendor_id: Number(h.vendor_id),
         gstin: reg?.gstin || null, req_date: h.req_date || null,
         bill_addr: h.bill_addr || orgAddr,
         ship_addr: h.ship_same ? null : h.ship_addr,
-        lines: lines.map(l => ({ material_id: l.material_id, qty: Number(l.qty),
-          price: Number(l.price), descr2: l.descr2 || null })) })
-      showFlash(`Purchase order ${d.doc_no} saved — ${money(d.totals.rounded)}.`)
-      setLines([]); setH(s => ({ ...s, vendor_id: '', gstin: '' })); list.reload()
+        lines: lines.map(l => ({
+          material_id: l.material_id,
+          qty: Number(l.qty),
+          price: Number(l.price),
+          descr2: l.descr2 ? l.descr2.trim() : null,
+        }))
+      }
+      if (editing) {
+        const d = await api.updatePo(editing.id, payload)
+        showFlash(`Purchase order ${d.doc_no || editing.doc_no} updated.`)
+        cancelEdit()
+      } else {
+        const d = await api.addPo(payload)
+        showFlash(`Purchase order ${d.doc_no} saved — ${money(d.totals.rounded)}.`)
+        cancelEdit()
+      }
+      list.reload()
     } catch (x) { setErr(x.message) }
   }
+
+  async function remove(o) {
+    if (o.status === 'INVOICED') {
+      showFlash(`Cannot delete ${o.doc_no} because it has already been invoiced.`, 'bad')
+      return
+    }
+    if (!window.confirm(`Delete purchase order ${o.doc_no}?`)) return
+    try {
+      await api.delPo(o.id)
+      showFlash(`Purchase order ${o.doc_no} deleted.`)
+      list.reload()
+    } catch (x) {
+      showFlash(x.message, 'bad')
+    }
+  }
+
   if (vendors.loading || materials.loading || list.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
 
   return (<>
     {flash}
     <form onSubmit={save}>
-      <Panel title="Raise purchase order">
+      <Panel title={editing ? `Edit purchase order ${editing.doc_no}` : "Raise purchase order"}
+        right={editing && <button type="button" className="btn btn-sm" onClick={cancelEdit}>Cancel edit</button>}>
         <div className="row">
           <Field label="Vendor"><select value={h.vendor_id}
             onChange={e => { set('vendor_id', e.target.value); set('gstin', '') }}>
@@ -161,7 +223,14 @@ export default function PurchaseOrders() {
       </Panel>
 
       <div className="ft">
-        <button className="btn btn-a" disabled={problems.length > 0}>Save purchase order</button>
+        <button className="btn btn-a" disabled={problems.length > 0}>
+          {editing ? 'Update purchase order' : 'Save purchase order'}
+        </button>
+        {editing && (
+          <button type="button" className="btn" style={{ marginLeft: 8 }} onClick={cancelEdit}>
+            Cancel
+          </button>
+        )}
         <span className="err">{err || problems[0] || ''}</span>
       </div>
     </form>
@@ -171,25 +240,80 @@ export default function PurchaseOrders() {
       <Table head={['PO', 'Date', 'Vendor', 'Delivery', { label: 'Status', align: 'c' },
         { label: 'Supply', align: 'c' }, { label: 'Taxable', align: 'r' },
         { label: 'Input tax', align: 'r' }, { label: 'Total', align: 'r' },
-        { label: 'Print', align: 'c' }]}
+        { label: 'Actions', align: 'c' }, '']}
         empty="No purchase orders yet.">
         {fyRows(list.data).map(o => (
-          <tr key={o.id}>
-            <td className="mono"><b>{o.doc_no}</b></td>
-            <td className="mono">{gd(o.doc_date)}</td>
-            <td>{o.vendor}</td>
-            <td className="fine">{(o.ship_addr || '').split('\n')[0]}</td>
-            <td className="c">{o.status === 'INVOICED'
-              ? <Tag kind="ok">Invoiced</Tag> : <Tag kind="warn">Open</Tag>}</td>
-            <td className="c">{o.tax > 0
-              ? (o.intra ? <Tag kind="ok">Intra</Tag> : <Tag kind="warn">Inter</Tag>)
-              : <Tag>None</Tag>}</td>
-            <td className="r mono">{inr(o.taxable)}</td>
-            <td className="r mono">{inr(o.tax)}</td>
-            <td className="r mono"><b>{inr(o.total)}</b></td>
-            <td className="c"><PrintButtons kind="purchase-orders" id={o.id} variant={variant}
-              onError={m => showFlash(m, 'bad')} /></td>
-          </tr>))}
+          <Fragment key={o.id}>
+            <tr>
+              <td className="mono"><b>{o.doc_no}</b></td>
+              <td className="mono">{gd(o.doc_date)}</td>
+              <td>{o.vendor}</td>
+              <td className="fine">{(o.ship_addr || '').split('\n')[0]}</td>
+              <td className="c">{o.status === 'INVOICED'
+                ? <Tag kind="ok">Invoiced</Tag> : <Tag kind="warn">Open</Tag>}</td>
+              <td className="c">{o.tax > 0
+                ? (o.intra ? <Tag kind="ok">Intra</Tag> : <Tag kind="warn">Inter</Tag>)
+                : <Tag>None</Tag>}</td>
+              <td className="r mono">{inr(o.taxable)}</td>
+              <td className="r mono">{inr(o.tax)}</td>
+              <td className="r mono"><b>{inr(o.total)}</b></td>
+              <td className="c" style={{ whiteSpace: 'nowrap' }}>
+                <button className={`btn btn-sm${expanded === o.id ? ' on' : ''}`} style={{ marginRight: 5 }}
+                  onClick={() => setExpanded(expanded === o.id ? null : o.id)}>
+                  Items ({o.lines?.length || 0})
+                </button>
+                <PrintButtons kind="purchase-orders" id={o.id} variant={variant}
+                  onError={m => showFlash(m, 'bad')} />
+                {o.status !== 'INVOICED' && (
+                  <button className="btn btn-sm" style={{ marginLeft: 5 }}
+                    onClick={() => edit(o)}>Edit</button>
+                )}
+              </td>
+              <td className="r">
+                {o.status !== 'INVOICED' && (
+                  <button className="rm" title="Delete purchase order"
+                    aria-label={`Delete ${o.doc_no}`} onClick={() => remove(o)}>×</button>
+                )}
+              </td>
+            </tr>
+            {expanded === o.id && (
+              <tr className="lines-row">
+                <td colSpan={11}>
+                  <div style={{ padding: '10px 14px', background: 'var(--panel-subtle, rgba(0,0,0,0.02))', borderRadius: 6 }}>
+                    <table style={{ width: '100%', fontSize: 12.5, borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid var(--line2)', color: 'var(--muted)', textAlign: 'left' }}>
+                          <th style={{ padding: '4px 8px' }}>#</th>
+                          <th style={{ padding: '4px 8px' }}>Material</th>
+                          <th style={{ padding: '4px 8px' }}>Description 2</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>Qty</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>Cost Price</th>
+                          <th style={{ padding: '4px 8px', textAlign: 'right' }}>Line total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(o.lines || []).map((l, idx) => (
+                          <tr key={idx} style={{ borderBottom: '1px solid var(--line)' }}>
+                            <td style={{ padding: '4px 8px' }} className="mono">{idx + 1}</td>
+                            <td style={{ padding: '4px 8px' }}>
+                              <b>{l.code}</b> {l.descr}
+                            </td>
+                            <td style={{ padding: '4px 8px' }}>
+                              {l.descr2 ? <span className="fine">{l.descr2}</span> : <span className="fine" style={{ opacity: .5 }}>—</span>}
+                            </td>
+                            <td style={{ padding: '4px 8px', textAlign: 'right' }} className="mono">{l.qty}</td>
+                            <td style={{ padding: '4px 8px', textAlign: 'right' }} className="mono">₹ {inr(l.price)}</td>
+                            <td style={{ padding: '4px 8px', textAlign: 'right' }} className="mono">₹ {inr(l.qty * l.price)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </td>
+              </tr>
+            )}
+          </Fragment>
+        ))}
       </Table>
     </Panel>
   </>)

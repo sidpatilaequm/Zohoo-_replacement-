@@ -24,6 +24,10 @@ export default function Vendors() {
   const logoRef = useRef(null)
   const [err, setErr] = useState(null)
   const [editing, setEditing] = useState(null)
+  const [gstQuery, setGstQuery] = useState('')
+  const [gstLoading, setGstLoading] = useState(false)
+  const [gstStatus, setGstStatus] = useState(null)
+  const [gstErr, setGstErr] = useState(null)
   function pickLogo(e) {
     const file = e.target.files?.[0], id = Number(e.target.dataset.id)
     e.target.value = ''
@@ -45,19 +49,61 @@ export default function Vendors() {
   const [flash, showFlash] = useFlash()
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
 
+  async function fetchGstin(query) {
+    const v = (query || '').trim().toUpperCase()
+    if (!v || v.length !== 15) {
+      setGstErr('A GSTIN is exactly 15 characters (e.g. 29AAACI4798L1ZU)')
+      return setErr('A GSTIN is exactly 15 characters (e.g. 29AAACI4798L1ZU)')
+    }
+    if (!/^\d{2}/.test(v)) {
+      setGstErr('A GSTIN begins with a two-digit state code')
+      return setErr('A GSTIN begins with a two-digit state code')
+    }
+    setGstLoading(true)
+    setGstErr(null)
+    setErr(null)
+    try {
+      const data = await api.lookupGstin(v)
+      setF(s => ({
+        ...s,
+        party_type: 'B2B',
+        name: data.name || s.name,
+        addr: data.bill_addr || s.addr,
+        city: data.bill_city || s.city,
+        state_code: data.bill_state || s.state_code,
+        pin: data.bill_pin || s.pin,
+        pan: data.pan || s.pan,
+      }))
+      setRegs(prev => {
+        if (prev.some(r => r.gstin === data.gstin)) return prev
+        return [...prev, { gstin: data.gstin, label: 'Principal place', is_default: !prev.length }]
+      })
+      setGstStatus(data)
+      setGstErr(null)
+      showFlash(`GST details loaded for ${data.name} (${data.status})`)
+    } catch (x) {
+      const msg = x.message || 'Failed to fetch GSTIN details'
+      setGstErr(msg)
+      setErr(msg)
+    } finally {
+      setGstLoading(false)
+    }
+  }
+
   function edit(v) {
     setEditing(v.id)
     setF({ ...BLANK, ...Object.fromEntries(Object.keys(BLANK).map(k => [k, v[k] ?? BLANK[k]])), tds_section: v.tds_section || '', tds_rate: v.tds_rate ?? 0 })
     setRegs(v.gstins.map(r => ({ gstin: r.gstin, label: r.label || '', is_default: r.is_default })))
     setContacts(v.contacts.map(x => ({ first_name: x.first_name, middle_name: x.middle_name || '', last_name: x.last_name || '',
       designation_id: x.designation_id || '', phone: x.phone || '', email: x.email || '', is_primary: x.is_primary })))
-    setErr(null); window.scrollTo({ top: 0 })
+    setErr(null); setGstStatus(null); setGstErr(null); setGstQuery(''); window.scrollTo({ top: 0 })
   }
-  function cancelEdit() { setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setErr(null) }
+  function cancelEdit() { setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setErr(null); setGstStatus(null); setGstErr(null); setGstQuery('') }
 
   function addReg() {
     const v = g.gstin.trim().toUpperCase()
     if (v.length !== 15) return setErr('A GSTIN is exactly 15 characters')
+    if (!/^\d{2}/.test(v)) return setErr('A GSTIN begins with a two-digit state code')
     if (regs.some(r => r.gstin === v)) return setErr('That GSTIN is already on this vendor')
     setRegs([...regs, { gstin: v, label: g.label, is_default: !regs.length }])
     setG({ gstin: '', label: '' }); setErr(null)
@@ -69,7 +115,7 @@ export default function Vendors() {
         payment_term_days: Number(f.payment_term_days) || 0,
         payment_terms: (f.payment_terms || '').trim() || null }
       if (editing) await api.editVendor(editing, body); else await api.addVendor(body)
-      setEditing(null); setF(BLANK); setRegs([]); setContacts([]); list.reload()
+      setEditing(null); setF(BLANK); setRegs([]); setContacts([]); setGstQuery(''); setGstStatus(null); setGstErr(null); list.reload()
       showFlash(editing ? 'Vendor updated.' : 'Vendor saved.')
     } catch (x) { setErr(x.message) }
   }
@@ -82,6 +128,74 @@ export default function Vendors() {
     <Panel title={editing ? `Edit vendor ${f.code}` : 'Add vendor'}
       right={editing && <button type="button" className="btn btn-sm" onClick={cancelEdit}>Cancel edit</button>}>
       <form onSubmit={save}>
+        {/* Quick fill from GSTIN */}
+        <div style={{
+          background: 'var(--panel-subtle, rgba(0, 0, 0, 0.02))',
+          border: '1px solid var(--line2)',
+          borderRadius: 8,
+          padding: '12px 14px',
+          marginBottom: 16,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Auto-fill Vendor by GSTIN</div>
+              <div className="fine" style={{ margin: 0 }}>
+                Enter the vendor's 15-character GSTIN to auto-fetch trade name, registered address, and state from GSTN.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                className="mono"
+                placeholder="15-character GSTIN"
+                maxLength={15}
+                value={gstQuery}
+                onChange={e => setGstQuery(e.target.value.toUpperCase())}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); fetchGstin(gstQuery); } }}
+                style={{
+                  padding: '7px 11px',
+                  border: '1px solid var(--line2)',
+                  borderRadius: 6,
+                  width: 190,
+                  textTransform: 'uppercase'
+                }}
+              />
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={gstLoading || !gstQuery.trim()}
+                onClick={() => fetchGstin(gstQuery)}
+              >
+                {gstLoading ? 'Fetching...' : 'Fetch GSTIN details'}
+              </button>
+            </div>
+          </div>
+          {gstStatus && (
+            <div style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              padding: '6px 10px',
+              background: 'var(--card-bg, #fff)',
+              borderRadius: 6,
+              fontSize: 12,
+              border: '1px solid var(--line2)'
+            }}>
+              <Tag kind={gstStatus.status?.toLowerCase() === 'active' ? 'ok' : 'warn'}>
+                {gstStatus.status || 'Active'}
+              </Tag>
+              <span><b>Legal:</b> {gstStatus.legal_name || '—'}</span>
+              <span><b>Type:</b> {gstStatus.taxpayer_type || 'Regular'}</span>
+              <span><b>PAN:</b> <span className="mono">{gstStatus.pan}</span></span>
+              {gstStatus.registration_date && <span><b>Reg Date:</b> {gstStatus.registration_date}</span>}
+            </div>
+          )}
+          {gstErr && <span className="err" style={{ fontSize: 12 }}>{gstErr}</span>}
+        </div>
+
         <div className="row">
           <Field label="Vendor code"><input className="mono" value={f.code}
             onChange={e => set('code', e.target.value)} /></Field>

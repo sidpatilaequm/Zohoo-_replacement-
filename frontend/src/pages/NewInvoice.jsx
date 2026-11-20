@@ -34,6 +34,7 @@ export default function NewInvoice() {
   const [noCheck, setNoCheck] = useState(null)    // { doc_no, available, fy, taken_by }
   const [disc, setDisc] = useState({ type: 'PCT', value: '' })   // overall discount
   const [editOriginalLines, setEditOriginalLines] = useState([])
+  const [convertedTo, setConvertedTo] = useState(null)
   const set = (k, v) => setH(s => ({ ...s, [k]: v }))
 
   useEffect(() => {
@@ -50,6 +51,7 @@ export default function NewInvoice() {
         const v = d.invoice
         setDocNo(v.doc_no || '')
         setOrigNo(v.doc_no || '')
+        setConvertedTo(v.converted_to || null)
         setDisc({ type: v.disc_type || 'PCT', value: v.disc_value ? String(v.disc_value) : '' })
         setH({
           doc_type: v.doc_type,
@@ -253,8 +255,8 @@ export default function NewInvoice() {
       problems.push('Discounts cannot bring the invoice to nil.')
   }
 
-  async function save(e) {
-    e.preventDefault()
+  async function save(e, doReconvert = false) {
+    if (e && e.preventDefault) e.preventDefault()
     setErr(null)
     try {
       const payload = {
@@ -288,7 +290,12 @@ export default function NewInvoice() {
         : await api.addInvoice(payload)
 
       if (editId) {
-        showFlash(`${d.doc_no || docNo} updated successfully.`)
+        if (doReconvert && convertedTo) {
+          const dConv = await api.convert(editId, undefined, undefined, true)
+          showFlash(`Proforma saved and reconverted. ${dConv.doc_no || convertedTo} updated.`)
+        } else {
+          showFlash(`${d.doc_no || docNo} updated successfully.`)
+        }
         navigate(h.doc_type === 'PRO' ? '/proformas' : '/invoices')
       } else {
         showFlash(`${h.doc_type === 'PRO' ? 'Proforma' : 'Invoice'} ${d.doc_no} saved — ${money(d.totals.rounded)}.`)
@@ -548,6 +555,17 @@ export default function NewInvoice() {
       <button className="btn btn-a" disabled={problems.length > 0}>
         {editId ? 'Save changes' : `Save ${h.doc_type === 'PRO' ? 'proforma' : 'invoice'}`}
       </button>
+      {editId && h.doc_type === 'PRO' && convertedTo && (
+        <button
+          type="button"
+          className="btn btn-a"
+          style={{ background: '#087f5b', borderColor: '#087f5b' }}
+          disabled={problems.length > 0}
+          onClick={e => save(e, true)}
+        >
+          Save & Reconvert to {convertedTo}
+        </button>
+      )}
       {editId
         ? <button type="button" className="btn" onClick={() => navigate(h.doc_type === 'PRO' ? '/proformas' : '/invoices')}>Cancel</button>
         : <button type="button" className="btn" onClick={() => setLines([])}>Clear</button>}

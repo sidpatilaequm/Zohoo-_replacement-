@@ -106,10 +106,11 @@ export function makeApi(token, tenantId) {
     addInvoice: (b) => call('/invoices', { method: 'POST', body: b }),
     updateInvoice: (id, b) => call(`/invoices/${id}`, { method: 'PUT', body: b }),
 
-    convert: (id, docDate, docNo) => {
+    convert: (id, docDate, docNo, override = false) => {
       const q = new URLSearchParams()
       if (docDate) q.set('doc_date', docDate)
       if (docNo) q.set('doc_no', docNo)
+      if (override) q.set('override', 'true')
       const qs = q.toString()
       return call(`/invoices/${id}/convert${qs ? `?${qs}` : ''}`, { method: 'POST' })
     },
@@ -149,7 +150,10 @@ export function makeApi(token, tenantId) {
       ),
 
     pos: () => call('/purchase-orders'),
+    po: (id) => call(`/purchase-orders/${id}`),
     addPo: (b) => call('/purchase-orders', { method: 'POST', body: b }),
+    updatePo: (id, b) => call(`/purchase-orders/${id}`, { method: 'PUT', body: b }),
+    delPo: (id) => call(`/purchase-orders/${id}`, { method: 'DELETE' }),
 
     vinvs: () => call('/vendor-invoices'),
     addVinv: (b) => call('/vendor-invoices', { method: 'POST', body: b }),

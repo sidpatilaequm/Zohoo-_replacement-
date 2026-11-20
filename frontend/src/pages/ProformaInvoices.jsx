@@ -79,6 +79,14 @@ export default function ProformaInvoices() {
       setConverting(null); list.reload()
     } catch (x) { showFlash(x.message, 'bad') } finally { setBusy(false) }
   }
+  async function reconvert(v) {
+    if (!window.confirm(`Reconvert ${v.doc_no} to ${v.converted_to}?\n\nThis will override the existing tax invoice (${v.converted_to}) with the latest lines, items, and totals from this proforma.`)) return
+    try {
+      const d = await api.convert(v.id, undefined, undefined, true)
+      showFlash(`${v.doc_no} reconverted. ${d.doc_no} has been updated with the latest details.`)
+      list.reload()
+    } catch (x) { showFlash(x.message, 'bad') }
+  }
   async function remove(v) {
     const reason = window.prompt(`Delete proforma ${v.doc_no}? State the reason for deletion (saved to audit history):`)
     if (reason === null) return
@@ -254,7 +262,10 @@ export default function ProformaInvoices() {
             <button className="btn btn-sm" style={{ marginLeft: 5 }}
               onClick={() => navigate(`/invoices/new?edit=${v.id}`)}>Edit</button>
             {canEdit && !v.converted_to && <button className="btn btn-sm btn-a" style={{ marginLeft: 5 }}
-              onClick={() => setConverting({ v, date: today() })}>Convert to tax invoice</button>}</td>
+              onClick={() => setConverting({ v, date: today() })}>Convert to tax invoice</button>}
+            {canEdit && v.converted_to && <button className="btn btn-sm btn-a" style={{ marginLeft: 5 }}
+              title={`Override ${v.converted_to} with latest proforma details`}
+              onClick={() => reconvert(v)}>Reconvert to tax invoice</button>}</td>
           <td className="r">{canEdit && !v.converted_to && <button className="rm" title="Delete proforma"
             aria-label={`Delete ${v.doc_no}`} onClick={() => remove(v)}>×</button>}</td>
         </tr>

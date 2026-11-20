@@ -690,6 +690,7 @@ def update_invoice(iid: int, body: S.InvoiceIn,
 
 @router.post("/invoices/{iid}/convert")
 def convert(iid: int, doc_no: str | None = None, doc_date: date | None = None,
+            override: bool = False,
             ctx: Ctx = Depends(need("invoice"))):
     ctx.require("proforma")
     pro = ctx.get(M.Invoice, iid)
@@ -697,10 +698,87 @@ def convert(iid: int, doc_no: str | None = None, doc_date: date | None = None,
         raise HTTPException(404, "No such invoice")
     if pro.doc_type != "PRO":
         raise HTTPException(409, "Only a proforma can be converted")
+
+    stock = tracks_stock(ctx)
+
     if pro.converted_to_id:
         linked = ctx.get(M.Invoice, pro.converted_to_id)
         if linked:
-            raise HTTPException(409, "This proforma has already been converted")
+            if not override:
+                raise HTTPException(409, "This proforma has already been converted")
+            # Override existing tax invoice
+            if linked.status == "CANCELLED":
+                raise HTTPException(409, f"Cannot override cancelled invoice {linked.doc_no}")
+            if settled(ctx, invoice_id=linked.id) > 0:
+                raise HTTPException(
+                    409,
+                    f"Invoice {linked.doc_no} has recorded receipts. Please reverse payments before overriding."
+                )
+
+            tax_date = doc_date or linked.doc_date
+            if stock:
+                for line in linked.lines:
+                    line.material.stock_qty += line.qty
+                for line in pro.lines:
+                    if line.qty > line.material.stock_qty:
+                        for l in linked.lines:
+                            l.material.stock_qty -= l.qty
+                        raise HTTPException(
+                            422,
+                            f"Insufficient stock for {line.material.code}: "
+                            f"available {line.material.stock_qty}, required {line.qty}",
+                        )
+                for line in pro.lines:
+                    line.material.stock_qty -= line.qty
+
+            linked.doc_date = tax_date
+            linked.fy = doc_fy(ctx, tax_date)
+            linked.customer_id = pro.customer_id
+            linked.gstin = pro.gstin
+            linked.pos_state = pro.pos_state
+            linked.pos_manual = pro.pos_manual
+            linked.po_no = pro.po_no
+            linked.po_date = pro.po_date
+            linked.reverse_chg = pro.reverse_chg
+            linked.subject = pro.subject
+            linked.instructions = pro.instructions
+            linked.bill_addr_id = pro.bill_addr_id
+            linked.ship_addr_id = pro.ship_addr_id
+            linked.price_mode = pro.price_mode
+            linked.disc_type = pro.disc_type
+            linked.disc_value = pro.disc_value or 0
+            linked.due_date = pro.due_date
+
+            linked.lines.clear()
+            ctx.db.flush()
+
+            for line in pro.lines:
+                ctx.db.add(M.InvoiceLine(
+                    invoice_id=linked.id,
+                    line_no=line.line_no,
+                    material_id=line.material_id,
+                    qty=line.qty,
+                    price=line.price,
+                    descr2=line.descr2,
+                    sgst_pct=line.sgst_pct,
+                    cgst_pct=line.cgst_pct,
+                    igst_pct=line.igst_pct,
+                    rate_label=line.rate_label,
+                    price_inclusive=line.price_inclusive,
+                    disc_type=line.disc_type,
+                    disc_value=line.disc_value or 0,
+                ))
+
+            pro.converted_on = date.today()
+            ctx.db.commit()
+            ctx.db.refresh(linked)
+            return {
+                "id": linked.id,
+                "doc_no": linked.doc_no,
+                "converted_from": pro.doc_no,
+                "proforma_id": pro.id,
+                "totals": tax_json(invoice_tax(ctx, linked)),
+            }
 
     tax_date = doc_date or pro.doc_date
     doc_no = (doc_no or "").strip() or None
@@ -1020,6 +1098,96 @@ def add_po(body: S.PoIn, ctx: Ctx = Depends(need("po"))):
     ctx.db.commit()
     ctx.db.refresh(po)
     return {"id": po.id, "doc_no": po.doc_no, "totals": tax_json(po_tax(ctx, po))}
+
+
+@router.get("/purchase-orders/{pid}")
+def get_po(pid: int, ctx: Ctx = Depends(need("po"))):
+    po = ctx.get(M.PurchaseOrder, pid)
+    if not po:
+        raise HTTPException(404, "No such purchase order")
+    t = po_tax(ctx, po)
+    return {
+        "id": po.id, "doc_no": po.doc_no, "doc_date": po.doc_date,
+        "req_date": po.req_date, "vendor": po.vendor.name,
+        "vendor_id": po.vendor_id, "vendor_email": po.vendor.email,
+        "gstin": po.gstin, "status": po.status, "bill_addr": po.bill_addr,
+        "ship_same": po.ship_same, "ship_addr": po.ship_addr,
+        "taxable": float(t.taxable), "tax": float(t.tax),
+        "total": float(t.rounded), "intra": t.intra,
+        "lines": [{"material_id": l.material_id, "code": l.material.code,
+                   "descr": l.material.descr, "qty": float(l.qty),
+                   "price": float(l.price), "descr2": l.descr2} for l in po.lines]
+    }
+
+
+@router.put("/purchase-orders/{pid}")
+def update_po(pid: int, body: S.PoIn, ctx: Ctx = Depends(need("po"))):
+    po = ctx.get(M.PurchaseOrder, pid)
+    if not po:
+        raise HTTPException(404, "No such purchase order")
+    if po.status == "INVOICED":
+        raise HTTPException(409, "Invoiced purchase orders cannot be edited")
+
+    has_grn = ctx.db.execute(
+        select(M.StockLedger.id).where(M.StockLedger.po_id == po.id)
+    ).scalar_one_or_none()
+    if has_grn:
+        raise HTTPException(409, "Purchase orders with goods receipts cannot be edited")
+
+    v = ctx.get(M.Vendor, body.vendor_id)
+    if not v:
+        raise HTTPException(422, "No such vendor in this organisation")
+    reg = resolve_reg(v, body.gstin)
+
+    o = ctx.tenant
+    bill = body.bill_addr or f"{o.name}\n{o.addr or ''}\n{o.city or ''} {o.pin or ''}\nGSTIN {o.gstin or ''}"
+
+    po.vendor_id = v.id
+    po.gstin = reg.gstin if reg else None
+    po.doc_date = body.doc_date
+    po.req_date = body.req_date
+    po.bill_addr = bill
+    po.ship_same = body.ship_same
+    po.ship_addr = bill if body.ship_same else body.ship_addr
+
+    po.lines.clear()
+    ctx.db.flush()
+
+    for n, m, qty, price, d2, _inclusive in build_lines(
+        ctx, body.lines, use_cost=True
+    ):
+        ctx.db.add(M.PoLine(po_id=po.id, line_no=n, material_id=m.id, qty=qty, price=price, descr2=d2))
+
+    ctx.db.commit()
+    ctx.db.refresh(po)
+    return {"id": po.id, "doc_no": po.doc_no, "totals": tax_json(po_tax(ctx, po))}
+
+
+@router.delete("/purchase-orders/{pid}", status_code=204)
+def del_po(pid: int, ctx: Ctx = Depends(need("po"))):
+    po = ctx.get(M.PurchaseOrder, pid)
+    if not po:
+        raise HTTPException(404, "No such purchase order")
+    if po.status == "INVOICED":
+        raise HTTPException(409, f"Purchase order {po.doc_no} is already invoiced and cannot be deleted")
+
+    has_vinv = ctx.db.execute(
+        select(M.VendorInvoice.id).where(M.VendorInvoice.po_id == po.id)
+    ).scalar_one_or_none()
+    if has_vinv:
+        raise HTTPException(409, f"Purchase order {po.doc_no} is linked to a vendor invoice. Delete the vendor invoice first.")
+
+    has_grn = ctx.db.execute(
+        select(M.StockLedger.id).where(M.StockLedger.po_id == po.id)
+    ).scalar_one_or_none()
+    has_disc = ctx.db.execute(
+        select(M.Discrepancy.id).where(M.Discrepancy.po_id == po.id)
+    ).scalar_one_or_none()
+    if has_grn or has_disc:
+        raise HTTPException(409, f"Purchase order {po.doc_no} has goods receipts or discrepancy records. It cannot be deleted.")
+
+    ctx.db.delete(po)
+    ctx.db.commit()
 
 
 # ======================================================= vendor invoices

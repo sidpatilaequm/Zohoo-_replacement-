@@ -35,3 +35,4 @@ CREATE TABLE IF NOT EXISTS deleted_invoices (
   INDEX idx_di_doc_no (tenant_id, doc_no),
   CONSTRAINT fk_di_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
