@@ -852,6 +852,26 @@ def convert(iid: int, doc_no: str | None = None, doc_date: date | None = None,
     pro.converted_to_id = tax.id
     pro.converted_on = date.today()
 
+    pro_docs = ctx.db.execute(
+        select(M.DocFile).where(
+            M.DocFile.tenant_id == ctx.tenant.id,
+            M.DocFile.invoice_id == pro.id,
+        )
+    ).scalars().all()
+    for d in pro_docs:
+        ctx.db.add(
+            M.DocFile(
+                tenant_id=ctx.tenant.id,
+                invoice_id=tax.id,
+                filename=d.filename,
+                content_type=d.content_type,
+                size_bytes=d.size_bytes,
+                content=d.content,
+                notes=d.notes,
+                uploaded_by=d.uploaded_by,
+            )
+        )
+
     if not doc_no:
         bump(ctx, "invoice", tax_date, used=new_no)
 
@@ -1266,6 +1286,26 @@ def add_vinv(body: S.VendorInvoiceIn, ctx: Ctx = Depends(need("vinv"))):
 
     if po:
         po.status = "INVOICED"
+        # Copy supporting documents from purchase order to purchase invoice
+        po_docs = ctx.db.execute(
+            select(M.DocFile).where(
+                M.DocFile.tenant_id == ctx.tenant.id,
+                M.DocFile.po_id == po.id,
+            )
+        ).scalars().all()
+        for d in po_docs:
+            ctx.db.add(
+                M.DocFile(
+                    tenant_id=ctx.tenant.id,
+                    vinv_id=vi.id,
+                    filename=d.filename,
+                    content_type=d.content_type,
+                    size_bytes=d.size_bytes,
+                    content=d.content,
+                    notes=d.notes,
+                    uploaded_by=d.uploaded_by,
+                )
+            )
 
     ctx.db.commit()
     ctx.db.refresh(vi)
@@ -1285,6 +1325,29 @@ def add_vinv(body: S.VendorInvoiceIn, ctx: Ctx = Depends(need("vinv"))):
         }
 
     return res
+
+
+@router.post("/purchase-orders/{pid}/convert", status_code=201)
+def convert_po(
+    pid: int,
+    doc_no: str | None = None,
+    doc_date: date | None = None,
+    ctx: Ctx = Depends(need("vinv")),
+):
+    po = ctx.get(M.PurchaseOrder, pid)
+    if not po:
+        raise HTTPException(404, "No such purchase order")
+    inv_no = doc_no or next_no(ctx, "vinv", doc_date or date.today())
+    body = S.VendorInvoiceIn(
+        doc_no=inv_no,
+        doc_date=doc_date or date.today(),
+        due_date=po.req_date,
+        po_id=po.id,
+        vendor_id=po.vendor_id,
+        gstin=po.gstin,
+        lines=[],
+    )
+    return add_vinv(body, ctx)
 
 
 # ============================================================== payments

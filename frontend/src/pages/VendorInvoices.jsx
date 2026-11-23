@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useFyRows, FyCount } from '../lib/fy'
 import InvoicePayments from '../components/InvoicePayments'
 import { useAuth } from '../lib/auth'
@@ -25,6 +26,9 @@ export default function VendorInvoices() {
   const [reading, setReading] = useState(false)
   const [prop, setProp] = useState(null)   // last extraction proposal
   const [documentsFor, setDocumentsFor] = useState(null)
+  const [poDocs, setPoDocs] = useState([])
+  const [searchParams] = useSearchParams()
+  const poParam = searchParams.get('po')
   const fileRef = useRef(null)
   const set = (k, v) => setH(s => ({ ...s, [k]: v }))
 
@@ -39,6 +43,22 @@ export default function VendorInvoices() {
     setLines(o ? o.lines.map(l => ({ material_id: l.material_id, poQty: l.qty,
       poPrice: l.price, qty: l.qty, price: l.price, descr2: l.descr2 || '' })) : [])
   }
+
+  useEffect(() => {
+    if (poParam && openPos.length && !h.po_id) {
+      loadPo(poParam)
+    }
+  }, [poParam, openPos])
+
+  useEffect(() => {
+    if (h.po_id) {
+      api.poDocuments(h.po_id)
+        .then(docs => setPoDocs(docs || []))
+        .catch(() => setPoDocs([]))
+    } else {
+      setPoDocs([])
+    }
+  }, [h.po_id])
 
   /** Upload the vendor's PDF/image, read it, and fill the form from the proposal. */
   async function readFile(file) {
@@ -151,7 +171,11 @@ export default function VendorInvoices() {
             onChange={e => set('due_date', e.target.value)} /></Field>
         </div>
         {po && <Alert kind="ok"><b>{po.vendor}</b> · against {po.doc_no} dated {gd(po.doc_date)}<br />
-          Deliver to {(po.ship_addr || '').split('\n')[0]}</Alert>}
+          Deliver to {(po.ship_addr || '').split('\n')[0]}
+          {poDocs.length > 0 && <div style={{ marginTop: 8 }}>
+            📎 <b>{poDocs.length} supporting document(s)</b> on this purchase order ({poDocs.map(d => d.filename).join(', ')}) will be automatically copied to this purchase invoice.
+          </div>}
+        </Alert>}
         {!po && vendor && <Alert kind={registered ? 'ok' : 'warn'}><b>{vendor.name}</b> ·{' '}
           {registered ? 'registered vendor, input credit applies' : 'unregistered — no GST, no input credit'}</Alert>}
       </Panel>

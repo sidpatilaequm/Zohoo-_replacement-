@@ -25,6 +25,7 @@ MAX_BYTES = 10 * 1024 * 1024
 MAX_PER_OWNER = 25
 SALES = ("invoice", "saved")
 PURCHASE = ("vinv",)
+PO = ("po",)
 STATEMENT = ("bankstmt", "cardstmt")
 
 # What may be uploaded, by extension. The stored content type comes from
@@ -241,8 +242,60 @@ def vinv_documents(
     vid: int,
     ctx: Ctx = Depends(need_any(*PURCHASE)),
 ):
+    vi = _vinv(ctx, vid)
+    docs = _list(ctx, vinv_id=vid)
+    if vi.po_id:
+        po_docs = _list(ctx, po_id=vi.po_id)
+        existing_names = {d["filename"] for d in docs}
+        for pd in po_docs:
+            if pd["filename"] not in existing_names:
+                pd_copy = dict(pd)
+                pd_copy["from_po"] = True
+                docs.append(pd_copy)
+    return docs
+
+
+@router.post("/vendor-invoices/{vid}/documents", status_code=201)
+async def add_vinv_document(
+    vid: int,
+    file: UploadFile = File(...),
+    notes: str | None = Form(None),
+    ctx: Ctx = Depends(need_any(*PURCHASE)),
+):
     _vinv(ctx, vid)
-    return _list(ctx, vinv_id=vid)
+    return await _save(ctx, file, notes, vinv_id=vid)
+
+
+# --------------------------------------------------------- purchase orders
+def _po(ctx, pid):
+    po = ctx.get(M.PurchaseOrder, pid)
+
+    if not po:
+        raise HTTPException(404, "No such purchase order")
+
+    return po
+
+
+@router.get("/purchase-orders/{pid}/documents")
+def po_documents(
+    pid: int,
+    ctx: Ctx = Depends(need_any(*PO)),
+):
+    _po(ctx, pid)
+    return _list(ctx, po_id=pid)
+
+
+@router.post("/purchase-orders/{pid}/documents", status_code=201)
+async def add_po_document(
+    pid: int,
+    file: UploadFile = File(...),
+    notes: str | None = Form(None),
+    ctx: Ctx = Depends(need_any(*PO)),
+):
+    _po(ctx, pid)
+    return await _save(ctx, file, notes, po_id=pid)
+
+
 # ------------------------------------------------ statement transactions
 def _stmt_txn(ctx, tid):
     txn = ctx.get(M.StmtTxn, tid)
@@ -281,16 +334,6 @@ async def add_stmt_txn_document(
     _stmt_txn(ctx, tid)
     return await _save(ctx, file, notes, stmt_txn_id=tid)
 
-@router.post("/vendor-invoices/{vid}/documents", status_code=201)
-async def add_vinv_document(
-    vid: int,
-    file: UploadFile = File(...),
-    notes: str | None = Form(None),
-    ctx: Ctx = Depends(need_any(*PURCHASE)),
-):
-    _vinv(ctx, vid)
-    return await _save(ctx, file, notes, vinv_id=vid)
-
 
 # --------------------------------------------------------- one document
 def _doc(ctx, did) -> M.DocFile:
@@ -303,6 +346,8 @@ def _doc(ctx, did) -> M.DocFile:
         _require_any(ctx, SALES)
     elif d.vinv_id:
         _require_any(ctx, PURCHASE)
+    elif d.po_id:
+        _require_any(ctx, (*PO, *PURCHASE))
     elif d.stmt_txn_id:
         txn = ctx.get(M.StmtTxn, d.stmt_txn_id)
 
@@ -326,7 +371,7 @@ def _doc(ctx, did) -> M.DocFile:
 def document_file(
     did: int,
     inline: bool = Query(False),
-    ctx: Ctx = Depends(need_any(*SALES, *PURCHASE)),
+    ctx: Ctx = Depends(need_any(*SALES, *PURCHASE, *PO, *STATEMENT)),
 ):
     d = _doc(ctx, did)
 
@@ -361,7 +406,7 @@ def document_file(
 @router.delete("/documents/{did}", status_code=204)
 def delete_document(
     did: int,
-    ctx: Ctx = Depends(need_any(*SALES, *PURCHASE)),
+    ctx: Ctx = Depends(need_any(*SALES, *PURCHASE, *PO, *STATEMENT)),
 ):
     d = _doc(ctx, did)
 

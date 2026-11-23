@@ -1,12 +1,15 @@
 import { Fragment, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useFyRows, FyCount } from '../lib/fy'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
   usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
 import { inr, money, gd, today } from '../lib/fmt'
+import DocFiles from '../components/DocFiles'
 
 export default function PurchaseOrders() {
   const { api, me } = useAuth()
+  const navigate = useNavigate()
   const vendors = useLoad(() => api.vendors())
   const materials = useLoad(() => api.materials())
   const list = useLoad(() => api.pos())
@@ -23,6 +26,8 @@ export default function PurchaseOrders() {
   const [variant, setVariant] = usePrintVariant()
   const [editing, setEditing] = useState(null)      // null or { id, doc_no }
   const [expanded, setExpanded] = useState(null)    // po id whose items are shown
+  const [documentsFor, setDocumentsFor] = useState(null)
+  const [uploadFiles, setUploadFiles] = useState([])
   const set = (k, v) => setH(s => ({ ...s, [k]: v }))
 
   const vend = vendors.data?.find(v => v.id === Number(h.vendor_id))
@@ -100,15 +105,28 @@ export default function PurchaseOrders() {
           descr2: l.descr2 ? l.descr2.trim() : null,
         }))
       }
+      let savedDoc = null
       if (editing) {
         const d = await api.updatePo(editing.id, payload)
+        savedDoc = d
         showFlash(`Purchase order ${d.doc_no || editing.doc_no} updated.`)
         cancelEdit()
       } else {
         const d = await api.addPo(payload)
-        showFlash(`Purchase order ${d.doc_no} saved — ${money(d.totals.rounded)}.`)
+        savedDoc = d
+        showFlash(`Purchase order ${d.doc_no} saved — ${money(d.totals.rounded)}${uploadFiles.length ? ` with ${uploadFiles.length} document(s)` : ''}.`)
         cancelEdit()
       }
+      if (savedDoc && uploadFiles.length > 0) {
+        for (const file of uploadFiles) {
+          try {
+            await api.addPoDocument(savedDoc.id, file)
+          } catch (x) {
+            console.error('Failed to upload PO document', x)
+          }
+        }
+      }
+      setUploadFiles([])
       list.reload()
     } catch (x) { setErr(x.message) }
   }
@@ -169,6 +187,15 @@ export default function PurchaseOrders() {
                 disabled={h.ship_same}
                 onChange={e => set('ship_addr', e.target.value)} /></Field>
           </div>
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <Field label="Supporting documents (optional)" hint="Attach quotes, specs or order files">
+            <input type="file" multiple
+              onChange={e => setUploadFiles(Array.from(e.target.files || []))}
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.tif,.tiff,.heic,.doc,.docx,.xls,.xlsx,.csv,.txt,.eml,.msg,.zip"
+              style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7 }} />
+            {uploadFiles.length > 0 && <span className="fine" style={{ marginLeft: 8 }}>{uploadFiles.length} file(s) selected</span>}
+          </Field>
         </div>
         {vend && <Alert kind={registered ? 'ok' : 'warn'}>
           {registered
@@ -264,6 +291,25 @@ export default function PurchaseOrders() {
                 </button>
                 <PrintButtons kind="purchase-orders" id={o.id} variant={variant}
                   onError={m => showFlash(m, 'bad')} />
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={{ marginLeft: 5 }}
+                  onClick={() => setDocumentsFor(documentsFor === o.id ? null : o.id)}
+                >
+                  Docs
+                </button>
+                {o.status !== 'INVOICED' && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-a"
+                    style={{ marginLeft: 5 }}
+                    title="Convert to purchase invoice"
+                    onClick={() => navigate(`/vendor-invoices?po=${o.id}`)}
+                  >
+                    Convert
+                  </button>
+                )}
                 {o.status !== 'INVOICED' && (
                   <button className="btn btn-sm" style={{ marginLeft: 5 }}
                     onClick={() => edit(o)}>Edit</button>
@@ -316,5 +362,12 @@ export default function PurchaseOrders() {
         ))}
       </Table>
     </Panel>
+
+    {documentsFor && (
+      <DocFiles
+        kind="po"
+        id={documentsFor}
+      />
+    )}
   </>)
 }

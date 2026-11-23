@@ -8,6 +8,7 @@ dist/
 *.log
 aequm_billing_backup.sql
 .vrnv/
+*.before-*
 
 # Zoho migration source data and sensitive migration scripts
 migration/zoho_raw/

@@ -139,6 +139,20 @@ export function makeApi(token, tenantId) {
     addVinvDocument: (id, file) =>
       upload(`/vendor-invoices/${id}/documents`, file, { token, tenantId }),
 
+    poDocuments: (id) =>
+      call(`/purchase-orders/${id}/documents`),
+
+    addPoDocument: (id, file) =>
+      upload(`/purchase-orders/${id}/documents`, file, { token, tenantId }),
+
+    convertPo: (id, docNo, docDate) => {
+      const q = new URLSearchParams()
+      if (docNo) q.set('doc_no', docNo)
+      if (docDate) q.set('doc_date', docDate)
+      const qs = q.toString()
+      return call(`/purchase-orders/${id}/convert${qs ? `?${qs}` : ''}`, { method: 'POST' })
+    },
+
     delDocument: (id) =>
       call(`/documents/${id}`, { method: 'DELETE' }),
 

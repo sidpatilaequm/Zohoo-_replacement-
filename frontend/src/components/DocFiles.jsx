@@ -25,6 +25,8 @@ export default function DocFiles({ kind, id }) {
     try {
       const rows = kind === 'vinv'
         ? await api.vinvDocuments(id)
+        : kind === 'po'
+        ? await api.poDocuments(id)
         : await api.invoiceDocuments(id)
 
       setFiles(rows || [])
@@ -56,6 +58,8 @@ export default function DocFiles({ kind, id }) {
     try {
       if (kind === 'vinv') {
         await api.addVinvDocument(id, file)
+      } else if (kind === 'po') {
+        await api.addPoDocument(id, file)
       } else {
         await api.addInvoiceDocument(id, file)
       }
@@ -151,6 +155,7 @@ export default function DocFiles({ kind, id }) {
                 </div>
               </div>
 
+              {file.from_po && <Tag kind="warn">From PO</Tag>}
               {file.viewable && <Tag kind="ok">Viewable</Tag>}
 
               <button
