@@ -108,18 +108,17 @@ def add_customer(body: S.CustomerIn, ctx: Ctx = Depends(need("customers"))):
     if ctx.db.execute(ctx.scope(select(M.Customer), M.Customer)
                       .where(M.Customer.code == code)).scalar_one_or_none():
         raise HTTPException(409, f"Customer code {code} already exists in this organisation")
+    for g in body.gstins:
+        if ctx.db.execute(select(M.CustomerGstin)
+                          .where(M.CustomerGstin.gstin == g.gstin)).scalar_one_or_none():
+            raise HTTPException(409, f"GSTIN {g.gstin} is already recorded")
     c = M.Customer(tenant_id=ctx.tenant.id, code=code,
                    **body.model_dump(exclude={"gstins", "code", "contacts"}))
     ctx.db.add(c)
     ctx.db.flush()
     _save_contacts(ctx, "CUSTOMER", c.id, body.contacts)
-    seen_gstins = set()
     for n, g in enumerate(body.gstins):
-        norm = (g.gstin or "").strip().upper()
-        if not norm or norm in seen_gstins:
-            continue
-        seen_gstins.add(norm)
-        ctx.db.add(M.CustomerGstin(customer_id=c.id, gstin=norm, state_code=norm[:2],
+        ctx.db.add(M.CustomerGstin(customer_id=c.id, gstin=g.gstin, state_code=g.gstin[:2],
                                    label=g.label, is_default=g.is_default or n == 0))
     ctx.db.commit()
     ctx.db.refresh(c)
@@ -144,6 +143,18 @@ def edit_customer(cid: int, body: S.CustomerIn, ctx: Ctx = Depends(need("custome
             f"Customer code {code} already exists in this organisation"
         )
 
+    for g in body.gstins:
+        hit = ctx.db.execute(
+            select(M.CustomerGstin)
+            .where(M.CustomerGstin.gstin == g.gstin)
+        ).scalar_one_or_none()
+
+        if hit and hit.customer_id != cid:
+            raise HTTPException(
+                409,
+                f"GSTIN {g.gstin} is already recorded against another customer"
+            )
+
     for k, v in body.model_dump(
         exclude={"gstins", "code", "contacts"}
     ).items():
@@ -159,17 +170,12 @@ def edit_customer(cid: int, body: S.CustomerIn, ctx: Ctx = Depends(need("custome
 
     ctx.db.flush()
 
-    seen_gstins = set()
     for n, g in enumerate(body.gstins):
-        norm = (g.gstin or "").strip().upper()
-        if not norm or norm in seen_gstins:
-            continue
-        seen_gstins.add(norm)
         ctx.db.add(
             M.CustomerGstin(
                 customer_id=c.id,
-                gstin=norm,
-                state_code=norm[:2],
+                gstin=g.gstin,
+                state_code=g.gstin[:2],
                 label=g.label,
                 is_default=g.is_default or n == 0,
             )
@@ -253,13 +259,8 @@ def add_vendor(body: S.VendorIn, ctx: Ctx = Depends(need("vendors"))):
     ctx.db.add(v)
     ctx.db.flush()
     _save_contacts(ctx, "VENDOR", v.id, body.contacts)
-    seen_gstins = set()
     for i, g in enumerate(body.gstins):
-        norm = (g.gstin or "").strip().upper()
-        if not norm or norm in seen_gstins:
-            continue
-        seen_gstins.add(norm)
-        ctx.db.add(M.VendorGstin(vendor_id=v.id, gstin=norm, state_code=norm[:2],
+        ctx.db.add(M.VendorGstin(vendor_id=v.id, gstin=g.gstin, state_code=g.gstin[:2],
                                  label=g.label, is_default=g.is_default or i == 0))
     ctx.db.commit()
     ctx.db.refresh(v)
@@ -304,17 +305,12 @@ def edit_vendor(
 
     ctx.db.flush()
 
-    seen_gstins = set()
     for i, g in enumerate(body.gstins):
-        norm = (g.gstin or "").strip().upper()
-        if not norm or norm in seen_gstins:
-            continue
-        seen_gstins.add(norm)
         ctx.db.add(
             M.VendorGstin(
                 vendor_id=v.id,
-                gstin=norm,
-                state_code=norm[:2],
+                gstin=g.gstin,
+                state_code=g.gstin[:2],
                 label=g.label,
                 is_default=g.is_default or i == 0,
             )

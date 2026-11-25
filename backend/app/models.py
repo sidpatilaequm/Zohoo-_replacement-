@@ -196,10 +196,9 @@ class Customer(Base):
 
 class CustomerGstin(Base):
     __tablename__="customer_gstins"
-    __table_args__=(UniqueConstraint("customer_id","gstin",name="uq_cg"),)
     id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
     customer_id: Mapped[int]=mapped_column(ForeignKey("customers.id",ondelete="CASCADE"))
-    gstin: Mapped[str]=mapped_column(String(15))
+    gstin: Mapped[str]=mapped_column(String(15),unique=True)
     state_code: Mapped[str]=mapped_column(String(2),ForeignKey("states.code"))
     label: Mapped[str|None]=mapped_column(String(80),nullable=True)
     is_default: Mapped[bool]=mapped_column(Boolean,default=False)
@@ -241,10 +240,9 @@ class Vendor(Base):
     
 class VendorGstin(Base):
     __tablename__="vendor_gstins"
-    __table_args__=(UniqueConstraint("vendor_id","gstin",name="uq_vg"),)
     id: Mapped[int]=mapped_column(Integer,primary_key=True,autoincrement=True)
     vendor_id: Mapped[int]=mapped_column(ForeignKey("vendors.id",ondelete="CASCADE"))
-    gstin: Mapped[str]=mapped_column(String(15))
+    gstin: Mapped[str]=mapped_column(String(15),unique=True)
     state_code: Mapped[str]=mapped_column(String(2),ForeignKey("states.code"))
     label: Mapped[str|None]=mapped_column(String(80),nullable=True)
     is_default: Mapped[bool]=mapped_column(Boolean,default=False)
