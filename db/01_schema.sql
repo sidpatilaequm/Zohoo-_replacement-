@@ -101,11 +101,12 @@ CREATE TABLE customers (
 
 CREATE TABLE customer_gstins (
   id INT AUTO_INCREMENT PRIMARY KEY, customer_id INT NOT NULL,
-  gstin CHAR(15) NOT NULL UNIQUE, state_code CHAR(2) NOT NULL,
+  gstin CHAR(15) NOT NULL, state_code CHAR(2) NOT NULL,
   label VARCHAR(80) NULL, is_default BOOLEAN NOT NULL DEFAULT FALSE,
   CONSTRAINT fk_cg   FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
   CONSTRAINT fk_cg_s FOREIGN KEY (state_code)  REFERENCES states(code),
-  CONSTRAINT cg_match CHECK (LEFT(gstin,2) = state_code AND CHAR_LENGTH(gstin) = 15)
+  CONSTRAINT cg_match CHECK (LEFT(gstin,2) = state_code AND CHAR_LENGTH(gstin) = 15),
+  UNIQUE KEY uq_cg (customer_id, gstin)
 ) ENGINE=InnoDB;
 
 CREATE TABLE vendors (
@@ -131,11 +132,12 @@ CREATE TABLE vendors (
 
 CREATE TABLE vendor_gstins (
   id INT AUTO_INCREMENT PRIMARY KEY, vendor_id INT NOT NULL,
-  gstin CHAR(15) NOT NULL UNIQUE, state_code CHAR(2) NOT NULL,
+  gstin CHAR(15) NOT NULL, state_code CHAR(2) NOT NULL,
   label VARCHAR(80) NULL, is_default BOOLEAN NOT NULL DEFAULT FALSE,
   CONSTRAINT fk_vg   FOREIGN KEY (vendor_id)  REFERENCES vendors(id) ON DELETE CASCADE,
   CONSTRAINT fk_vg_s FOREIGN KEY (state_code) REFERENCES states(code),
-  CONSTRAINT vg_match CHECK (LEFT(gstin,2) = state_code AND CHAR_LENGTH(gstin) = 15)
+  CONSTRAINT vg_match CHECK (LEFT(gstin,2) = state_code AND CHAR_LENGTH(gstin) = 15),
+  UNIQUE KEY uq_vg (vendor_id, gstin)
 ) ENGINE=InnoDB;
 
 CREATE TABLE materials (

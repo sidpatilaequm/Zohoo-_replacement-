@@ -228,7 +228,7 @@ def match(ctx, parsed: dict) -> dict:
     if parsed.get("vendor_gstin"):
         reg = ctx.db.execute(select(M.VendorGstin).join(M.Vendor).where(
             M.VendorGstin.gstin == parsed["vendor_gstin"],
-            M.Vendor.tenant_id == ctx.tenant.id)).scalar_one_or_none()
+            M.Vendor.tenant_id == ctx.tenant.id)).scalars().first()
         if reg:
             vendor, vconf = reg.vendor, 1.0
     vendors = list(ctx.db.execute(ctx.scope(select(M.Vendor), M.Vendor)).scalars())
