@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useMemo } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { PanMsme, BankBlock, Contacts, ContactCell, BankCell, MsmeTag } from '../components/PartyExtras'
@@ -32,6 +32,7 @@ export default function Customers() {
   const [gstLoading, setGstLoading] = useState(false)
   const [gstStatus, setGstStatus] = useState(null)
   const [gstErr, setGstErr] = useState(null)
+  const [searchQuery, setSearchQuery] = useState('')
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
 
   function pickLogo(e) {
@@ -133,6 +134,20 @@ export default function Customers() {
   // The documents open from here only for groups that can see the registers.
   const canInv = can('saved'), canPro = can('saved') && can('proforma')
   const showTx = canInv || canPro
+
+  const filteredCustomers = useMemo(() => {
+    const q = (searchQuery || '').trim().toLowerCase()
+    if (!q) return list.data || []
+    return (list.data || []).filter(c => {
+      if (c.code?.toLowerCase().includes(q)) return true
+      if (c.name?.toLowerCase().includes(q)) return true
+      if (c.email?.toLowerCase().includes(q)) return true
+      if (c.pan?.toLowerCase().includes(q)) return true
+      if (c.bill_city?.toLowerCase().includes(q)) return true
+      if (c.gstins?.some(g => g.gstin?.toLowerCase().includes(q))) return true
+      return false
+    })
+  }, [list.data, searchQuery])
 
   return (<>
     {flash}
@@ -304,12 +319,29 @@ export default function Customers() {
       </form>
     </Panel>
 
-    <Panel title={`Customers — ${list.data.length}`} bodyless>
+    <Panel
+      title={`Customers — ${filteredCustomers.length}${searchQuery ? ` of ${list.data.length}` : ''}`}
+      right={
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="search"
+            placeholder="Search name, GSTIN, code, PAN..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            style={{ padding: '6px 10px', border: '1px solid var(--line2)', borderRadius: 7, width: 230, fontSize: 13 }}
+          />
+          {searchQuery && (
+            <button type="button" className="btn btn-sm" onClick={() => setSearchQuery('')}>Clear</button>
+          )}
+        </div>
+      }
+      bodyless
+    >
       <Table head={['Code', 'Name', { label: 'Type', align: 'c' }, 'Registrations', 'PAN',
         { label: 'MSME', align: 'c' }, 'Bank', 'Contact', 'Billing',
         ...(showTx ? ['Transactions'] : []), '']}
-        empty="No customers yet.">
-        {list.data.map(c => (
+        empty={searchQuery ? 'No customer matches that search.' : 'No customers yet.'}>
+        {filteredCustomers.map(c => (
           <tr key={c.id}>
             <td className="mono">{c.code}</td>
             <td style={{ display: 'flex', gap: 8, alignItems: 'center' }}>

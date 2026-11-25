@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useMemo } from 'react'
 import { useAuth } from '../lib/auth'
 import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash } from '../components/ui'
 import { PanMsme, BankBlock, Contacts, ContactCell, BankCell, MsmeTag } from '../components/PartyExtras'
@@ -28,6 +28,7 @@ export default function Vendors() {
   const [gstLoading, setGstLoading] = useState(false)
   const [gstStatus, setGstStatus] = useState(null)
   const [gstErr, setGstErr] = useState(null)
+  const [searchQuery, setSearchQuery] = useState('')
   function pickLogo(e) {
     const file = e.target.files?.[0], id = Number(e.target.dataset.id)
     e.target.value = ''
@@ -122,6 +123,20 @@ export default function Vendors() {
   if (list.loading || states.loading || banks.loading || desigs.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
   const stateName = c => states.data?.find(s => s.code === c)?.name || c
+
+  const filteredVendors = useMemo(() => {
+    const q = (searchQuery || '').trim().toLowerCase()
+    if (!q) return list.data || []
+    return (list.data || []).filter(v => {
+      if (v.code?.toLowerCase().includes(q)) return true
+      if (v.name?.toLowerCase().includes(q)) return true
+      if (v.email?.toLowerCase().includes(q)) return true
+      if (v.pan?.toLowerCase().includes(q)) return true
+      if (v.city?.toLowerCase().includes(q)) return true
+      if (v.gstins?.some(g => g.gstin?.toLowerCase().includes(q))) return true
+      return false
+    })
+  }, [list.data, searchQuery])
 
   return (<>
     {flash}
@@ -269,11 +284,28 @@ export default function Vendors() {
       </form>
     </Panel>
 
-    <Panel title={`Vendors — ${list.data.length}`} bodyless>
+    <Panel
+      title={`Vendors — ${filteredVendors.length}${searchQuery ? ` of ${list.data.length}` : ''}`}
+      right={
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="search"
+            placeholder="Search name, GSTIN, code, PAN..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            style={{ padding: '6px 10px', border: '1px solid var(--line2)', borderRadius: 7, width: 230, fontSize: 13 }}
+          />
+          {searchQuery && (
+            <button type="button" className="btn btn-sm" onClick={() => setSearchQuery('')}>Clear</button>
+          )}
+        </div>
+      }
+      bodyless
+    >
       <Table head={['Code', 'Name', { label: 'Type', align: 'c' }, 'Registrations', 'PAN',
         { label: 'MSME', align: 'c' }, 'Bank', 'Contact', 'Address', '']}
-        empty="No vendors yet.">
-        {list.data.map(v => (
+        empty={searchQuery ? 'No vendor matches that search.' : 'No vendors yet.'}>
+        {filteredVendors.map(v => (
           <tr key={v.id}>
             <td className="mono">{v.code}</td>
             <td style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
