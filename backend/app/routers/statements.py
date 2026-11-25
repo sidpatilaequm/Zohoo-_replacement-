@@ -1524,14 +1524,31 @@ def _invoice_summary(ctx, link_type, ref_id) -> dict:
             "payments": rows}
 
 
-def _candidates(ctx, link_type, doc, open_amt) -> list:
+def _candidates(ctx, link_type, doc, open_amt, period: str | None = None) -> list:
     """Bank lines (and, for a vendor invoice, company card spends) with money
-    still to attach, on the right side, from 90 days before the invoice."""
+    still to attach, on the right side, from 90 days before the invoice (or within period)."""
     credit = link_type == "CUST_INV"
     q = (select(M.StmtTxn, M.StmtAccount)
          .join(M.StmtAccount, M.StmtAccount.id == M.StmtTxn.account_id)
-         .where(M.StmtTxn.tenant_id == ctx.tenant.id,
-                M.StmtTxn.txn_date >= doc.doc_date - timedelta(days=90)))
+         .where(M.StmtTxn.tenant_id == ctx.tenant.id))
+    if period:
+        parts = period.strip().split("-")
+        try:
+            if len(parts) == 2 and parts[0] and parts[1]:
+                yr, mo = int(parts[0]), int(parts[1])
+                d0 = date(yr, mo, 1)
+                d1 = date(yr + 1, 1, 1) if mo == 12 else date(yr, mo + 1, 1)
+                q = q.where(M.StmtTxn.txn_date >= d0, M.StmtTxn.txn_date < d1)
+            elif len(parts) == 1 and parts[0]:
+                yr = int(parts[0])
+                q = q.where(M.StmtTxn.txn_date >= date(yr, 1, 1), M.StmtTxn.txn_date < date(yr + 1, 1, 1))
+            else:
+                q = q.where(M.StmtTxn.txn_date >= doc.doc_date - timedelta(days=90))
+        except Exception:
+            q = q.where(M.StmtTxn.txn_date >= doc.doc_date - timedelta(days=90))
+    else:
+        q = q.where(M.StmtTxn.txn_date >= doc.doc_date - timedelta(days=90))
+
     q = q.where(M.StmtTxn.credit > 0, M.StmtAccount.kind == "BANK") if credit \
         else q.where(M.StmtTxn.debit > 0)
     allowed = {k for k in ("BANK", "CARD") if _perm_for(k) in ctx.perms}
@@ -1553,6 +1570,7 @@ def _candidates(ctx, link_type, doc, open_amt) -> list:
 @router.get("/invoice-payments")
 def invoice_payments(
     link_type: str = Query(..., pattern="^(CUST_INV|VEND_INV)$"), id: int = Query(...),
+    period: str | None = Query(None),
     ctx: Ctx = Depends(need_any("bankstmt", "cardstmt", "saved", "vinv", "crec", "vpay"))
 ):
     """An invoice's payments with TDS and GST withheld on each, and — for
@@ -1564,7 +1582,7 @@ def invoice_payments(
     out["candidates"] = []
     if can_attach and out["open"] > 0.005:
         doc = _invoice_doc(ctx, link_type, id)[0]
-        out["candidates"] = _candidates(ctx, link_type, doc, out["open"])
+        out["candidates"] = _candidates(ctx, link_type, doc, out["open"], period=period)
     return out
 
 

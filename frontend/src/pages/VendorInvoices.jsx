@@ -118,7 +118,7 @@ export default function VendorInvoices() {
 
   return (<>
     {flash}
-    <Panel title="Upload the vendor's invoice — PDF or image" right={
+    <Panel title="Upload vendor invoice — PDF or image (optional)" right={
       caps.data && <span className="fine">
         PDF text {caps.data.pdf_text ? '✓' : '✗'} · OCR {caps.data.ocr ? '✓' : '✗ (tesseract not installed)'}
         · Model {caps.data.llm ? '✓' : '✗ (set ANTHROPIC_API_KEY)'}</span>}>
@@ -127,7 +127,7 @@ export default function VendorInvoices() {
           onChange={e => readFile(e.target.files?.[0])}
           style={{ padding: '7px 10px', border: '1px solid var(--line2)', borderRadius: 7, maxWidth: 360 }} />
         <span className="fine">{reading ? 'Reading the invoice…'
-          : 'The invoice number, dates, vendor (by GSTIN), purchase order and line items are read and filled in below. Nothing is saved until you press Record.'}</span>
+          : 'Optional — auto-fills details from the vendor file. You can also fill the invoice header and order lines directly below.'}</span>
       </div>
       {prop && <>
         <div className="row" style={{ marginTop: 12 }}>

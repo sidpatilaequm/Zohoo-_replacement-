@@ -18,7 +18,10 @@ const TDS_RATES = [0.01, 0.02, 0.1]
  *  linkType: CUST_INV | VEND_INV. */
 export default function InvoicePayments({ linkType, id, onClose, onChanged }) {
   const { api } = useAuth()
-  const d = useLoad(() => api.invoicePayments(linkType, id), [linkType, id])
+  const [filterYear, setFilterYear] = useState('')
+  const [filterMonth, setFilterMonth] = useState('')
+  const period = filterYear && filterMonth ? `${filterYear}-${filterMonth}` : filterYear ? `${filterYear}` : ''
+  const d = useLoad(() => api.invoicePayments(linkType, id, period || undefined), [linkType, id, period])
   const [pick, setPick] = useState({})          // txn_id -> amount (string)
   const [withhold, setWithhold] = useState(true)
   const [tds, setTds] = useState('')
@@ -33,6 +36,33 @@ export default function InvoicePayments({ linkType, id, onClose, onChanged }) {
   const close = () => { if (changed && onChanged) onChanged(); onClose() }
   const D = d.data
   const credit = linkType === 'CUST_INV'
+
+  const years = useMemo(() => {
+    const s = new Set()
+    const now = new Date().getFullYear()
+    for (let y = now - 3; y <= now + 1; y++) s.add(String(y))
+    if (D?.payments) D.payments.forEach(p => p.date && s.add(p.date.slice(0, 4)))
+    if (D?.candidates) D.candidates.forEach(c => c.date && s.add(c.date.slice(0, 4)))
+    return Array.from(s).sort().reverse()
+  }, [D])
+
+  const filteredPayments = useMemo(() => {
+    if (!D?.payments) return []
+    return D.payments.filter(p => {
+      if (filterYear && !p.date.startsWith(filterYear)) return false
+      if (filterMonth && p.date.slice(5, 7) !== filterMonth) return false
+      return true
+    })
+  }, [D?.payments, filterYear, filterMonth])
+
+  const filteredCandidates = useMemo(() => {
+    if (!D?.candidates) return []
+    return D.candidates.filter(c => {
+      if (filterYear && !c.date.startsWith(filterYear)) return false
+      if (filterMonth && c.date.slice(5, 7) !== filterMonth) return false
+      return true
+    })
+  }, [D?.candidates, filterYear, filterMonth])
 
   useEffect(() => { setPick({}); setTds(''); setGst('') }, [D])
 
@@ -84,28 +114,69 @@ export default function InvoicePayments({ linkType, id, onClose, onChanged }) {
               <span><span className="k">GST withheld</span><b>{inr(D.gst_tds)}</b></span>
               <span><span className="k">Open</span><b>{inr(D.open)}</b></span>
             </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0 8px', padding: '6px 12px', background: 'var(--panel-subtle, rgba(0,0,0,0.02))', borderRadius: 6 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted)' }}>Filter by period:</span>
+              <select value={filterYear} onChange={e => setFilterYear(e.target.value)} style={{ fontSize: 12.5, padding: '3px 8px' }}>
+                <option value="">All years</option>
+                {years.map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+              <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} style={{ fontSize: 12.5, padding: '3px 8px' }}>
+                <option value="">All months</option>
+                <option value="01">Jan</option>
+                <option value="02">Feb</option>
+                <option value="03">Mar</option>
+                <option value="04">Apr</option>
+                <option value="05">May</option>
+                <option value="06">Jun</option>
+                <option value="07">Jul</option>
+                <option value="08">Aug</option>
+                <option value="09">Sep</option>
+                <option value="10">Oct</option>
+                <option value="11">Nov</option>
+                <option value="12">Dec</option>
+              </select>
+              {(filterYear || filterMonth) && (
+                <button type="button" className="btn btn-sm" onClick={() => { setFilterYear(''); setFilterMonth('') }} style={{ fontSize: 11.5, padding: '2px 8px' }}>
+                  Clear filter
+                </button>
+              )}
+            </div>
+
             {done && <Alert kind="ok">{done}</Alert>}
 
-            <h3 style={{ margin: '12px 0 4px', fontSize: 14 }}>Payments against this invoice</h3>
-            {D.payments.length
+            <h3 style={{ margin: '12px 0 4px', fontSize: 14 }}>
+              Payments against this invoice {filteredPayments.length !== D.payments.length ? `(${filteredPayments.length} of ${D.payments.length})` : ''}
+            </h3>
+            {filteredPayments.length
               ? <table className="paylist"><thead><tr><th>Date</th><th>From</th><th>Reference</th>
                   <th className="r">Amount</th><th className="r">TDS</th><th className="r">GST withheld</th></tr></thead>
-                <tbody>{D.payments.map((p, i) => <tr key={i}>
+                <tbody>{filteredPayments.map((p, i) => <tr key={i}>
                   <td className="mono">{gd(p.date)}</td><td className="fine">{p.source}</td>
                   <td className="fine mono">{p.ref}</td><td className="r">{inr(p.amount)}</td>
                   <td className="r">{p.tds ? inr(p.tds) : '—'}</td><td className="r">{p.gst_tds ? inr(p.gst_tds) : '—'}</td></tr>)}
-                  <tr><td colSpan={3}><b>Total</b></td><td className="r"><b>{inr(D.paid)}</b></td>
-                    <td className="r"><b>{inr(D.tds)}</b></td><td className="r"><b>{inr(D.gst_tds)}</b></td></tr></tbody></table>
-              : <div className="fine">Nothing received or paid against it yet.</div>}
+                  <tr><td colSpan={3}><b>Total</b></td><td className="r"><b>{inr(filteredPayments.reduce((s, p) => s + p.amount, 0))}</b></td>
+                    <td className="r"><b>{inr(filteredPayments.reduce((s, p) => s + (p.tds || 0), 0))}</b></td>
+                    <td className="r"><b>{inr(filteredPayments.reduce((s, p) => s + (p.gst_tds || 0), 0))}</b></td></tr></tbody></table>
+              : <div className="fine">
+                  {D.payments.length
+                    ? 'No payments against this invoice in the selected month/year.'
+                    : 'Nothing received or paid against it yet.'}
+                </div>}
 
             {D.open > 0.005 && D.can_attach && <>
-              <h3 style={{ margin: '14px 0 4px', fontSize: 14 }}>Bank lines that could settle it</h3>
-              {!D.candidates.length
-                ? <div className="fine">No {credit ? 'credit' : 'debit'} with money left to attach, from 90 days before the
-                    invoice on. Upload the statement on Bank Statements first.</div>
+              <h3 style={{ margin: '14px 0 4px', fontSize: 14 }}>
+                Bank lines that could settle it {filteredCandidates.length !== D.candidates.length ? `(${filteredCandidates.length} of ${D.candidates.length})` : ''}
+              </h3>
+              {!filteredCandidates.length
+                ? <div className="fine">
+                    {D.candidates.length
+                      ? 'No bank lines in the selected month/year.'
+                      : `No ${credit ? 'credit' : 'debit'} with money left to attach. Upload the statement on Bank Statements first.`}
+                  </div>
                 : <table className="paylist"><thead><tr><th /><th>Date</th><th>Account</th><th>Narration</th>
                     <th className="r">Left to attach</th><th className="r">Attach</th></tr></thead>
-                  <tbody>{D.candidates.map(c => {
+                  <tbody>{filteredCandidates.map(c => {
                     const on = pick[c.txn_id] !== undefined
                     return <tr key={c.txn_id}>
                       <td><input type="checkbox" checked={on} onChange={() => toggle(c)} aria-label={`Attach ${c.descr}`} /></td>

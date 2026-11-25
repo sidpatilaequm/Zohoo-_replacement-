@@ -396,6 +396,9 @@ class PurchaseOrder(Base):
     bill_addr: Mapped[str]=mapped_column(Text)
     ship_same: Mapped[bool]=mapped_column(Boolean,default=True)
     ship_addr: Mapped[str]=mapped_column(Text)
+    subject: Mapped[str|None]=mapped_column(String(200),nullable=True)
+    payment_terms: Mapped[str|None]=mapped_column(String(120),nullable=True)
+    instructions: Mapped[str|None]=mapped_column(Text,nullable=True)
     status: Mapped[str]=mapped_column(Enum("OPEN","INVOICED","CANCELLED",name="postat"),default="OPEN")
     ship_addr_id: Mapped[int|None]=mapped_column(
         ForeignKey("party_addresses.id"),nullable=True

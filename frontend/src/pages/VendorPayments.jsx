@@ -14,6 +14,7 @@ export default function VendorPayments() {
   const outstanding = useLoad(() => api.payables())
   const [f, setF] = useState({ vinv_id: '', pay_date: today(), amount: '', tds: '0', gst_tds: '',
     mode: 'NEFT', bank_ref: '', bank_acct: '', narration: '' })
+  const [extraInvs, setExtraInvs] = useState({})
   const [queue, setQueue] = useState([])
   const [err, setErr] = useState(null)
   const [flash, showFlash] = useFlash()
@@ -21,6 +22,9 @@ export default function VendorPayments() {
 
   const open = (vinvs.data || []).filter(v => v.outstanding > 0.5)
   const vi = open.find(v => v.id === Number(f.vinv_id))
+  const otherVinvs = vi ? open.filter(v => v.id !== vi.id && v.vendor_id === vi.vendor_id) : []
+  const extraTotal = Object.values(extraInvs).reduce((s, x) => s + (Number(x.amount) || 0), 0)
+  const totalAmount = (Number(f.amount) || 0) + extraTotal
 
   async function save(e) {
     e.preventDefault(); setErr(null)
@@ -30,8 +34,21 @@ export default function VendorPayments() {
         gst_tds: Number(f.gst_tds || 0),
         mode: f.mode, bank_ref: f.bank_ref || null, bank_acct: f.bank_acct || null,
         narration: f.narration || null })
-      showFlash('Payment recorded.')
+      for (const [idStr, ex] of Object.entries(extraInvs)) {
+        if (Number(ex.amount) > 0) {
+          await api.addVendorPay({
+            pay_type: 'PAY', vinv_id: Number(idStr),
+            pay_date: f.pay_date, amount: Number(ex.amount), tds: Number(ex.tds || 0),
+            gst_tds: Number(ex.gst_tds || 0),
+            mode: f.mode, bank_ref: f.bank_ref || null, bank_acct: f.bank_acct || null,
+            narration: f.narration || null
+          })
+        }
+      }
+      const count = 1 + Object.keys(extraInvs).length
+      showFlash(`Payment recorded for ${count} invoice(s) totalling ₹${inr(totalAmount)}.`)
       setF(s => ({ ...s, vinv_id: '', amount: '', tds: '0', gst_tds: '', bank_ref: '', narration: '' }))
+      setExtraInvs({})
       list.reload(); vinvs.reload(); outstanding.reload()
     } catch (x) { setErr(x.message) }
   }
@@ -61,9 +78,12 @@ export default function VendorPayments() {
       <Panel title="Record a payment to a vendor">
         <div className="row">
           <Field label="Vendor invoice"><select value={f.vinv_id}
-            onChange={e => { set('vinv_id', e.target.value)
+            onChange={e => {
+              set('vinv_id', e.target.value)
+              setExtraInvs({})
               const v = open.find(x => x.id === Number(e.target.value))
-              if (v) set('amount', v.outstanding.toFixed(2)) }}>
+              if (v) set('amount', v.outstanding.toFixed(2))
+            }}>
             <option value="">— select —</option>
             {open.map(v => <option key={v.id} value={v.id}>
               {v.doc_no} · {v.vendor} · ₹{inr(v.outstanding)} due</option>)}
@@ -91,12 +111,79 @@ export default function VendorPayments() {
         </div>
         {vi && <Alert kind="ok">Invoice total {money(vi.total)}, paid so far {money(vi.paid)},{' '}
           <b>outstanding {money(vi.outstanding)}</b>.</Alert>}
+
+        {vi && otherVinvs.length > 0 && (
+          <div style={{ marginTop: 14, marginBottom: 14, padding: '10px 14px', background: 'var(--panel-subtle, rgba(0,0,0,0.02))', borderRadius: 8, border: '1px solid var(--line2)' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+              Settle additional purchase invoices for {vi.vendor} in this payment:
+            </div>
+            <table style={{ width: '100%', fontSize: 12.5, borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--line2)', color: 'var(--muted)', textAlign: 'left' }}>
+                  <th style={{ width: 32 }} />
+                  <th>Invoice</th>
+                  <th>Date</th>
+                  <th style={{ textAlign: 'right' }}>Due</th>
+                  <th style={{ textAlign: 'right', width: 140 }}>Amount to pay</th>
+                  <th style={{ textAlign: 'right', width: 120 }}>TDS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {otherVinvs.map(other => {
+                  const isChecked = !!extraInvs[other.id]
+                  const cur = extraInvs[other.id] || { amount: other.outstanding.toFixed(2), tds: '0', gst_tds: '0' }
+                  return (
+                    <tr key={other.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                      <td>
+                        <input type="checkbox" checked={isChecked} onChange={e => {
+                          if (e.target.checked) {
+                            setExtraInvs({ ...extraInvs, [other.id]: { amount: other.outstanding.toFixed(2), tds: '0', gst_tds: '0' } })
+                          } else {
+                            const copy = { ...extraInvs }
+                            delete copy[other.id]
+                            setExtraInvs(copy)
+                          }
+                        }} />
+                      </td>
+                      <td className="mono"><b>{other.doc_no}</b></td>
+                      <td className="mono">{gd(other.doc_date)}</td>
+                      <td className="mono" style={{ textAlign: 'right' }}>₹ {inr(other.outstanding)}</td>
+                      <td style={{ textAlign: 'right' }}>
+                        {isChecked && (
+                          <input className="mono" type="number" step="0.01" style={{ width: 120, textAlign: 'right', padding: '3px 6px' }}
+                            value={cur.amount} max={other.outstanding}
+                            onChange={e => setExtraInvs({ ...extraInvs, [other.id]: { ...cur, amount: e.target.value } })} />
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {isChecked && (
+                          <input className="mono" type="number" step="0.01" style={{ width: 100, textAlign: 'right', padding: '3px 6px' }}
+                            value={cur.tds}
+                            onChange={e => setExtraInvs({ ...extraInvs, [other.id]: { ...cur, tds: e.target.value } })} />
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            {Object.keys(extraInvs).length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 12.5, textAlign: 'right', fontWeight: 600 }}>
+                Total payment across {1 + Object.keys(extraInvs).length} invoices: ₹ {inr(totalAmount)}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="ft">
-          <button className="btn btn-a" disabled={!f.vinv_id || !Number(f.amount)}>Record payment</button>
+          <button className="btn btn-a" disabled={!f.vinv_id || !Number(f.amount)}>
+            Record payment {Object.keys(extraInvs).length > 0 ? `(₹ ${inr(totalAmount)})` : ''}
+          </button>
           <button type="button" className="btn" onClick={() => {
             if (!vi) return setErr('Select a vendor invoice.')
-            setQueue([...queue, { party: vi.vendor, doc: vi.doc_no,
-              amount: Number(f.amount), mode: f.mode }])
+            const allDocs = [vi.doc_no, ...Object.keys(extraInvs).map(id => open.find(v => v.id === Number(id))?.doc_no)].filter(Boolean)
+            setQueue([...queue, { party: vi.vendor, doc: allDocs.join(', '),
+              amount: totalAmount, mode: f.mode }])
             showFlash(`Queued. ${queue.length + 1} item(s) in the bank file.`)
           }}>Add to bank file</button>
           <span className="err">{err}</span></div>

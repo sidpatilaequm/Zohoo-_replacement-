@@ -64,6 +64,8 @@ def _default_text(ctx, d, code, party):
     signer = t.smtp_from_name or t.name
     subject = f"{LABEL[code]} {d.doc_no} from {t.name}"
     if code == "PO":
+        if getattr(d, "subject", None):
+            subject = f"{LABEL[code]} {d.doc_no}: {d.subject} from {t.name}"
         total = po_tax(ctx, d).rounded
         body = (f"Dear {party.name},\n\n"
                 f"Please find attached our Purchase Order {d.doc_no} dated {_d(d.doc_date)} "

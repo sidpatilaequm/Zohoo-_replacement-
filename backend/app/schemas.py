@@ -302,6 +302,9 @@ class PoIn(BaseModel):
     bill_addr: str | None = None
     ship_same: bool = True
     ship_addr: str | None = None
+    subject: str | None = Field(None, max_length=200)
+    payment_terms: str | None = Field(None, max_length=120)
+    instructions: str | None = None
     lines: list[LineIn]
 
     @model_validator(mode="after")

@@ -6,6 +6,7 @@ import { Panel, Field, Table, Tag, Alert, useLoad, Loading, ErrorBox, useFlash,
   usePrintVariant, VariantPicker, PrintButtons } from '../components/ui'
 import { inr, money, gd, today } from '../lib/fmt'
 import DocFiles from '../components/DocFiles'
+import EmailComposer from '../components/EmailComposer'
 
 export default function PurchaseOrders() {
   const { api, me } = useAuth()
@@ -17,7 +18,7 @@ export default function PurchaseOrders() {
   const t = me?.tenant
   const orgAddr = t ? `${t.name}\nGSTIN ${t.gstin || '—'}` : ''
   const BLANK_H = { vendor_id: '', gstin: '', doc_date: today(), req_date: '',
-    bill_addr: '', ship_same: true, ship_addr: '' }
+    bill_addr: '', ship_same: true, ship_addr: '', subject: '', payment_terms: '', instructions: '' }
   const [h, setH] = useState(BLANK_H)
   const [lines, setLines] = useState([])
   const [pick, setPick] = useState('')
@@ -28,6 +29,8 @@ export default function PurchaseOrders() {
   const [expanded, setExpanded] = useState(null)    // po id whose items are shown
   const [documentsFor, setDocumentsFor] = useState(null)
   const [uploadFiles, setUploadFiles] = useState([])
+  const [mailing, setMailing] = useState(null)
+  const [converting, setConverting] = useState(null)
   const set = (k, v) => setH(s => ({ ...s, [k]: v }))
 
   const vend = vendors.data?.find(v => v.id === Number(h.vendor_id))
@@ -72,6 +75,9 @@ export default function PurchaseOrders() {
       bill_addr: o.bill_addr || '',
       ship_same: o.ship_same !== false,
       ship_addr: o.ship_addr || '',
+      subject: o.subject || '',
+      payment_terms: o.payment_terms || '',
+      instructions: o.instructions || '',
     })
     setLines((o.lines || []).map(l => ({
       material_id: l.material_id,
@@ -156,7 +162,12 @@ export default function PurchaseOrders() {
         right={editing && <button type="button" className="btn btn-sm" onClick={cancelEdit}>Cancel edit</button>}>
         <div className="row">
           <Field label="Vendor"><select value={h.vendor_id}
-            onChange={e => { set('vendor_id', e.target.value); set('gstin', '') }}>
+            onChange={e => {
+              set('vendor_id', e.target.value);
+              set('gstin', '');
+              const v = vendors.data?.find(x => x.id === Number(e.target.value));
+              if (v?.payment_terms && !h.payment_terms) set('payment_terms', v.payment_terms);
+            }}>
             <option value="">— select —</option>
             {vendors.data.map(v => <option key={v.id} value={v.id}>{v.code} · {v.name}</option>)}
           </select></Field>
@@ -187,6 +198,22 @@ export default function PurchaseOrders() {
                 disabled={h.ship_same}
                 onChange={e => set('ship_addr', e.target.value)} /></Field>
           </div>
+        </div>
+        <div className="grid2" style={{ marginTop: 16 }}>
+          <Field label="Subject" hint="Printed on the purchase order">
+            <input value={h.subject} onChange={e => set('subject', e.target.value)} maxLength={200}
+              placeholder="e.g. Annual IT Support & Hardware Maintenance" />
+          </Field>
+          <Field label="Payment terms" hint="e.g. Net 30 days, Due on receipt">
+            <input value={h.payment_terms} onChange={e => set('payment_terms', e.target.value)} maxLength={120}
+              placeholder={vend?.payment_terms || "e.g. Net 30 days"} />
+          </Field>
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <Field label="Description header / Special instructions" hint="Printed with the order">
+            <textarea value={h.instructions} onChange={e => set('instructions', e.target.value)}
+              placeholder="Enter special instructions, delivery terms or header notes..." rows={2} />
+          </Field>
         </div>
         <div style={{ marginTop: 16 }}>
           <Field label="Supporting documents (optional)" hint="Attach quotes, specs or order files">
@@ -274,7 +301,11 @@ export default function PurchaseOrders() {
             <tr>
               <td className="mono"><b>{o.doc_no}</b></td>
               <td className="mono">{gd(o.doc_date)}</td>
-              <td>{o.vendor}</td>
+              <td>
+                <b>{o.vendor}</b>
+                {o.subject && <div className="fine"><b>Sub:</b> {o.subject}</div>}
+                {o.payment_terms && <div className="fine" style={{ color: 'var(--muted)' }}>Terms: {o.payment_terms}</div>}
+              </td>
               <td className="fine">{(o.ship_addr || '').split('\n')[0]}</td>
               <td className="c">{o.status === 'INVOICED'
                 ? <Tag kind="ok">Invoiced</Tag> : <Tag kind="warn">Open</Tag>}</td>
@@ -299,13 +330,22 @@ export default function PurchaseOrders() {
                 >
                   Docs
                 </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  style={{ marginLeft: 5 }}
+                  title="Email purchase order"
+                  onClick={() => setMailing(o)}
+                >
+                  Email
+                </button>
                 {o.status !== 'INVOICED' && (
                   <button
                     type="button"
                     className="btn btn-sm btn-a"
                     style={{ marginLeft: 5 }}
                     title="Convert to purchase invoice"
-                    onClick={() => navigate(`/vendor-invoices?po=${o.id}`)}
+                    onClick={() => setConverting({ o, doc_no: '', doc_date: today() })}
                   >
                     Convert
                   </button>
@@ -367,6 +407,60 @@ export default function PurchaseOrders() {
       <DocFiles
         kind="po"
         id={documentsFor}
+      />
+    )}
+
+    {converting && (
+      <div className="modal-bg" onMouseDown={e => { if (e.target === e.currentTarget) setConverting(null) }}>
+        <div className="modal" role="dialog" aria-modal="true" style={{ maxWidth: 480 }}>
+          <div className="modal-hd">
+            <h2>Convert {converting.o.doc_no} to Purchase Invoice</h2>
+            <button type="button" className="rm" onClick={() => setConverting(null)}>×</button>
+          </div>
+          <div className="modal-bd">
+            <p style={{ margin: '0 0 12px', fontSize: 13 }}>
+              Convert PO <b>{converting.o.doc_no}</b> ({converting.o.vendor}) into a Purchase (Vendor) Invoice. All order lines and attached documents will be carried over.
+            </p>
+            <Field label="Vendor Invoice / Bill Number" hint="From the vendor's bill">
+              <input className="mono" value={converting.doc_no} onChange={e => setConverting({ ...converting, doc_no: e.target.value })}
+                placeholder="e.g. INV-2026-001" autoFocus required />
+            </Field>
+            <Field label="Invoice Date">
+              <input type="date" value={converting.doc_date} onChange={e => setConverting({ ...converting, doc_date: e.target.value })} required />
+            </Field>
+            <div style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center' }}>
+              <button type="button" className="btn btn-sm" onClick={() => { const id = converting.o.id; setConverting(null); navigate(`/vendor-invoices?po=${id}`) }}>
+                Open in Vendor Invoices instead
+              </button>
+              <button type="button" className="btn btn-a" disabled={!converting.doc_no.trim()}
+                onClick={async () => {
+                  try {
+                    await api.convertPo(converting.o.id, converting.doc_no.trim(), converting.doc_date)
+                    showFlash(`Purchase order ${converting.o.doc_no} converted to invoice ${converting.doc_no.trim()}.`)
+                    setConverting(null)
+                    list.reload()
+                  } catch (x) {
+                    showFlash(x.message, 'bad')
+                  }
+                }}>
+                Convert to Invoice
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {mailing && (
+      <EmailComposer
+        kind="po"
+        id={mailing.id}
+        variant={variant}
+        onClose={() => setMailing(null)}
+        onSent={() => {
+          showFlash(`Purchase order ${mailing.doc_no} emailed successfully.`)
+          setMailing(null)
+        }}
       />
     )}
   </>)

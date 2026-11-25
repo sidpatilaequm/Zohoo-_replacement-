@@ -1082,7 +1082,9 @@ def list_pos(ctx: Ctx = Depends(need("po"))):
                     "req_date": po.req_date, "vendor": po.vendor.name,
                     "vendor_id": po.vendor_id, "vendor_email": po.vendor.email,
                     "gstin": po.gstin, "status": po.status, "bill_addr": po.bill_addr,
-                    "ship_addr": po.ship_addr, "taxable": float(t.taxable),
+                    "ship_addr": po.ship_addr,
+                    "subject": po.subject, "payment_terms": po.payment_terms, "instructions": po.instructions,
+                    "taxable": float(t.taxable),
                     "tax": float(t.tax), "total": float(t.rounded), "intra": t.intra,
                     "lines": [{"material_id": l.material_id, "code": l.material.code,
                                "descr": l.material.descr, "qty": float(l.qty),
@@ -1106,7 +1108,10 @@ def add_po(body: S.PoIn, ctx: Ctx = Depends(need("po"))):
                          req_date=body.req_date, vendor_id=v.id,
                          gstin=reg.gstin if reg else None, bill_addr=bill,
                          ship_same=body.ship_same,
-                         ship_addr=bill if body.ship_same else body.ship_addr)
+                         ship_addr=bill if body.ship_same else body.ship_addr,
+                         subject=body.subject or None,
+                         payment_terms=body.payment_terms or (v.payment_terms if v else None),
+                         instructions=body.instructions or None)
     ctx.db.add(po)
     ctx.db.flush()
     for n, m, qty, price, d2, _inclusive in build_lines(
@@ -1132,6 +1137,7 @@ def get_po(pid: int, ctx: Ctx = Depends(need("po"))):
         "vendor_id": po.vendor_id, "vendor_email": po.vendor.email,
         "gstin": po.gstin, "status": po.status, "bill_addr": po.bill_addr,
         "ship_same": po.ship_same, "ship_addr": po.ship_addr,
+        "subject": po.subject, "payment_terms": po.payment_terms, "instructions": po.instructions,
         "taxable": float(t.taxable), "tax": float(t.tax),
         "total": float(t.rounded), "intra": t.intra,
         "lines": [{"material_id": l.material_id, "code": l.material.code,
@@ -1169,6 +1175,9 @@ def update_po(pid: int, body: S.PoIn, ctx: Ctx = Depends(need("po"))):
     po.bill_addr = bill
     po.ship_same = body.ship_same
     po.ship_addr = bill if body.ship_same else body.ship_addr
+    po.subject = body.subject or None
+    po.payment_terms = body.payment_terms or None
+    po.instructions = body.instructions or None
 
     po.lines.clear()
     ctx.db.flush()

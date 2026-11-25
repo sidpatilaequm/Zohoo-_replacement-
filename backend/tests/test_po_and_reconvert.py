@@ -181,3 +181,55 @@ def test_delete_po_blocked_when_invoiced(org):
     # Attempt delete PO -> 409
     r_del = c.delete(f"/api/purchase-orders/{po['id']}")
     assert r_del.status_code == 409
+
+
+def test_po_subject_payment_terms_instructions_and_email_draft(org):
+    c = org()
+    vid = vend(c, "V005")
+    mid = mat(c, "MP05", price=1000, cost=650)
+
+    # 1. Create PO with subject, payment_terms, instructions
+    r_po = c.post("/api/purchase-orders", json={
+        "vendor_id": vid, "doc_date": "2026-08-10", "req_date": "2026-08-25",
+        "subject": "Hardware and Network Upgrade",
+        "payment_terms": "Net 45 days",
+        "instructions": "Deliver to rear warehouse gate between 9am and 5pm",
+        "lines": [{"material_id": mid, "qty": 10, "price": 650, "descr2": "Cat6 cabling"}]
+    })
+    assert r_po.status_code == 201, r_po.text
+    poid = r_po.json()["id"]
+
+    # 2. Verify get and list endpoints
+    got = c.get(f"/api/purchase-orders/{poid}").json()
+    assert got["subject"] == "Hardware and Network Upgrade"
+    assert got["payment_terms"] == "Net 45 days"
+    assert got["instructions"] == "Deliver to rear warehouse gate between 9am and 5pm"
+
+    pos = c.get("/api/purchase-orders").json()
+    matched = [p for p in pos if p["id"] == poid][0]
+    assert matched["subject"] == "Hardware and Network Upgrade"
+    assert matched["payment_terms"] == "Net 45 days"
+
+    # 3. Verify PDF generation works cleanly with subject, terms, instructions
+    r_pdf = c.get(f"/api/print/purchase-orders/{poid}.pdf")
+    assert r_pdf.status_code == 200, r_pdf.text
+    assert r_pdf.headers["content-type"] == "application/pdf"
+    assert len(r_pdf.content) > 1000
+
+    # 4. Verify Email draft endpoint for PO
+    r_draft = c.get(f"/api/email/draft?kind=po&id={poid}")
+    assert r_draft.status_code == 200
+    draft = r_draft.json()
+    assert "Hardware and Network Upgrade" in draft["subject"]
+    assert draft["kind"] == "po"
+    assert draft["doc_no"] == got["doc_no"]
+
+    # 5. Verify direct PO conversion to purchase invoice
+    r_conv = c.post(f"/api/purchase-orders/{poid}/convert?doc_no=SUPP-INV-101&doc_date=2026-08-20")
+    assert r_conv.status_code == 201, r_conv.text
+    vinv = r_conv.json()
+    assert vinv["doc_no"] == "SUPP-INV-101"
+
+    # PO status should now be INVOICED
+    po_after = c.get(f"/api/purchase-orders/{poid}").json()
+    assert po_after["status"] == "INVOICED"

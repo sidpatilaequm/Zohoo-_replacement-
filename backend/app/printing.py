@@ -361,6 +361,7 @@ def render_po(org: dict, po: dict, totals: dict, variant: str) -> bytes:
     _header(story, org, "PURCHASE ORDER", "Goods" if goods else "Services and IT products",
             [("PO number", po["doc_no"]), ("PO date", _d(po["doc_date"])),
              ("Required by" if goods else "Service start", _d(po.get("req_date"))),
+             ("Payment terms", po.get("payment_terms") or "As agreed"),
              ("Status", po.get("status", "OPEN").title()),
              ("Supply", "Intra-state" if totals["intra"] else "Inter-state")], width)
     v = po["vendor"]
@@ -372,6 +373,27 @@ def render_po(org: dict, po: dict, totals: dict, variant: str) -> bytes:
     if goods:
         blocks.append(_addr_block("Deliver to", "", [po.get("ship_addr") or po.get("bill_addr")]))
     _parties(story, blocks, width)
+
+    if po.get("subject"):
+        subj = Table([[[_p("Subject :", "small"), _p(po.get("subject") or "")]]], colWidths=[width])
+        subj.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story += [subj, Spacer(1, 6)]
+
+    if po.get("instructions"):
+        inst = Table([[[_p("Description / Instructions :", "small"), _p(po.get("instructions") or "")]]], colWidths=[width])
+        inst.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, LINE),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story += [inst, Spacer(1, 6)]
+
     _lines_table(story, totals, variant, width, price_label="Unit cost")
     _hsn_and_totals(story, totals, variant, width, words_label="Order value in words")
     _footer(story, [_p("• " + t, "small") for t in TERMS["PO"][variant]],

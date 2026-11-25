@@ -372,8 +372,8 @@ export function makeApi(token, tenantId) {
     // v5.0 — TDS and GST withheld on an attachment after the fact
     setLinkWithheld: (id, b) => call(`/statements/links/${id}/tds`, { method: 'PUT', body: b }),
     // v5.0 — an invoice's payments, and attaching several bank lines to it at once
-    invoicePayments: (linkType, id) =>
-      call(`/statements/invoice-payments?link_type=${linkType}&id=${id}`),
+    invoicePayments: (linkType, id, period) =>
+      call(`/statements/invoice-payments?link_type=${encodeURIComponent(linkType)}&id=${encodeURIComponent(id)}${period ? `&period=${encodeURIComponent(period)}` : ''}`),
     matchInvoicePayments: (b) => call('/statements/invoice-payments', { method: 'POST', body: b }),
     // v5.0 — statutory payments (government filings) and GST withheld registers
     govtPayments: (p) => call('/statements/govt-payments' + (p ? `?period=${encodeURIComponent(p)}` : '')),

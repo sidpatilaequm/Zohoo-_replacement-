@@ -67,6 +67,9 @@ def print_po(pid: int, variant: str | None = None, disposition: str = "attachmen
     doc = {"doc_no": po.doc_no, "doc_date": po.doc_date, "req_date": po.req_date,
            "status": po.status, "gstin": po.gstin, "bill_addr": po.bill_addr,
            "ship_addr": po.ship_addr,
+           "subject": po.subject,
+           "payment_terms": po.payment_terms or (v.payment_terms if v else None),
+           "instructions": po.instructions,
            "vendor": {"name": v.name, "addr": v.addr, "city": v.city, "pin": v.pin,
                       "pan": v.pan, "email": v.email,"logo": v.logo,}}
     pdf = render_po(_org(ctx), doc, tax_json(po_tax(ctx, po)), _variant(ctx, variant))
@@ -222,6 +225,9 @@ def po_pdf(ctx, po, variant=None):
         "gstin": po.gstin,
         "bill_addr": po.bill_addr,
         "ship_addr": po.ship_addr,
+        "subject": po.subject,
+        "payment_terms": po.payment_terms or (v.payment_terms if v else None),
+        "instructions": po.instructions,
         "vendor": {
             "name": v.name,
             "addr": v.addr,
