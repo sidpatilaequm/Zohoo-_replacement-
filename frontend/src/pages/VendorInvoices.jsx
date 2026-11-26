@@ -39,7 +39,14 @@ export default function VendorInvoices() {
   function loadPo(id) {
     set('po_id', id)
     const o = openPos.find(x => x.id === Number(id))
-    if (o) set('vendor_id', String(o.vendor_id))
+    if (o) {
+      set('vendor_id', String(o.vendor_id))
+      if (o.req_date && o.req_date >= today()) {
+        set('due_date', o.req_date)
+      } else {
+        set('due_date', today())
+      }
+    }
     setLines(o ? o.lines.map(l => ({ material_id: l.material_id, poQty: l.qty,
       poPrice: l.price, qty: l.qty, price: l.price, descr2: l.descr2 || '' })) : [])
   }

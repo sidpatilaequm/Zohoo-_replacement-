@@ -233,3 +233,48 @@ def test_po_subject_payment_terms_instructions_and_email_draft(org):
     # PO status should now be INVOICED
     po_after = c.get(f"/api/purchase-orders/{poid}").json()
     assert po_after["status"] == "INVOICED"
+
+
+def test_po_conversion_past_req_date_and_auto_doc_no(org):
+    c = org()
+    vid = vend(c, "V006")
+    mid = mat(c, "MP06", price=500, cost=400)
+
+    # 1. Create PO with req_date in the past relative to invoice date
+    r_po = c.post("/api/purchase-orders", json={
+        "vendor_id": vid,
+        "doc_date": "2026-08-01",
+        "req_date": "2026-08-05",  # earlier than conversion doc_date (2026-08-15)
+        "lines": [{"material_id": mid, "qty": 5, "price": 400, "descr2": "Special fittings"}]
+    })
+    assert r_po.status_code == 201, r_po.text
+    poid = r_po.json()["id"]
+    po_doc_no = r_po.json()["doc_no"]
+
+    # 2. Convert to vendor invoice with doc_date > req_date and doc_no omitted (auto-generated)
+    r_conv = c.post(f"/api/purchase-orders/{poid}/convert?doc_date=2026-08-15")
+    assert r_conv.status_code == 201, r_conv.text
+    vinv = r_conv.json()
+    assert vinv["doc_no"] is not None
+    assert vinv["totals"]["rounded"] > 0
+
+    # 3. Check PO in list_pos returns invoiced_doc_no and status INVOICED
+    pos = c.get("/api/purchase-orders").json()
+    po_row = next(p for p in pos if p["id"] == poid)
+    assert po_row["status"] == "INVOICED"
+    assert po_row["invoiced_doc_no"] == vinv["doc_no"]
+    assert po_row["invoiced_id"] == vinv["id"]
+
+    # 4. Check list_vinv returns our_no and po_no
+    vinvs = c.get("/api/vendor-invoices").json()
+    vi_row = next(v for v in vinvs if v["id"] == vinv["id"])
+    assert vi_row["our_no"] is not None
+    assert vi_row["po_no"] == po_doc_no
+    # Check constraint check: due_date must be >= doc_date
+    assert vi_row["due_date"] >= vi_row["doc_date"]
+
+    # 5. Attempting to convert already-invoiced PO should fail with 400
+    r_dup = c.post(f"/api/purchase-orders/{poid}/convert")
+    assert r_dup.status_code == 400
+    assert "already been converted" in r_dup.text
+

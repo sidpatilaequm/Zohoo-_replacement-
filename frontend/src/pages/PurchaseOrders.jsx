@@ -308,7 +308,10 @@ export default function PurchaseOrders() {
               </td>
               <td className="fine">{(o.ship_addr || '').split('\n')[0]}</td>
               <td className="c">{o.status === 'INVOICED'
-                ? <Tag kind="ok">Invoiced</Tag> : <Tag kind="warn">Open</Tag>}</td>
+                ? <Tag kind="ok" title={o.invoiced_doc_no ? `Invoice: ${o.invoiced_doc_no}` : 'Invoiced'}>
+                    {o.invoiced_doc_no ? `Invoiced (${o.invoiced_doc_no})` : 'Invoiced'}
+                  </Tag>
+                : <Tag kind="warn">Open</Tag>}</td>
               <td className="c">{o.tax > 0
                 ? (o.intra ? <Tag kind="ok">Intra</Tag> : <Tag kind="warn">Inter</Tag>)
                 : <Tag>None</Tag>}</td>
@@ -339,6 +342,17 @@ export default function PurchaseOrders() {
                 >
                   Email
                 </button>
+                {o.status === 'INVOICED' && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    style={{ marginLeft: 5 }}
+                    title="View Vendor Invoices"
+                    onClick={() => navigate('/vendor-invoices')}
+                  >
+                    View Invoice
+                  </button>
+                )}
                 {o.status !== 'INVOICED' && (
                   <button
                     type="button"
@@ -421,9 +435,9 @@ export default function PurchaseOrders() {
             <p style={{ margin: '0 0 12px', fontSize: 13 }}>
               Convert PO <b>{converting.o.doc_no}</b> ({converting.o.vendor}) into a Purchase (Vendor) Invoice. All order lines and attached documents will be carried over.
             </p>
-            <Field label="Vendor Invoice / Bill Number" hint="From the vendor's bill">
+            <Field label="Vendor Invoice / Bill Number" hint="From the vendor's bill (or leave blank to auto-generate)">
               <input className="mono" value={converting.doc_no} onChange={e => setConverting({ ...converting, doc_no: e.target.value })}
-                placeholder="e.g. INV-2026-001" autoFocus required />
+                placeholder="Auto-generated (or enter vendor's bill no)" autoFocus />
             </Field>
             <Field label="Invoice Date">
               <input type="date" value={converting.doc_date} onChange={e => setConverting({ ...converting, doc_date: e.target.value })} required />
@@ -432,11 +446,12 @@ export default function PurchaseOrders() {
               <button type="button" className="btn btn-sm" onClick={() => { const id = converting.o.id; setConverting(null); navigate(`/vendor-invoices?po=${id}`) }}>
                 Open in Vendor Invoices instead
               </button>
-              <button type="button" className="btn btn-a" disabled={!converting.doc_no.trim()}
+              <button type="button" className="btn btn-a"
                 onClick={async () => {
                   try {
-                    await api.convertPo(converting.o.id, converting.doc_no.trim(), converting.doc_date)
-                    showFlash(`Purchase order ${converting.o.doc_no} converted to invoice ${converting.doc_no.trim()}.`)
+                    const billNo = converting.doc_no.trim() || undefined
+                    const res = await api.convertPo(converting.o.id, billNo, converting.doc_date)
+                    showFlash(`Purchase order ${converting.o.doc_no} converted to invoice ${res?.doc_no || billNo || ''}.`)
                     setConverting(null)
                     list.reload()
                   } catch (x) {

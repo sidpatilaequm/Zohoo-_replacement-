@@ -1073,11 +1073,20 @@ def del_invoice(
 
 # ======================================================= purchase orders
 @router.get("/purchase-orders")
-def list_pos(ctx: Ctx = Depends(need("po"))):
+def list_pos(ctx: Ctx = Depends(need_any("po", "vinv"))):
     out = []
+    vi_by_po = {
+        vi.po_id: vi
+        for vi in ctx.db.execute(
+            ctx.scope(select(M.VendorInvoice), M.VendorInvoice).where(
+                M.VendorInvoice.po_id.is_not(None)
+            )
+        ).scalars()
+    }
     for po in ctx.db.execute(ctx.scope(select(M.PurchaseOrder), M.PurchaseOrder)
                              .order_by(M.PurchaseOrder.doc_date.desc())).scalars():
         t = po_tax(ctx, po)
+        vi = vi_by_po.get(po.id)
         out.append({"id": po.id, "doc_no": po.doc_no, "doc_date": po.doc_date,
                     "req_date": po.req_date, "vendor": po.vendor.name,
                     "vendor_id": po.vendor_id, "vendor_email": po.vendor.email,
@@ -1086,6 +1095,9 @@ def list_pos(ctx: Ctx = Depends(need("po"))):
                     "subject": po.subject, "payment_terms": po.payment_terms, "instructions": po.instructions,
                     "taxable": float(t.taxable),
                     "tax": float(t.tax), "total": float(t.rounded), "intra": t.intra,
+                    "invoiced_doc_no": vi.doc_no if vi else None,
+                    "invoiced_id": vi.id if vi else None,
+                    "invoiced_our_no": vi.our_no if vi else None,
                     "lines": [{"material_id": l.material_id, "code": l.material.code,
                                "descr": l.material.descr, "qty": float(l.qty),
                                "price": float(l.price), "descr2": l.descr2} for l in po.lines]})
@@ -1126,7 +1138,7 @@ def add_po(body: S.PoIn, ctx: Ctx = Depends(need("po"))):
 
 
 @router.get("/purchase-orders/{pid}")
-def get_po(pid: int, ctx: Ctx = Depends(need("po"))):
+def get_po(pid: int, ctx: Ctx = Depends(need_any("po", "vinv"))):
     po = ctx.get(M.PurchaseOrder, pid)
     if not po:
         raise HTTPException(404, "No such purchase order")
@@ -1221,14 +1233,14 @@ def del_po(pid: int, ctx: Ctx = Depends(need("po"))):
 
 # ======================================================= vendor invoices
 @router.get("/vendor-invoices")
-def list_vinv(ctx: Ctx = Depends(need("vinv"))):
+def list_vinv(ctx: Ctx = Depends(need_any("po", "vinv"))):
     out = []
     for vi in ctx.db.execute(ctx.scope(select(M.VendorInvoice), M.VendorInvoice)
                              .order_by(M.VendorInvoice.doc_date.desc())).scalars():
         t = vinv_tax(ctx, vi)
         paid = settled(ctx, vinv_id=vi.id)
         po = ctx.db.get(M.PurchaseOrder, vi.po_id) if vi.po_id else None
-        out.append({"id": vi.id, "doc_no": vi.doc_no, "doc_date": vi.doc_date,
+        out.append({"id": vi.id, "doc_no": vi.doc_no, "our_no": vi.our_no, "doc_date": vi.doc_date,
                     "due_date": vi.due_date, "vendor": vi.vendor.name,
                     "vendor_id": vi.vendor_id, "po_no": po.doc_no if po else None,
                     "taxable": float(t.taxable), "tax": float(t.tax),
@@ -1238,7 +1250,7 @@ def list_vinv(ctx: Ctx = Depends(need("vinv"))):
 
 
 @router.post("/vendor-invoices", status_code=201)
-def add_vinv(body: S.VendorInvoiceIn, ctx: Ctx = Depends(need("vinv"))):
+def add_vinv(body: S.VendorInvoiceIn, ctx: Ctx = Depends(need_any("po", "vinv"))):
     po = ctx.get(M.PurchaseOrder, body.po_id) if body.po_id else None
     if body.po_id and not po:
         raise HTTPException(422, "No such purchase order in this organisation")
@@ -1263,11 +1275,15 @@ def add_vinv(body: S.VendorInvoiceIn, ctx: Ctx = Depends(need("vinv"))):
     else:
         raise HTTPException(422, "Give lines, or a purchase order to copy them from")
 
+    due_date = body.due_date
+    if due_date and due_date < body.doc_date:
+        due_date = body.doc_date
+
     vi = M.VendorInvoice(
         tenant_id=ctx.tenant.id,
         doc_no=body.doc_no,
         doc_date=body.doc_date,
-        due_date=body.due_date,
+        due_date=due_date,
         vendor_id=vid,
         gstin=body.gstin or (po.gstin if po else None),
         po_id=body.po_id,
@@ -1341,16 +1357,28 @@ def convert_po(
     pid: int,
     doc_no: str | None = None,
     doc_date: date | None = None,
-    ctx: Ctx = Depends(need("vinv")),
+    ctx: Ctx = Depends(need_any("po", "vinv")),
 ):
     po = ctx.get(M.PurchaseOrder, pid)
     if not po:
         raise HTTPException(404, "No such purchase order")
-    inv_no = doc_no or next_no(ctx, "vinv", doc_date or date.today())
+    if po.status == "INVOICED":
+        raise HTTPException(400, f"Purchase order {po.doc_no} has already been converted to an invoice")
+
+    inv_date = doc_date or date.today()
+    due = None
+    if po.req_date and po.req_date >= inv_date:
+        due = po.req_date
+    elif po.vendor and getattr(po.vendor, "payment_term_days", None):
+        due = inv_date + timedelta(days=po.vendor.payment_term_days)
+    else:
+        due = inv_date
+
+    inv_no = (doc_no or "").strip() or next_no(ctx, "vinv", inv_date)
     body = S.VendorInvoiceIn(
         doc_no=inv_no,
-        doc_date=doc_date or date.today(),
-        due_date=po.req_date,
+        doc_date=inv_date,
+        due_date=due,
         po_id=po.id,
         vendor_id=po.vendor_id,
         gstin=po.gstin,
