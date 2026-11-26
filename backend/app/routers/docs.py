@@ -1307,30 +1307,34 @@ def add_vinv(body: S.VendorInvoiceIn, ctx: Ctx = Depends(need_any("po", "vinv"))
         )
 
         if tracks_stock(ctx):
-            m.stock_qty = m.stock_qty + qty
+            m.stock_qty = (m.stock_qty or Decimal(0)) + qty
 
     if po:
         po.status = "INVOICED"
         # Copy supporting documents from purchase order to purchase invoice
-        po_docs = ctx.db.execute(
-            select(M.DocFile).where(
-                M.DocFile.tenant_id == ctx.tenant.id,
-                M.DocFile.po_id == po.id,
-            )
-        ).scalars().all()
-        for d in po_docs:
-            ctx.db.add(
-                M.DocFile(
-                    tenant_id=ctx.tenant.id,
-                    vinv_id=vi.id,
-                    filename=d.filename,
-                    content_type=d.content_type,
-                    size_bytes=d.size_bytes,
-                    content=d.content,
-                    notes=d.notes,
-                    uploaded_by=d.uploaded_by,
+        try:
+            po_docs = ctx.db.execute(
+                select(M.DocFile).where(
+                    M.DocFile.tenant_id == ctx.tenant.id,
+                    M.DocFile.po_id == po.id,
                 )
-            )
+            ).scalars().all()
+            for d in po_docs:
+                ctx.db.add(
+                    M.DocFile(
+                        tenant_id=ctx.tenant.id,
+                        vinv_id=vi.id,
+                        filename=d.filename,
+                        content_type=d.content_type,
+                        size_bytes=d.size_bytes,
+                        content=d.content,
+                        notes=d.notes,
+                        uploaded_by=d.uploaded_by,
+                    )
+                )
+        except Exception:
+            # Fallback in case po_id column migration is still propagating or doc_files has schema mismatch
+            pass
 
     ctx.db.commit()
     ctx.db.refresh(vi)
