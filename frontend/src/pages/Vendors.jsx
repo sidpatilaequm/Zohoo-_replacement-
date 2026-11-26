@@ -29,6 +29,19 @@ export default function Vendors() {
   const [gstStatus, setGstStatus] = useState(null)
   const [gstErr, setGstErr] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const filteredVendors = useMemo(() => {
+    const q = (searchQuery || '').trim().toLowerCase()
+    if (!q) return list.data || []
+    return (list.data || []).filter(v => {
+      if (v.code?.toLowerCase().includes(q)) return true
+      if (v.name?.toLowerCase().includes(q)) return true
+      if (v.email?.toLowerCase().includes(q)) return true
+      if (v.pan?.toLowerCase().includes(q)) return true
+      if (v.city?.toLowerCase().includes(q)) return true
+      if (v.gstins?.some(g => g.gstin?.toLowerCase().includes(q))) return true
+      return false
+    })
+  }, [list.data, searchQuery])
   function pickLogo(e) {
     const file = e.target.files?.[0], id = Number(e.target.dataset.id)
     e.target.value = ''
@@ -123,20 +136,6 @@ export default function Vendors() {
   if (list.loading || states.loading || banks.loading || desigs.loading) return <Loading />
   if (list.error) return <ErrorBox>{list.error}</ErrorBox>
   const stateName = c => states.data?.find(s => s.code === c)?.name || c
-
-  const filteredVendors = useMemo(() => {
-    const q = (searchQuery || '').trim().toLowerCase()
-    if (!q) return list.data || []
-    return (list.data || []).filter(v => {
-      if (v.code?.toLowerCase().includes(q)) return true
-      if (v.name?.toLowerCase().includes(q)) return true
-      if (v.email?.toLowerCase().includes(q)) return true
-      if (v.pan?.toLowerCase().includes(q)) return true
-      if (v.city?.toLowerCase().includes(q)) return true
-      if (v.gstins?.some(g => g.gstin?.toLowerCase().includes(q))) return true
-      return false
-    })
-  }, [list.data, searchQuery])
 
   return (<>
     {flash}

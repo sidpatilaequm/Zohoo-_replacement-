@@ -116,3 +116,38 @@ def test_delete_blocked_when_receipts_exist(org):
     r = c.delete(f"/api/invoices/{inv['id']}?reason=Attempt delete with receipts")
     assert r.status_code == 409
     assert "receipts" in r.text
+
+
+def test_deleted_invoices_accessible_with_saved_permission(api, org):
+    a = org(name="One", email="admin@x.co")
+    cid = cust(a, "C004")
+    mid = mat(a, "M004", price=1000)
+    inv = a.post("/api/invoices", json={
+        "doc_type": "TAX", "doc_date": "2026-08-10", "customer_id": cid,
+        "lines": [{"material_id": mid, "qty": 1, "price": 1000}]
+    }).json()
+    r_del = a.delete(f"/api/invoices/{inv['id']}?reason=Testing saved role access")
+    assert r_del.status_code == 204
+
+    # Create a custom group that only has "saved" permission
+    r_grp = a.post("/api/groups", json={"name": "Invoice Viewer", "perms": ["saved"]})
+    assert r_grp.status_code == 201, r_grp.text
+    gid = r_grp.json()["id"]
+
+    a.post("/api/users", json={"name": "Viewer", "email": "v@x.co",
+        "password": "correct horse", "group_id": gid})
+    tok = api.post("/api/auth/signin", json={"email": "v@x.co",
+        "password": "correct horse"}).json()["token"]
+    h = {"Authorization": f"Bearer {tok}", "X-Tenant-Id": str(a.tid)}
+
+    # User with 'saved' permission can list deleted invoices without 403
+    r = api.get("/api/invoices/deleted?doc_type=TAX", headers=h)
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert any(x["doc_no"] == inv["doc_no"] for x in items)
+
+    # And view deleted invoice details
+    did = [x["id"] for x in items if x["doc_no"] == inv["doc_no"]][0]
+    r_det = api.get(f"/api/invoices/deleted/{did}", headers=h)
+    assert r_det.status_code == 200, r_det.text
+

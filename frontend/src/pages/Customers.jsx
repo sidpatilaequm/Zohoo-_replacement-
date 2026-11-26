@@ -33,6 +33,19 @@ export default function Customers() {
   const [gstStatus, setGstStatus] = useState(null)
   const [gstErr, setGstErr] = useState(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const filteredCustomers = useMemo(() => {
+    const q = (searchQuery || '').trim().toLowerCase()
+    if (!q) return list.data || []
+    return (list.data || []).filter(c => {
+      if (c.code?.toLowerCase().includes(q)) return true
+      if (c.name?.toLowerCase().includes(q)) return true
+      if (c.email?.toLowerCase().includes(q)) return true
+      if (c.pan?.toLowerCase().includes(q)) return true
+      if (c.bill_city?.toLowerCase().includes(q)) return true
+      if (c.gstins?.some(g => g.gstin?.toLowerCase().includes(q))) return true
+      return false
+    })
+  }, [list.data, searchQuery])
   const set = (k, v) => setF(s => ({ ...s, [k]: v }))
 
   function pickLogo(e) {
@@ -134,20 +147,6 @@ export default function Customers() {
   // The documents open from here only for groups that can see the registers.
   const canInv = can('saved'), canPro = can('saved') && can('proforma')
   const showTx = canInv || canPro
-
-  const filteredCustomers = useMemo(() => {
-    const q = (searchQuery || '').trim().toLowerCase()
-    if (!q) return list.data || []
-    return (list.data || []).filter(c => {
-      if (c.code?.toLowerCase().includes(q)) return true
-      if (c.name?.toLowerCase().includes(q)) return true
-      if (c.email?.toLowerCase().includes(q)) return true
-      if (c.pan?.toLowerCase().includes(q)) return true
-      if (c.bill_city?.toLowerCase().includes(q)) return true
-      if (c.gstins?.some(g => g.gstin?.toLowerCase().includes(q))) return true
-      return false
-    })
-  }, [list.data, searchQuery])
 
   return (<>
     {flash}

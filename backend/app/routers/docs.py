@@ -4,7 +4,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from .. import models as M, schemas as S
-from ..deps import Ctx, need
+from ..deps import Ctx, need, need_any
 from ..service import (
     next_no,
     bump,
@@ -196,7 +196,7 @@ def invoice_check_no(doc_no: str, doc_type: str = "TAX", doc_date: date | None =
 def list_deleted_invoices(
     doc_type: str | None = None,
     fy: str | None = None,
-    ctx: Ctx = Depends(need("invoice"))
+    ctx: Ctx = Depends(need_any("saved", "proforma", "invoice"))
 ):
     """Retrieve history of all deleted invoices."""
     q = select(M.DeletedInvoice).where(M.DeletedInvoice.tenant_id == ctx.tenant.id)
@@ -235,7 +235,7 @@ def list_deleted_invoices(
 
 
 @router.get("/invoices/deleted/{did}")
-def get_deleted_invoice_detail(did: int, ctx: Ctx = Depends(need("invoice"))):
+def get_deleted_invoice_detail(did: int, ctx: Ctx = Depends(need_any("saved", "proforma", "invoice"))):
     """Retrieve full snapshot details of a deleted invoice."""
     r = ctx.db.execute(
         select(M.DeletedInvoice).where(
@@ -887,7 +887,7 @@ def convert(iid: int, doc_no: str | None = None, doc_date: date | None = None,
 
 
 @router.post("/invoices/{iid}/cancel")
-def cancel_invoice(iid: int, body: S.CancelIn, ctx: Ctx = Depends(need("invoice"))):
+def cancel_invoice(iid: int, body: S.CancelIn, ctx: Ctx = Depends(need_any("saved", "invoice"))):
     """Cancel a tax invoice. The document stays on file (a GST document number must
     not be reused and GSTR-1 table 13 reports it as cancelled), but:
 
@@ -941,7 +941,7 @@ def cancel_invoice(iid: int, body: S.CancelIn, ctx: Ctx = Depends(need("invoice"
 def del_invoice(
     iid: int,
     reason: str | None = Query(None, description="Reason for deleting the invoice"),
-    ctx: Ctx = Depends(need("invoice"))
+    ctx: Ctx = Depends(need_any("saved", "proforma", "invoice"))
 ):
     actual_reason = (reason or "").strip()
     if not actual_reason:
