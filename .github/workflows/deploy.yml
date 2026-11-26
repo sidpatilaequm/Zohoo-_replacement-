@@ -252,6 +252,21 @@ jobs:
 
           echo "v5.2 customer registration migration applied successfully."
 
+          echo ""
+          echo "======================================"
+          echo "5I. Applying v5.2 fix customer ZC-0068 AnH registration"
+          echo "======================================"
+
+          MIGRATION_FILE="$RELEASE_DIR/db/26_v52_fix_anh_customer_registration.sql"
+
+          test -s "$MIGRATION_FILE"
+
+          docker compose exec -T db \
+            sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" aequm_billing' \
+            < "$MIGRATION_FILE"
+
+          echo "v5.2 fix customer registration migration applied successfully."
+
 
           echo "======================================"
 
