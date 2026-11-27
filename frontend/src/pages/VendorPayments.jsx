@@ -9,10 +9,12 @@ const MODES = ['NEFT', 'RTGS', 'IMPS', 'UPI', 'Cheque', 'Adjustment']
 export default function VendorPayments() {
   const { api } = useAuth()
   const vinvs = useLoad(() => api.vinvs())
+  const vendors = useLoad(() => api.vendors())
   const list = useLoad(() => api.vendorPayments())
   const fyRows = useFyRows()   // v5.0: the year chosen at the top
   const outstanding = useLoad(() => api.payables())
-  const [f, setF] = useState({ vinv_id: '', pay_date: today(), amount: '', tds: '0', gst_tds: '',
+  const [payKind, setPayKind] = useState('INVOICE')
+  const [f, setF] = useState({ vinv_id: '', vendor_id: '', pay_date: today(), amount: '', tds: '0', gst_tds: '',
     mode: 'NEFT', bank_ref: '', bank_acct: '', narration: '' })
   const [extraInvs, setExtraInvs] = useState({})
   const [queue, setQueue] = useState([])
@@ -29,25 +31,39 @@ export default function VendorPayments() {
   async function save(e) {
     e.preventDefault(); setErr(null)
     try {
-      await api.addVendorPay({ pay_type: 'PAY', vinv_id: Number(f.vinv_id),
-        pay_date: f.pay_date, amount: Number(f.amount), tds: Number(f.tds || 0),
-        gst_tds: Number(f.gst_tds || 0),
-        mode: f.mode, bank_ref: f.bank_ref || null, bank_acct: f.bank_acct || null,
-        narration: f.narration || null })
-      for (const [idStr, ex] of Object.entries(extraInvs)) {
-        if (Number(ex.amount) > 0) {
-          await api.addVendorPay({
-            pay_type: 'PAY', vinv_id: Number(idStr),
-            pay_date: f.pay_date, amount: Number(ex.amount), tds: Number(ex.tds || 0),
-            gst_tds: Number(ex.gst_tds || 0),
-            mode: f.mode, bank_ref: f.bank_ref || null, bank_acct: f.bank_acct || null,
-            narration: f.narration || null
-          })
+      if (payKind === 'ADVANCE') {
+        if (!f.vendor_id) throw new Error('Please select a vendor for the advance payment.')
+        await api.addVendorPay({
+          pay_type: 'PAY', vendor_id: Number(f.vendor_id),
+          pay_date: f.pay_date, amount: Number(f.amount), tds: Number(f.tds || 0),
+          gst_tds: Number(f.gst_tds || 0),
+          mode: f.mode, bank_ref: f.bank_ref || null, bank_acct: f.bank_acct || null,
+          narration: f.narration || 'Advance / unbilled payment'
+        })
+        const vendObj = vendors.data?.find(v => v.id === Number(f.vendor_id))
+        showFlash(`Advance payment of ₹${inr(Number(f.amount))} recorded for ${vendObj?.name || 'vendor'}.`)
+      } else {
+        if (!f.vinv_id) throw new Error('Please select a vendor invoice.')
+        await api.addVendorPay({ pay_type: 'PAY', vinv_id: Number(f.vinv_id),
+          pay_date: f.pay_date, amount: Number(f.amount), tds: Number(f.tds || 0),
+          gst_tds: Number(f.gst_tds || 0),
+          mode: f.mode, bank_ref: f.bank_ref || null, bank_acct: f.bank_acct || null,
+          narration: f.narration || null })
+        for (const [idStr, ex] of Object.entries(extraInvs)) {
+          if (Number(ex.amount) > 0) {
+            await api.addVendorPay({
+              pay_type: 'PAY', vinv_id: Number(idStr),
+              pay_date: f.pay_date, amount: Number(ex.amount), tds: Number(ex.tds || 0),
+              gst_tds: Number(ex.gst_tds || 0),
+              mode: f.mode, bank_ref: f.bank_ref || null, bank_acct: f.bank_acct || null,
+              narration: f.narration || null
+            })
+          }
         }
+        const count = 1 + Object.keys(extraInvs).length
+        showFlash(`Payment recorded for ${count} invoice(s) totalling ₹${inr(totalAmount)}.`)
       }
-      const count = 1 + Object.keys(extraInvs).length
-      showFlash(`Payment recorded for ${count} invoice(s) totalling ₹${inr(totalAmount)}.`)
-      setF(s => ({ ...s, vinv_id: '', amount: '', tds: '0', gst_tds: '', bank_ref: '', narration: '' }))
+      setF(s => ({ ...s, vinv_id: '', vendor_id: '', amount: '', tds: '0', gst_tds: '', bank_ref: '', narration: '' }))
       setExtraInvs({})
       list.reload(); vinvs.reload(); outstanding.reload()
     } catch (x) { setErr(x.message) }
@@ -76,18 +92,36 @@ export default function VendorPayments() {
 
     <form onSubmit={save}>
       <Panel title="Record a payment to a vendor">
+        <div style={{ marginBottom: 14, display: 'flex', gap: 10 }}>
+          <button type="button" className={`btn btn-sm ${payKind === 'INVOICE' ? 'btn-a' : ''}`}
+            onClick={() => setPayKind('INVOICE')}>Against Vendor Invoice</button>
+          <button type="button" className={`btn btn-sm ${payKind === 'ADVANCE' ? 'btn-a' : ''}`}
+            onClick={() => { setPayKind('ADVANCE'); setExtraInvs({}) }}>Vendor Advance (Without Invoice)</button>
+        </div>
+
         <div className="row">
-          <Field label="Vendor invoice"><select value={f.vinv_id}
-            onChange={e => {
-              set('vinv_id', e.target.value)
-              setExtraInvs({})
-              const v = open.find(x => x.id === Number(e.target.value))
-              if (v) set('amount', v.outstanding.toFixed(2))
-            }}>
-            <option value="">— select —</option>
-            {open.map(v => <option key={v.id} value={v.id}>
-              {v.doc_no} · {v.vendor} · ₹{inr(v.outstanding)} due</option>)}
-          </select></Field>
+          {payKind === 'ADVANCE' ? (
+            <Field label="Vendor" hint="Advance / payment on account without invoice">
+              <select value={f.vendor_id} onChange={e => set('vendor_id', e.target.value)} required>
+                <option value="">— select vendor —</option>
+                {(vendors.data || []).map(v => (
+                  <option key={v.id} value={v.id}>{v.code} · {v.name}</option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <Field label="Vendor invoice"><select value={f.vinv_id}
+              onChange={e => {
+                set('vinv_id', e.target.value)
+                setExtraInvs({})
+                const v = open.find(x => x.id === Number(e.target.value))
+                if (v) set('amount', v.outstanding.toFixed(2))
+              }}>
+              <option value="">— select —</option>
+              {open.map(v => <option key={v.id} value={v.id}>
+                {v.doc_no} · {v.vendor} · ₹{inr(v.outstanding)} due</option>)}
+            </select></Field>
+          )}
           <Field label="Payment date"><input type="date" value={f.pay_date}
             onChange={e => set('pay_date', e.target.value)} required /></Field>
           <Field label="Amount paid"><input className="mono" type="number" step="0.01"
@@ -199,13 +233,13 @@ export default function VendorPayments() {
         {fyRows(list.data).map(p => (
           <tr key={p.id}>
             <td className="mono">{gd(p.pay_date)}</td><td>{p.party}</td>
-            <td className="mono">{p.doc}</td><td className="c">{p.mode}</td>
+            <td className="mono">{p.doc === 'Advance / On Account' ? <Tag kind="ok">Advance / On Account</Tag> : p.doc}</td><td className="c">{p.mode}</td>
             <td className="mono fine">{p.bank_ref || '—'}</td>
             <td className="r mono">{p.tds ? inr(p.tds) : '—'}</td>
             <td className="r mono">{p.gst_tds ? inr(p.gst_tds) : '—'}</td>
             <td className="r mono"><b>{inr(p.amount)}</b></td>
             <td className="r">{p.from_bank
-              ? <span title="Posted from Bank Statements. Remove the invoice from its bank transaction to undo it."><Tag>bank</Tag></span>
+              ? <span title="Posted from Bank Statements. Remove the attachment on Bank Statements to undo it."><Tag>bank</Tag></span>
               : <button className="rm" onClick={async () => {
               try { await api.delPayment(p.id); list.reload(); vinvs.reload(); outstanding.reload() }
               catch (x) { showFlash(x.message, 'bad') } }}>×</button>}</td>

@@ -343,6 +343,7 @@ class PaymentIn(BaseModel):
     pay_date: date
     invoice_id: int | None = None
     vinv_id: int | None = None
+    vendor_id: int | None = None
     amount: Decimal = Field(gt=0)
     tds: Decimal = Field(default=Decimal("0"), ge=0)
     gst_tds: Decimal = Field(default=Decimal("0"), ge=0)   # v5.0 GST withheld
@@ -353,10 +354,12 @@ class PaymentIn(BaseModel):
 
     @model_validator(mode="after")
     def _v(self):
-        if self.pay_type == "REC" and (not self.invoice_id or self.vinv_id):
+        if self.pay_type == "REC" and (not self.invoice_id or self.vinv_id or self.vendor_id):
             raise ValueError("A receipt settles a customer invoice only")
-        if self.pay_type == "PAY" and (not self.vinv_id or self.invoice_id):
-            raise ValueError("A payment settles a vendor invoice only")
+        if self.pay_type == "PAY" and not (self.vinv_id or self.vendor_id):
+            raise ValueError("A payment must specify either a vendor invoice or a vendor")
+        if self.pay_type == "PAY" and self.invoice_id:
+            raise ValueError("A payment cannot reference a customer invoice")
         return self
 
 

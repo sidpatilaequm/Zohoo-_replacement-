@@ -457,6 +457,7 @@ class Payment(Base):
     pay_date: Mapped[date]=mapped_column(Date)
     invoice_id: Mapped[int|None]=mapped_column(ForeignKey("invoices.id",ondelete="CASCADE"),nullable=True)
     vinv_id: Mapped[int|None]=mapped_column(ForeignKey("vendor_invoices.id",ondelete="CASCADE"),nullable=True)
+    vendor_id: Mapped[int|None]=mapped_column(ForeignKey("vendors.id",ondelete="CASCADE"),nullable=True)
     amount: Mapped[Decimal]=mapped_column(Numeric(14,2))
     tds: Mapped[Decimal]=mapped_column(Numeric(14,2),default=0)
     # v5.0 — GST withheld by the payer (GST TDS, CGST Act s.51)
@@ -859,13 +860,16 @@ class StmtTxnLink(Base):
         ForeignKey("stmt_txns.id",ondelete="CASCADE")
     )
     link_type: Mapped[str]=mapped_column(
-        Enum("CUST_INV","VEND_INV","EMPLOYEE","DIRECTOR_LOAN","GOVT",name="sltype")
+        Enum("CUST_INV","VEND_INV","EMPLOYEE","DIRECTOR_LOAN","GOVT","VEND_ADV",name="sltype")
     )
     invoice_id: Mapped[int|None]=mapped_column(
         ForeignKey("invoices.id",ondelete="CASCADE"),nullable=True
     )
     vinv_id: Mapped[int|None]=mapped_column(
         ForeignKey("vendor_invoices.id",ondelete="CASCADE"),nullable=True
+    )
+    vendor_id: Mapped[int|None]=mapped_column(
+        ForeignKey("vendors.id"),nullable=True
     )
     employee_id: Mapped[int|None]=mapped_column(
         ForeignKey("employees.id"),nullable=True

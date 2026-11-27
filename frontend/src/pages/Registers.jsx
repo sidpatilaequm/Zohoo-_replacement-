@@ -20,6 +20,7 @@ export default function Registers() {
   const [financialYear, setFinancialYear] = useState(top.param)
   useEffect(() => { setPeriod(top.param); setFinancialYear(top.param) }, [top.param])
   const [dateRange, setDateRange] = useState('')
+  const [tdsMonth, setTdsMonth] = useState('')
   const today = (() => {
     const d = new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -48,15 +49,18 @@ export default function Registers() {
   // v5.0: the two new registers are exported from what is on screen
   const localCsv = w => {
     const rows = w === 'govt'
-      ? [['Date', 'Paid towards', 'For month', 'Challan', 'Details', 'Amount', 'Bank account', 'Bank narration'],
-         ...govt.data.rows.map(r => [r.date, r.kind_label, r.for_month || '', r.challan_ref || '', r.descr || '', r.amount, r.account, r.bank_ref || ''])]
+      ? [['Date', 'Type', 'Paid towards', 'For month', 'Challan', 'Details', 'Amount', 'Bank account', 'Bank narration'],
+         ...govt.data.rows.map(r => [r.date, r.side_label || (r.side === 'REFUND' ? 'Refund' : 'Payment'), r.kind_label, r.for_month || '', r.challan_ref || '', r.descr || '', r.amount, r.account, r.bank_ref || ''])]
+      : w === 'tds-monthly'
+      ? [['Month', 'Deductions count', 'Taxable amount', 'Gross amount', 'TDS deducted', 'Paid to vendor', 'Deposit due date', 'Status'],
+         ...(tds.data.by_month || []).map(m => [label(m.month), m.count, m.taxable, m.gross, m.tds, m.paid, m.due_date, m.status])]
       : [['Side', 'Date', 'Party', 'GSTIN', 'Invoice', 'Invoice date', 'Taxable', 'Paid', 'TDS', 'GST withheld', 'Implied rate %', 'Source'],
          ...[['Customer', gtds.data.customers], ['Vendor', gtds.data.vendors]].flatMap(([side, rs]) => rs.map(r =>
            [side, r.date, r.party, r.gstin || '', r.invoice, r.invoice_date, r.taxable, r.paid, r.tds, r.gst_tds, r.implied_rate_pct, r.source]))]
     const text = rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([text], { type: 'text/csv' }))
-    a.download = `${w === 'govt' ? 'statutory-payments' : 'gst-withheld'}-${p || 'all'}.csv`
+    a.download = `${w === 'govt' ? 'statutory-settlements' : w === 'tds-monthly' ? 'tds-monthly-deductions' : 'gst-withheld'}-${p || 'all'}.csv`
     a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000)
   }
   const controls = (<>
@@ -91,6 +95,9 @@ export default function Registers() {
     {which === 'tds-report'
       ? <><button type="button" className="btn btn-sm" onClick={() => csv('tds-vendors')}>CSV — vendors</button>
           <button type="button" className="btn btn-sm" onClick={() => csv('tds-customers')}>CSV — customers</button></>
+      : which === 'tds'
+        ? <><button type="button" className="btn btn-sm" onClick={() => localCsv('tds-monthly')}>CSV — monthly summary</button>
+            <button type="button" className="btn btn-sm" onClick={() => csv('tds')}>Export CSV</button></>
       : ['gst-tds', 'govt'].includes(which)
         ? <button type="button" className="btn btn-sm" onClick={() => localCsv(which)}>Export CSV</button>
         : <button type="button" className="btn btn-sm" onClick={() => csv(which)}>Export CSV</button>}</>)
@@ -242,56 +249,108 @@ export default function Registers() {
       </Panel></>)}
 
     {which === 'govt' && (
-      <Panel title={`Statutory payments — ${money(govt.data.total)}`} bodyless>
+      <Panel title={`Government Agencies — Statutory Settlements (Net Paid: ${money(govt.data.net_paid ?? govt.data.total)})`} bodyless>
         <div className="panel-bd" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {govt.data.by_kind.map(k => <span key={k.kind} className="chip"><span className="chip-k">{k.label}</span>
+          <span className="chip"><span className="chip-k">Paid (Debits)</span><span className="mono">{inr(govt.data.total_payments ?? govt.data.total)}</span></span>
+          <span className="chip"><span className="chip-k">Refunds (Credits)</span><span className="mono">{inr(govt.data.total_refunds ?? 0)}</span></span>
+          <span className="chip" style={{ background: 'var(--accent-soft)' }}><span className="chip-k"><b>Net Statutory Paid</b></span><span className="mono"><b>{inr(govt.data.net_paid ?? govt.data.total)}</b></span></span>
+          {govt.data.by_kind?.map(k => k.amount > 0 && <span key={k.kind} className="chip"><span className="chip-k">{k.label} (Paid)</span>
+            <span className="mono">{inr(k.amount)}</span></span>)}
+          {govt.data.refunds_by_kind?.map(k => k.amount > 0 && <span key={'ref-' + k.kind} className="chip"><span className="chip-k">{k.label} (Refund)</span>
             <span className="mono">{inr(k.amount)}</span></span>)}
         </div>
-        <Table head={['Date', 'Paid towards', 'For month', 'Challan', 'Details', { label: 'Amount', align: 'r' },
+        <Table head={['Date', { label: 'Type', align: 'c' }, 'Paid towards / Refund', 'For month', 'Challan / Ref', 'Details', { label: 'Amount', align: 'r' },
           'Bank account']}
-          empty="No payment to the government is attached on Bank Statements in this period. Attach a challan payment to its bank debit under Government filings.">
+          empty="No transaction attached to Government Agencies in this period.">
           {govt.data.rows.map(r => (
             <tr key={r.id}>
-              <td className="mono">{gd(r.date)}</td><td><b>{r.kind_label}</b></td>
+              <td className="mono">{gd(r.date)}</td>
+              <td className="c">{r.side === 'REFUND' ? <Tag kind="ok">Refund / Credit</Tag> : <Tag kind="warn">Payment / Debit</Tag>}</td>
+              <td><b>{r.kind_label}</b></td>
               <td className="mono">{r.for_month || '—'}</td><td className="mono">{r.challan_ref || '—'}</td>
               <td className="fine">{r.descr}{r.notes && <div>{r.notes}</div>}</td>
-              <td className="r mono"><b>{inr(r.amount)}</b></td>
+              <td className="r mono"><b>{r.side === 'REFUND' ? `+${inr(r.amount)}` : inr(r.amount)}</b></td>
               <td className="fine">{r.account}<div className="mono">{r.bank_ref}</div></td>
             </tr>))}
         </Table>
       </Panel>)}
 
     {which === 'tds' && (
-      <Panel title={`TDS we deducted from vendors — ${money(tds.data.total_tds)} to deposit`} bodyless>
-        <Table head={['Payment date', 'Vendor', 'PAN', { label: 'MSME', align: 'c' },
-          'Vendor invoice', { label: 'Taxable', align: 'r' }, { label: 'Gross', align: 'r' },
-          { label: 'TDS', align: 'r' }, { label: 'Paid', align: 'r' },
-          { label: 'Implied rate', align: 'r' }, 'Source']}
-          empty="No tax was deducted in this period.">
-          {tds.data.rows.map((r, i) => (
-            <tr key={i}>
-              <td className="mono">{gd(r.pay_date)}</td>
-              <td>{r.vendor}<div className="fine mono">{r.vendor_code}</div></td>
-              <td className="mono">{r.pan || <span style={{ color: 'var(--red)' }}>missing</span>}</td>
-              <td className="c">{r.msme
-                ? <Tag kind="ok">{r.msme_number || 'Yes'}</Tag> : <Tag>No</Tag>}</td>
-              <td className="mono">{r.vendor_invoice}<div className="fine">{gd(r.invoice_date)}</div></td>
-              <td className="r mono">{inr(r.invoice_taxable)}</td>
-              <td className="r mono">{inr(r.gross)}</td>
-              <td className="r mono"><b>{inr(r.tds)}</b></td>
-              <td className="r mono">{inr(r.paid)}</td>
-              <td className="r mono">{r.implied_rate_pct}%</td>
-              <td className="fine">{r.source}{r.bank_ref &&
-                <div className="mono">{r.bank_ref}</div>}</td>
-            </tr>))}
-        </Table>
-        <div className="panel-bd">
-          {tds.data.vendors_without_pan.length > 0 && <Alert kind="bad">
-            <b>No PAN on file for {tds.data.vendors_without_pan.join(', ')}.</b> Section 206AA
-            requires a higher rate where the deductee has not furnished a PAN.</Alert>}
-          <Alert kind="warn">{tds.data.note}</Alert>
-        </div>
-      </Panel>)}
+      <>
+        {tds.data.by_month && tds.data.by_month.length > 0 && (
+          <Panel title={`TDS deducted from vendors while paying — by month (${tds.data.by_month.length} months)`} bodyless>
+            <Table head={['Month', { label: 'Deductions', align: 'r' }, { label: 'Taxable', align: 'r' }, { label: 'Gross', align: 'r' },
+              { label: 'TDS deducted', align: 'r' }, { label: 'Paid to vendor', align: 'r' }, 'Deposit due by', { label: 'Status', align: 'c' }, '']}>
+              {tds.data.by_month.map(m => (
+                <tr key={m.month} style={tdsMonth === m.month ? { background: 'var(--accent-soft)' } : undefined}>
+                  <td><b>{label(m.month)}</b></td>
+                  <td className="r mono">{m.count}</td>
+                  <td className="r mono">{inr(m.taxable)}</td>
+                  <td className="r mono">{inr(m.gross)}</td>
+                  <td className="r mono" style={{ color: 'var(--accent-dark, #1B382B)' }}><b>{inr(m.tds)}</b></td>
+                  <td className="r mono">{inr(m.paid)}</td>
+                  <td className="mono">{gd(m.due_date)}</td>
+                  <td className="c"><Tag kind={m.status === 'Overdue' ? 'warn' : 'ok'}>{m.status}</Tag></td>
+                  <td className="c">
+                    <button type="button" className={`btn btn-sm ${tdsMonth === m.month ? 'btn-a' : ''}`}
+                      onClick={() => setTdsMonth(tdsMonth === m.month ? '' : m.month)}>
+                      {tdsMonth === m.month ? 'Showing all' : 'Filter month'}
+                    </button>
+                  </td>
+                </tr>))}
+            </Table>
+            <div className="panel-bd fine">
+              TDS deducted while paying vendors must be deposited with challan ITNS 281 by the 7th of the following month (30 April for March).
+            </div>
+          </Panel>
+        )}
+
+        <Panel
+          title={`Vendor payment TDS deductions ${tdsMonth ? `for ${label(tdsMonth)}` : 'all'} — ${
+            tds.data.rows.filter(r => !tdsMonth || r.month === tdsMonth).length
+          } deduction(s) · ${money(
+            tds.data.rows.filter(r => !tdsMonth || r.month === tdsMonth).reduce((s, r) => s + (Number(r.tds) || 0), 0)
+          )} to deposit`}
+          right={tdsMonth && (
+            <button type="button" className="btn btn-sm" onClick={() => setTdsMonth('')}>
+              Show all months
+            </button>
+          )}
+          bodyless
+        >
+          <Table head={['Payment date', 'For month', 'Vendor', 'PAN', { label: 'Section', align: 'c' }, { label: 'MSME', align: 'c' },
+            'Vendor invoice', { label: 'Taxable', align: 'r' }, { label: 'Gross', align: 'r' },
+            { label: 'TDS deducted', align: 'r' }, { label: 'Paid', align: 'r' },
+            { label: 'Implied rate', align: 'r' }, 'Source']}
+            empty="No tax was deducted in this period.">
+            {tds.data.rows.filter(r => !tdsMonth || r.month === tdsMonth).map((r, i) => (
+              <tr key={i}>
+                <td className="mono">{gd(r.pay_date)}</td>
+                <td className="mono fine">{r.month ? label(r.month) : '—'}</td>
+                <td>{r.vendor}<div className="fine mono">{r.vendor_code}</div></td>
+                <td className="mono">{r.pan || <span style={{ color: 'var(--red)' }}>missing</span>}</td>
+                <td className="c">{r.section ? <Tag kind="ok">{r.section}</Tag> : '—'}</td>
+                <td className="c">{r.msme
+                  ? <Tag kind="ok">{r.msme_number || 'Yes'}</Tag> : <Tag>No</Tag>}</td>
+                <td className="mono">{r.vendor_invoice}<div className="fine">{gd(r.invoice_date)}</div></td>
+                <td className="r mono">{inr(r.invoice_taxable)}</td>
+                <td className="r mono">{inr(r.gross)}</td>
+                <td className="r mono"><b style={{ color: 'var(--accent-dark, #1B382B)' }}>{inr(r.tds)}</b></td>
+                <td className="r mono">{inr(r.paid)}</td>
+                <td className="r mono">{r.implied_rate_pct}%</td>
+                <td className="fine">{r.source}{r.bank_ref &&
+                  <div className="mono">{r.bank_ref}</div>}</td>
+              </tr>))}
+          </Table>
+          <div className="panel-bd">
+            {tds.data.vendors_without_pan.length > 0 && <Alert kind="bad">
+              <b>No PAN on file for {tds.data.vendors_without_pan.join(', ')}.</b> Section 206AA
+              requires a higher rate where the deductee has not furnished a PAN.</Alert>}
+            <Alert kind="warn">{tds.data.note}</Alert>
+          </div>
+        </Panel>
+      </>
+    )}
 
     {which === 'tds' && (
       <Panel title={`TDS deducted by customers — ${money(tds.data.customer_total_tds)} to claim`} bodyless>

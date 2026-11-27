@@ -43,7 +43,14 @@ export default function Shell({ children }) {
       </nav>
       <div className="main">
         <div className="topbar">
-          <h1>{title}</h1>
+          <div className="top-brand">
+            {tenant?.logo ? (
+              <img src={tenant.logo} alt="Aequm" className="topbar-logo" />
+            ) : (
+              <div className="topbar-logo ph">{initials(tenant?.name || 'A')}</div>
+            )}
+            <h1>{title}</h1>
+          </div>
           <div className="sp">
             <TopFyPicker />
             <select className="tsel" value={session?.tenantId || ''}

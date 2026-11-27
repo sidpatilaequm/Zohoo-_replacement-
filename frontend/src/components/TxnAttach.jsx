@@ -15,6 +15,10 @@ export const GOVT_KINDS = [
   ['GST', 'GST payment'], ['TDS', 'TDS payment'], ['PF', 'PF payment'],
   ['ESI', 'ESI payment'], ['OTHER', 'Others (statutory)'],
 ]
+export const GOVT_REFUND_KINDS = [
+  ['GST', 'GST refund'], ['TDS', 'Income Tax / TDS refund'], ['PF', 'PF / EPFO refund'],
+  ['ESI', 'ESIC refund'], ['OTHER', 'Other statutory refund / receipt'],
+]
 
 const r2 = n => Math.round(n * 100) / 100
 // The month a statutory payment is for: dues are paid the month after, so the
@@ -71,8 +75,10 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
   const card = O?.account_kind === 'CARD'
   const isInv = kind === 'CUST_INV' || kind === 'VEND_INV'
   const isGovt = kind === 'GOVT'
+  const isVendAdv = kind === 'VEND_ADV'
   const list = !O || isGovt ? [] : kind === 'CUST_INV' ? O.customer_invoices
     : kind === 'VEND_INV' ? O.vendor_invoices
+    : kind === 'VEND_ADV' ? (O.vendors || [])
     : kind === 'EMPLOYEE' ? O.employees : O.directors
   const picked = list.find(x => String(x.id) === String(ref))
   const addingDirector = kind === 'DIRECTOR_LOAN' && (ref === '__new' || !list.length)
@@ -161,11 +167,15 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
   const label = x => kind === 'EMPLOYEE' ? `${x.emp_code} — ${x.name}`
     : kind === 'DIRECTOR_LOAN'
       ? `${x.name}${x.din ? ` · DIN ${x.din}` : ''} · owed ${inr(x.balance)}`
+    : kind === 'VEND_ADV'
+      ? `${x.code} — ${x.name}${x.pan ? ` · PAN ${x.pan}` : ''}`
       : `${x.exact ? '✓ ' : ''}${x.doc_no} · ${x.party} · open ${inr(x.open)}`
   const empty = kind === 'CUST_INV' ? 'No customer tax invoice has an open amount left to attach.'
     : kind === 'VEND_INV' ? 'No vendor invoice has an open amount left to attach.'
+    : kind === 'VEND_ADV' ? 'No vendors found. Add them on the Vendors screen under Masters.'
     : 'No active employees. Add them on the Employees screen under Masters.'
   const refLabel = { CUST_INV: 'Customer invoice', VEND_INV: 'Vendor invoice',
+    VEND_ADV: credit ? 'Vendor (refunding / return of advance)' : 'Vendor (advance / payment without invoice)',
     EMPLOYEE: 'Employee', DIRECTOR_LOAN: 'Director' }[kind]
   const over = isInv && withhold && after < -0.005
   const who = credit ? 'the customer' : 'us'
@@ -187,26 +197,29 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
             <select value={kind} onChange={e => setKind(e.target.value)}>
               {credit
                 ? <><option value="CUST_INV">Customer invoice</option>
+                    <option value="GOVT">Government Agencies (statutory refund / receipt)</option>
+                    <option value="VEND_ADV">Vendor (refund / excess back)</option>
                     <option value="EMPLOYEE">Employee (money paid back)</option>
                     <option value="DIRECTOR_LOAN">Loan from a director</option></>
                 : <><option value="VEND_INV">Vendor invoice</option>
+                    <option value="VEND_ADV">Vendor advance / payment (without invoice)</option>
+                    <option value="GOVT">Government Agencies (statutory payment)</option>
                     <option value="EMPLOYEE">Employee</option>
-                    <option value="DIRECTOR_LOAN">Loan repaid to a director</option>
-                    <option value="GOVT">Government filings (statutory payment)</option></>}
+                    <option value="DIRECTOR_LOAN">Loan repaid to a director</option></>}
             </select></Field>}
 
           {isGovt ? <>
-            <Field label="Paid towards">
+            <Field label={credit ? 'Received towards (refund / receipt)' : 'Paid towards'}>
               <select value={govt.kind} onChange={e => setGovt({ ...govt, kind: e.target.value })}>
-                {GOVT_KINDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                {(credit ? GOVT_REFUND_KINDS : GOVT_KINDS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
               </select></Field>
-            <Field label="For the month" hint="The month the dues are for">
+            <Field label="For the month" hint="The relevant month or period">
               <input type="month" value={govt.period} onChange={e => setGovt({ ...govt, period: e.target.value })} /></Field>
-            <Field label={govt.kind === 'GST' ? 'CPIN / CIN' : govt.kind === 'TDS' ? 'Challan no. / CIN' : govt.kind === 'PF' ? 'TRRN / ECR ref.' : 'Challan reference'}
+            <Field label={credit ? 'ARN / Refund order ref.' : govt.kind === 'GST' ? 'CPIN / CIN' : govt.kind === 'TDS' ? 'Challan no. / CIN' : govt.kind === 'PF' ? 'TRRN / ECR ref.' : 'Challan reference'}
               hint="Optional">
               <input className="mono" maxLength={40} value={govt.challan}
                 onChange={e => setGovt({ ...govt, challan: e.target.value })} /></Field>
-            {govt.kind === 'OTHER' && <Field label="What for" hint="e.g. professional tax, labour welfare fund">
+            {govt.kind === 'OTHER' && <Field label="What for" hint={credit ? 'e.g. export incentive, duty drawback' : 'e.g. professional tax, labour welfare fund'}>
               <input maxLength={120} value={govt.descr} onChange={e => setGovt({ ...govt, descr: e.target.value })} /></Field>}
           </> : <Field label={refLabel}
             hint={isInv && list.some(x => x.exact) ? '✓ matches this amount exactly'
@@ -237,6 +250,14 @@ export default function TxnAttach({ txn, onDone, onError, onClose }) {
               : <div className="fine" style={{ paddingTop: 9 }}>No expense heads yet. Add them on
                   the Expenses screen under Masters.</div>}</Field>}
         </div>
+
+        {isVendAdv && (
+          <div className="fine" style={{ marginBottom: 12, padding: '7px 11px', background: 'var(--paper)', borderRadius: 6, color: 'var(--ink)' }}>
+            {credit
+              ? 'Attached directly to vendor as money refunded or advance returned.'
+              : 'Payment is attached directly to the vendor without an invoice. Moving forward, you can create the purchase order / vendor invoice against it.'}
+          </div>
+        )}
 
         {/* v5.0 — the invoice so far: every payment, with TDS and GST withheld */}
         {isInv && picked && <>

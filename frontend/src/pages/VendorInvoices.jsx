@@ -27,6 +27,8 @@ export default function VendorInvoices() {
   const [prop, setProp] = useState(null)   // last extraction proposal
   const [documentsFor, setDocumentsFor] = useState(null)
   const [poDocs, setPoDocs] = useState([])
+  const [uploadedFile, setUploadedFile] = useState(null)
+  const [alsoCreatePo, setAlsoCreatePo] = useState(true)
   const [searchParams] = useSearchParams()
   const poParam = searchParams.get('po')
   const fileRef = useRef(null)
@@ -70,7 +72,7 @@ export default function VendorInvoices() {
   /** Upload the vendor's PDF/image, read it, and fill the form from the proposal. */
   async function readFile(file) {
     if (!file) return
-    setReading(true); setErr(null); setProp(null)
+    setReading(true); setErr(null); setProp(null); setUploadedFile(file)
     try {
       const d = await api.extractVinv(file)
       setProp(d)
@@ -106,16 +108,59 @@ export default function VendorInvoices() {
   async function save(e) {
     e.preventDefault(); setErr(null)
     try {
-      const d = await api.addVinv({ doc_no: h.doc_no, doc_date: h.doc_date,
-        due_date: h.due_date || null, po_id: h.po_id ? Number(h.po_id) : null,
-        vendor_id: h.po_id ? null : Number(h.vendor_id),
-        lines: lines.map(l => ({ material_id: l.material_id, qty: Number(l.qty),
-          price: Number(l.price), descr2: l.descr2 || null })) })
+      let finalPoId = h.po_id ? Number(h.po_id) : null
+      let createdPoDocNo = null
+
+      // Automatically create matching Purchase Order if requested and none picked
+      if (!finalPoId && alsoCreatePo) {
+        const poPayload = {
+          doc_date: h.doc_date,
+          req_date: h.due_date || h.doc_date,
+          vendor_id: Number(h.vendor_id),
+          subject: h.doc_no ? `Order for vendor invoice ${h.doc_no}` : null,
+          lines: lines.map((l, i) => ({
+            material_id: l.material_id,
+            qty: Number(l.qty),
+            price: Number(l.price),
+            line_no: i + 1,
+            descr2: (l.descr2 || '').trim() || null
+          }))
+        }
+        const createdPo = await api.addPo(poPayload)
+        finalPoId = createdPo.id
+        createdPoDocNo = createdPo.doc_no
+        if (uploadedFile) {
+          try { await api.addPoDocument(createdPo.id, uploadedFile) } catch (x) { /* skip */ }
+        }
+      }
+
+      const d = await api.addVinv({
+        doc_no: h.doc_no,
+        doc_date: h.doc_date,
+        due_date: h.due_date || null,
+        po_id: finalPoId,
+        vendor_id: finalPoId ? null : Number(h.vendor_id),
+        lines: lines.map(l => ({
+          material_id: l.material_id,
+          qty: Number(l.qty),
+          price: Number(l.price),
+          descr2: l.descr2 || null
+        }))
+      })
+
+      if (uploadedFile) {
+        try { await api.addVinvDocument(d.id, uploadedFile) } catch (x) { /* skip */ }
+      }
+
       const v = d.variance
-      showFlash(`Vendor invoice ${d.doc_no} recorded — ${money(d.totals.rounded)}.`
-        + (v ? (Math.abs(v.difference) > 0.005
-          ? ` Variance against the purchase order: ₹${inr(v.difference)}.` : ' It matches the purchase order.') : ''))
-      setLines([]); setProp(null)
+      const msg = createdPoDocNo
+        ? `Created Purchase Order ${createdPoDocNo} and Vendor Invoice ${d.doc_no} — ${money(d.totals.rounded)}${uploadedFile ? ' with attached PDF document' : ''}.`
+        : `Vendor invoice ${d.doc_no} recorded — ${money(d.totals.rounded)}.`
+          + (v ? (Math.abs(v.difference) > 0.005
+            ? ` Variance against the purchase order: ₹${inr(v.difference)}.` : ' It matches the purchase order.') : '')
+      showFlash(msg)
+
+      setLines([]); setProp(null); setUploadedFile(null)
       setH({ po_id: '', vendor_id: '', doc_no: '', doc_date: today(), due_date: '' })
       pos.reload(); list.reload()
     } catch (x) { setErr(x.message) }
@@ -177,6 +222,19 @@ export default function VendorInvoices() {
           <Field label="Due date"><input type="date" value={h.due_date}
             onChange={e => set('due_date', e.target.value)} /></Field>
         </div>
+        {!po && (
+          <div style={{ marginTop: 12, padding: '9px 12px', background: 'var(--paper)', borderRadius: 7, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, fontWeight: 500 }}>
+              <input
+                type="checkbox"
+                checked={alsoCreatePo}
+                onChange={e => setAlsoCreatePo(e.target.checked)}
+              />
+              <span>Also create matching <b>Purchase Order</b> automatically from this invoice extraction</span>
+            </label>
+            <span className="fine">· Saves PO and attaches uploaded invoice document to both</span>
+          </div>
+        )}
         {po && <Alert kind="ok"><b>{po.vendor}</b> · against {po.doc_no} dated {gd(po.doc_date)}<br />
           Deliver to {(po.ship_addr || '').split('\n')[0]}
           {poDocs.length > 0 && <div style={{ marginTop: 8 }}>
@@ -237,7 +295,9 @@ export default function VendorInvoices() {
       </Panel>}
 
       <div className="ft">
-        <button className="btn btn-a" disabled={!canSave}>Record vendor invoice</button>
+        <button className="btn btn-a" disabled={!canSave}>
+          {!h.po_id && alsoCreatePo ? 'Create Purchase Order & Invoice' : 'Record vendor invoice'}
+        </button>
         <span className="err">{err || (unmatched ? `${unmatched} line(s) still need a material.` : '')}</span>
       </div>
     </form>

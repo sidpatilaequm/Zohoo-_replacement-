@@ -177,8 +177,10 @@ def test_government_payments_are_attached_to_debits_and_listed_by_kind(org):
     r = link(a, t["PROF TAX KAR"], link_type="GOVT", govt_kind="OTHER", govt_descr="Professional tax")
     assert r.status_code == 201 and r.json()["ref"] == "Other statutory payment"
     assert "Professional tax" in r.json()["party"]
-    # money received is not a government payment
-    assert link(a, t["NEFT CR DEPT PART 1"], link_type="GOVT", govt_kind="GST").status_code == 422
+    # money received as government refund / statutory receipt is supported
+    r_cr = link(a, t["NEFT CR DEPT PART 1"], link_type="GOVT", govt_kind="GST",
+                govt_period="2026-07", govt_descr="GST Refund")
+    assert r_cr.status_code == 201 and "refund" in r_cr.json()["ref"]
     assert link(a, t["NEFT DR VENDOR REST"], link_type="GOVT").status_code == 422    # kind missing
     reg = a.get("/api/statements/govt-payments?period=FY2026-27").json()
     by = {k["kind"]: k["amount"] for k in reg["by_kind"]}

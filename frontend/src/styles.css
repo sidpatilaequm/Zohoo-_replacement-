@@ -37,6 +37,9 @@ a{color:inherit}
 .topbar{background:var(--card);border-bottom:1px solid var(--line);padding:11px 26px;
   display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:20;flex-wrap:wrap}
 .topbar h1{font-family:var(--serif);font-size:20px;font-weight:400;margin:0;letter-spacing:-.01em}
+.topbar .top-brand{display:flex;align-items:center;gap:12px}
+.topbar .topbar-logo{width:30px;height:30px;border-radius:6px;object-fit:contain;background:#fff;padding:2px;border:1px solid var(--line);box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.topbar .topbar-logo.ph{display:flex;align-items:center;justify-content:center;background:#5FA98A;color:#12211C;font-weight:700;font-size:13px;border:none}
 .topbar .sp{margin-left:auto;display:flex;align-items:center;gap:10px}
 .tsel{padding:7px 11px;border:1px solid var(--line2);border-radius:7px;background:#fff;
   font-size:12.5px;max-width:230px}

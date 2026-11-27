@@ -1403,10 +1403,15 @@ def _pay_rows(ctx, kind):
                             .order_by(M.Payment.pay_date.desc())).scalars():
         if p.invoice_id:
             d = ctx.db.get(M.Invoice, p.invoice_id)
-            party, doc = d.customer.name, d.doc_no
-        else:
+            party, doc = (d.customer.name, d.doc_no) if d else ("Customer", f"Invoice #{p.invoice_id}")
+        elif p.vinv_id:
             d = ctx.db.get(M.VendorInvoice, p.vinv_id)
-            party, doc = d.vendor.name, d.doc_no
+            party, doc = (d.vendor.name, d.doc_no) if d else ("Vendor", f"Bill #{p.vinv_id}")
+        elif getattr(p, "vendor_id", None):
+            v = ctx.db.get(M.Vendor, p.vendor_id)
+            party, doc = (v.name if v else "Vendor"), "Advance / On Account"
+        else:
+            party, doc = "Direct", "Payment"
         out.append({"id": p.id, "pay_date": p.pay_date, "party": party, "doc": doc,
                     "reverses_id": p.reverses_id,
                     "amount": float(p.amount), "tds": float(p.tds),
@@ -1434,13 +1439,18 @@ def _make_payment(body: S.PaymentIn, ctx: Ctx):
         if inv.doc_type != "TAX":
             raise HTTPException(422, "A proforma cannot be settled; convert it to a tax invoice first")
         due = invoice_tax(ctx, inv).rounded - settled(ctx, invoice_id=inv.id)
-    else:
+    elif body.vinv_id:
         vi = ctx.get(M.VendorInvoice, body.vinv_id)
         if not vi:
             raise HTTPException(422, "No such vendor invoice")
         due = vinv_tax(ctx, vi).rounded - settled(ctx, vinv_id=vi.id)
+    else:
+        v = ctx.get(M.Vendor, body.vendor_id)
+        if not v:
+            raise HTTPException(422, "No such vendor")
+        due = None
     withheld = body.tds + body.gst_tds
-    if body.amount + withheld > due + Decimal("0.50"):
+    if due is not None and body.amount + withheld > due + Decimal("0.50"):
         raise HTTPException(422,
             f"Amount {body.amount} plus TDS {body.tds}"
             + (f" plus GST withheld {body.gst_tds}" if body.gst_tds else "")
@@ -1449,7 +1459,8 @@ def _make_payment(body: S.PaymentIn, ctx: Ctx):
     ctx.db.add(p)
     ctx.db.commit()
     ctx.db.refresh(p)
-    return {"id": p.id, "outstanding_after": float(due - body.amount - withheld)}
+    out_after = float(due - body.amount - withheld) if due is not None else 0.0
+    return {"id": p.id, "outstanding_after": out_after}
 
 
 @router.post("/receipts", status_code=201)

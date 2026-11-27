@@ -907,11 +907,22 @@ def _link_out(ctx, l):
         dr = ctx.db.get(M.Director, l.director_id)
         if dr:
             d.update(ref_id=dr.id, ref=dr.din or "Director", party=dr.name)
+    elif l.link_type == "VEND_ADV" and l.vendor_id:
+        v = ctx.db.get(M.Vendor, l.vendor_id)
+        txn = ctx.db.get(M.StmtTxn, l.txn_id)
+        is_cr = txn and txn.credit > 0
+        act = "Refund / Advance back" if is_cr else "Advance / Unbilled payment"
+        d.update(ref_id=l.vendor_id, ref=act, party=v.name if v else "Vendor", payment_id=l.payment_id)
     elif l.link_type == "GOVT":
-        d.update(ref=GOVT_LABEL.get(l.govt_kind, "Government"),
+        txn = ctx.db.get(M.StmtTxn, l.txn_id)
+        is_cr = txn and txn.credit > 0
+        label = GOVT_LABEL.get(l.govt_kind, "Government")
+        ref_text = f"{label} (refund)" if is_cr else label
+        d.update(ref=ref_text,
                  party=" · ".join(x for x in (
+                     "Government Agencies",
                      l.govt_descr, _month_label(l.govt_period),
-                     f"challan {l.challan_ref}" if l.challan_ref else None) if x))
+                     f"challan/ref {l.challan_ref}" if l.challan_ref else None) if x))
     return d
 
 
@@ -1027,11 +1038,12 @@ def _post_receipt(ctx, link, t, a):
     Payments for a customer invoice (v4.9), a payment on Vendor Payments for
     a vendor invoice (v5.0). It carries the TDS and GST withheld."""
     ctx.db.flush()                      # link.id, for the narration
-    vend = link.link_type == "VEND_INV"
+    vend = link.link_type in ("VEND_INV", "VEND_ADV")
     p = M.Payment(tenant_id=ctx.tenant.id, pay_type="PAY" if vend else "REC",
                   pay_date=t.txn_date,
                   invoice_id=None if vend else link.invoice_id,
-                  vinv_id=link.vinv_id if vend else None,
+                  vinv_id=link.vinv_id if link.link_type == "VEND_INV" else None,
+                  vendor_id=link.vendor_id if link.link_type == "VEND_ADV" else None,
                   amount=link.amount, tds=link.tds or 0, gst_tds=link.gst_tds or 0,
                   mode=_guess_mode(t.descr), bank_ref=(t.descr or "")[:60] or None,
                   bank_acct=(a.label or "")[:80] or None,
@@ -1179,6 +1191,10 @@ def attachables(
                         for e in emps]
     out["directors"] = [{**_director_out(dr), **_director_balance(ctx, dr.id)}
                         for dr in _active_directors(ctx)]
+    vendors = ctx.db.execute(ctx.scope(select(M.Vendor), M.Vendor)
+                             .order_by(M.Vendor.name)).scalars().all()
+    out["vendors"] = [{"id": v.id, "code": v.code, "name": v.name, "pan": v.pan}
+                      for v in vendors]
     if t.debit > 0:
         from .expenses import active_heads
         out["expense_heads"] = [{"id": h.id, "exp_code": h.exp_code, "name": h.name}
@@ -1187,8 +1203,8 @@ def attachables(
 
 
 class LinkIn(BaseModel):
-    link_type: str = Field(pattern="^(CUST_INV|VEND_INV|EMPLOYEE|DIRECTOR_LOAN|GOVT)$")
-    ref_id: int | None = None           # not used for GOVT
+    link_type: str = Field(pattern="^(CUST_INV|VEND_INV|EMPLOYEE|DIRECTOR_LOAN|GOVT|VEND_ADV)$")
+    ref_id: int | None = None           # vendor_id for VEND_ADV, not used for GOVT
     amount: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
     # v4.8 — TDS on an invoice attachment: the part of the invoice settled by
     # tax deducted at source rather than by money.
@@ -1317,21 +1333,23 @@ def _add_link(ctx, t, a, body: LinkIn):
                     raise HTTPException(422, f"{h.name} is marked inactive")
                 link.expense_id = h.id
     elif body.link_type == "GOVT":
-        # v5.0 — money paid to the government: GST, TDS, PF, ESI or another
-        # statutory due, with the month it is for and the challan reference.
-        if is_credit:
-            raise HTTPException(422, "A government payment is money paid out — pick a debit "
-                                "in the statement, not a credit.")
+        # Statutory filings / refunds (GST, TDS, PF, ESI, etc.)
         if not body.govt_kind:
-            raise HTTPException(422, "Say what was paid: GST, TDS, PF, ESI or other")
+            raise HTTPException(422, "Say what this is: GST, TDS, PF, ESI or other")
         descr = (body.govt_descr or "").strip()
         if body.govt_kind == "OTHER" and not descr:
-            raise HTTPException(422, "Say what the other statutory payment was for "
+            raise HTTPException(422, "Say what the other statutory amount was for "
                                 "(professional tax, labour welfare fund, …)")
         link.govt_kind = body.govt_kind
         link.govt_period = body.govt_period
         link.challan_ref = (body.challan_ref or "").strip() or None
         link.govt_descr = descr or None
+    elif body.link_type == "VEND_ADV":
+        v = ctx.get(M.Vendor, body.ref_id)
+        if not v:
+            raise HTTPException(404, "No such vendor")
+        link.vendor_id = v.id
+        doc_no = f"Advance to {v.name}" if not is_credit else f"Refund from {v.name}"
     else:  # DIRECTOR_LOAN — credit: loan received; debit: loan repaid
         dr = ctx.get(M.Director, body.ref_id)
         if not dr:
@@ -1358,7 +1376,7 @@ def _add_link(ctx, t, a, body: LinkIn):
     link.tds = tds
     link.gst_tds = gst
     ctx.db.add(link)
-    if link.link_type in ("CUST_INV", "VEND_INV"):
+    if link.link_type in ("CUST_INV", "VEND_INV") or (link.link_type == "VEND_ADV" and not is_credit):
         _post_receipt(ctx, link, t, a)
 
     if a.kind == "CARD" and t.allocation != "COMPANY":
@@ -1626,8 +1644,8 @@ def match_invoice_payments(body: MatchIn, ctx: Ctx = Depends(need_any("bankstmt"
 
 @router.get("/govt-payments")
 def govt_payments(period: str | None = None, ctx: Ctx = Depends(need_any("bankstmt", "registers"))):
-    """Payments to the government attached on Bank Statements — GST, TDS,
-    PF, ESI and other statutory dues — for a month or a financial year."""
+    """Payments to and refunds from the government attached on Bank Statements —
+    GST, TDS, PF, ESI and other statutory dues — for a month or a financial year."""
     q = (select(M.StmtTxnLink, M.StmtTxn, M.StmtAccount)
          .join(M.StmtTxn, M.StmtTxn.id == M.StmtTxnLink.txn_id)
          .join(M.StmtAccount, M.StmtAccount.id == M.StmtTxn.account_id)
@@ -1635,17 +1653,32 @@ def govt_payments(period: str | None = None, ctx: Ctx = Depends(need_any("bankst
     if period:
         lo, hi = _view_bounds(ctx, period)
         q = q.where(M.StmtTxn.txn_date >= lo, M.StmtTxn.txn_date < hi)
-    rows, by_kind = [], {k: 0.0 for k in GOVT_LABEL}
+    rows = []
+    payments_by_kind = {k: 0.0 for k in GOVT_LABEL}
+    refunds_by_kind = {k: 0.0 for k in GOVT_LABEL}
+    total_payments, total_refunds = 0.0, 0.0
     for l, t, a in ctx.db.execute(q.order_by(M.StmtTxn.txn_date, M.StmtTxnLink.id)).all():
         amt = float(l.amount)
-        by_kind[l.govt_kind] = round(by_kind[l.govt_kind] + amt, 2)
+        is_refund = (t.credit > 0)
+        if is_refund:
+            refunds_by_kind[l.govt_kind] = round(refunds_by_kind[l.govt_kind] + amt, 2)
+            total_refunds = round(total_refunds + amt, 2)
+        else:
+            payments_by_kind[l.govt_kind] = round(payments_by_kind[l.govt_kind] + amt, 2)
+            total_payments = round(total_payments + amt, 2)
         rows.append({"id": l.id, "date": t.txn_date.isoformat(), "kind": l.govt_kind,
+                     "side": "REFUND" if is_refund else "PAYMENT",
+                     "side_label": "Refund / Receipt" if is_refund else "Payment / Dues",
                      "kind_label": GOVT_LABEL[l.govt_kind], "for_month": l.govt_period,
                      "challan_ref": l.challan_ref, "descr": l.govt_descr, "amount": amt,
                      "account": a.label, "bank_ref": t.descr, "notes": l.notes})
     return {"period": period, "rows": rows,
-            "by_kind": [{"kind": k, "label": GOVT_LABEL[k], "amount": v} for k, v in by_kind.items()],
-            "total": round(sum(r["amount"] for r in rows), 2)}
+            "by_kind": [{"kind": k, "label": GOVT_LABEL[k], "amount": v} for k, v in payments_by_kind.items()],
+            "refunds_by_kind": [{"kind": k, "label": GOVT_LABEL[k], "amount": v} for k, v in refunds_by_kind.items()],
+            "total": total_payments,
+            "total_payments": total_payments,
+            "total_refunds": total_refunds,
+            "net_paid": round(total_payments - total_refunds, 2)}
 
 
 # --------------------------------------------------------------- directors (v4.8)

@@ -139,6 +139,7 @@ def _link_tds(ctx, period):
                 continue
             tx, v = vinv_tax(ctx, vi), vi.vendor
             rate = (tds / tx.taxable * 100) if tx.taxable else D0
+            m_str = str(t.txn_date)[:7]
             vend.append({"pay_date": t.txn_date, "vendor": v.name, "vendor_code": v.code,
                          "pan": v.pan, "gstin": vi.gstin, "msme": v.msme_registered,
                          "msme_number": v.msme_number, "section": v.tds_section or "",
@@ -149,6 +150,7 @@ def _link_tds(ctx, period):
                          "gross": float(amt + tds), "tds": float(tds), "paid": float(amt),
                          "mode": "Bank", "bank_ref": t.descr,
                          "implied_rate_pct": float(q2(rate)),
+                         "month": m_str, "due_date": _tds_due(m_str).isoformat(),
                          "source": "Bank statement", "bank_account": a.label})
     return cust, vend
 
@@ -234,19 +236,51 @@ def tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
         v = vi.vendor
         gross = Decimal(str(p.amount)) + tds
         rate = (tds / t.taxable * 100) if t.taxable else D0
+        m_str = str(p.pay_date)[:7]
         out.append({"pay_date": p.pay_date, "vendor": v.name, "vendor_code": v.code,
                     "pan": v.pan, "gstin": vi.gstin,
                     "msme": v.msme_registered, "msme_number": v.msme_number,
+                    "section": v.tds_section or "", "rate": float(v.tds_rate or 0),
                     "vendor_invoice": vi.doc_no, "invoice_date": vi.doc_date,
                     "invoice_taxable": float(t.taxable),
                     "invoice_total": float(t.rounded),
                     "gross": float(gross), "tds": float(tds),
                     "paid": float(p.amount), "mode": p.mode, "bank_ref": p.bank_ref,
                     "implied_rate_pct": float(q2(rate)),
+                    "month": m_str, "due_date": _tds_due(m_str).isoformat(),
                     "source": "Bank statement" if p.id in bank else "Payment entry",
                     "bank_account": bank.get(p.id) or p.bank_acct})
     link_cust, link_vend = _link_tds(ctx, period)
     out = sorted(out + link_vend, key=lambda r: r["pay_date"])
+
+    # Monthly summary: what TDS has been deducted in each month while paying
+    today = date.today()
+    months = {}
+    for r in out:
+        mk = r.get("month") or str(r["pay_date"])[:7]
+        m = months.setdefault(mk, {
+            "month": mk, "count": 0, "taxable": D0, "gross": D0, "tds": D0, "paid": D0
+        })
+        m["count"] += 1
+        m["taxable"] += Decimal(str(r.get("invoice_taxable") or 0))
+        m["gross"] += Decimal(str(r.get("gross") or 0))
+        m["tds"] += Decimal(str(r.get("tds") or 0))
+        m["paid"] += Decimal(str(r.get("paid") or 0))
+
+    by_month = []
+    for m in sorted(months.values(), key=lambda x: x["month"], reverse=True):
+        due = _tds_due(m["month"])
+        by_month.append({
+            "month": m["month"],
+            "count": m["count"],
+            "taxable": float(q2(m["taxable"])),
+            "gross": float(q2(m["gross"])),
+            "tds": float(q2(m["tds"])),
+            "paid": float(q2(m["paid"])),
+            "due_date": due.isoformat(),
+            "status": "Overdue" if due < today else "Due"
+        })
+
     # customers: receipts with TDS on the Money screens, plus bank attachments
     cust = []
     for p in ctx.db.execute(ctx.scope(select(M.Payment), M.Payment)
@@ -272,7 +306,7 @@ def tds_register(period: str | None = None, ctx: Ctx = Depends(need("registers")
     total = float(q2(sum((Decimal(str(r["tds"])) for r in out), D0)))
     ctotal = float(q2(sum((Decimal(str(r["tds"])) for r in cust), D0)))
     missing_pan = [r["vendor"] for r in out if not r["pan"]]
-    return {"period": period, "rows": out, "total_tds": total,
+    return {"period": period, "rows": out, "by_month": by_month, "total_tds": total,
             "customers": cust, "customer_total_tds": ctotal,
             "customers_without_pan": sorted({r["customer"] for r in cust if not r["pan"]}),
             "vendors_without_pan": sorted(set(missing_pan)),
